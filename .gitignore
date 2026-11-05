@@ -1,8 +1,7 @@
 node_modules
 .DS_Store
 dist
-data/session
-data/*.json
+data/
 ui/dist
 ui/node_modules
 *.log
