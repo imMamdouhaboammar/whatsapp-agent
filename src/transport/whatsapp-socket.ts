@@ -4,6 +4,7 @@ import makeWASocket, {
   downloadMediaMessage,
   fetchLatestBaileysVersion,
   useMultiFileAuthState,
+  Browsers,
   type WASocket,
   type proto
 } from '@whiskeysockets/baileys';
@@ -87,7 +88,7 @@ export class WhatsAppSocketClient {
         auth: state,
         logger,
         printQRInTerminal: false,
-        browser: ['Fable Agent', 'Chrome', '133.0.0'],
+        browser: Browsers.macOS('Desktop'),
         syncFullHistory: false,
         markOnlineOnConnect: true,
         connectTimeoutMs: 60_000,
