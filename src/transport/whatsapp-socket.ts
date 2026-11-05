@@ -63,6 +63,17 @@ export class WhatsAppSocketClient {
       this.pairingCodeRequestedNumber = pairingPhoneNumber.replace(/\D/g, '');
     }
 
+    // Clean up any existing socket before reconnecting to prevent session conflicts
+    if (this.sock) {
+      try {
+        this.sock.ev.removeAllListeners('connection.update');
+        this.sock.ev.removeAllListeners('creds.update');
+        this.sock.ev.removeAllListeners('messages.upsert');
+        this.sock.end(undefined);
+      } catch {}
+      this.sock = null;
+    }
+
     this.setState({ state: 'connecting', error: undefined });
 
     try {
@@ -94,7 +105,8 @@ export class WhatsAppSocketClient {
             this.setState({
               state: 'qr_ready',
               qrDataUrl: dataUrl,
-              pairingCode: undefined
+              pairingCode: undefined,
+              error: undefined // Clear any transient reconnect error once fresh QR is ready
             });
           } catch (err: any) {
             this.setState({ error: `Failed to render QR code: ${err.message}` });
@@ -109,6 +121,7 @@ export class WhatsAppSocketClient {
             state: 'connected',
             qrDataUrl: undefined,
             pairingCode: undefined,
+            error: undefined,
             connectedUser: user
               ? {
                   id: user.id,
@@ -131,11 +144,22 @@ export class WhatsAppSocketClient {
             });
           } else if (shouldReconnect) {
             this.reconnectAttempts++;
-            const backoff = Math.min(1000 * Math.pow(1.5, this.reconnectAttempts), 15000);
-            this.setState({
-              state: 'connecting',
-              error: `Disconnected (status ${statusCode}). Reconnecting in ${Math.round(backoff / 1000)}s...`
-            });
+            // During QR pairing, 408 (timeout), 500, and 515 are routine cycling events
+            const isQRCycle = statusCode === 408 || statusCode === 500 || statusCode === 515;
+            const backoff = isQRCycle ? 1500 : Math.min(1000 * Math.pow(1.5, this.reconnectAttempts), 15000);
+
+            if (!isQRCycle) {
+              this.setState({
+                state: 'connecting',
+                error: `Connection lost. Reconnecting in ${Math.round(backoff / 1000)}s...`
+              });
+            } else {
+              this.setState({
+                state: 'connecting',
+                error: undefined
+              });
+            }
+
             setTimeout(() => {
               void this.start(this.pairingCodeRequestedNumber || undefined);
             }, backoff);
