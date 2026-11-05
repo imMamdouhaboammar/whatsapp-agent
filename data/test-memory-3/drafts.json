@@ -1,0 +1,13 @@
+[
+  {
+    "id": "draft_1793872204715_pgsuu",
+    "chatId": "contact3@s.whatsapp.net",
+    "incomingMessageId": "msg_3",
+    "incomingText": "صباح الخير",
+    "proposedReply": "صباح الورد والياسمين",
+    "reasoning": "Automated moderation evaluation",
+    "confidence": 0.98,
+    "status": "pending",
+    "createdAt": 1793872204715
+  }
+]

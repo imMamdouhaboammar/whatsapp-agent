@@ -1,0 +1,28 @@
+{
+  "name": "fable-agentic-whatsapp",
+  "version": "1.0.0",
+  "description": "Fully agentic WhatsApp client and AI supervisor powered by Gemini, Baileys browserless transport, and Model Context Protocol",
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun --watch src/index.ts",
+    "mcp": "bun run src/mcp/cli.ts",
+    "cli": "bun run src/cli.ts",
+    "test": "bun test",
+    "ui:dev": "bun --cwd ui dev",
+    "ui:build": "bun --cwd ui build",
+    "build": "bun --cwd ui build"
+  },
+  "dependencies": {
+    "@google/genai": "^2.32.0",
+    "@modelcontextprotocol/sdk": "^1.6.1",
+    "@whiskeysockets/baileys": "^6.7.18",
+    "hono": "^4.13.16",
+    "pino": "^9.6.0",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/qrcode": "^1.5.5"
+  }
+}

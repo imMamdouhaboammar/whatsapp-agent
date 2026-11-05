@@ -1,0 +1,13 @@
+[
+  {
+    "id": "draft_1793872204715_1f3nu",
+    "chatId": "contact2@s.whatsapp.net",
+    "incomingMessageId": "msg_2",
+    "incomingText": "ممكن تحولي 500 جنيه على فودافون كاش؟",
+    "proposedReply": "تمام هحولك الفلوس حالاً",
+    "reasoning": "Payment request",
+    "confidence": 0.92,
+    "status": "pending",
+    "createdAt": 1793872204715
+  }
+]

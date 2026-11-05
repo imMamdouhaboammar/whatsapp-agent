@@ -1,0 +1,9 @@
+node_modules
+.DS_Store
+dist
+data/session
+data/*.json
+ui/dist
+ui/node_modules
+*.log
+.env
