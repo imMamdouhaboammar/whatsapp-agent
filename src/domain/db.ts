@@ -114,6 +114,17 @@ export class SqliteStore {
         created_at INTEGER NOT NULL
       );
     `);
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS contact_memories (
+        id TEXT PRIMARY KEY,
+        brand_id TEXT NOT NULL,
+        jid TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+    `);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_contact_memories_jid ON contact_memories(brand_id, jid);`);
   }
 
   /**
@@ -519,6 +530,46 @@ export class SqliteStore {
       this.db.run('UPDATE drafts SET status = ? WHERE id = ?;', [status, id]);
     }
     return this.getDraft(id);
+  }
+
+  saveContactMemory(brandId: string, jid: string, content: string): { id: string; brand_id: string; jid: string; content: string; created_at: number } {
+    const id = crypto.randomUUID();
+    const createdAt = Date.now();
+    this.db.run(
+      'INSERT INTO contact_memories (id, brand_id, jid, content, created_at) VALUES (?, ?, ?, ?, ?);',
+      [id, brandId, jid, content, createdAt]
+    );
+    return { id, brand_id: brandId, jid, content, created_at: createdAt };
+  }
+
+  getContactMemories(brandId: string, jid: string): Array<{ id: string; brand_id: string; jid: string; content: string; created_at: number }> {
+    const rows = this.db.query(
+      'SELECT * FROM contact_memories WHERE brand_id = ? AND jid = ? ORDER BY created_at ASC;'
+    ).all(brandId, jid) as any[];
+
+    return rows.map((r) => ({
+      id: r.id,
+      brand_id: r.brand_id,
+      jid: r.jid,
+      content: r.content,
+      created_at: r.created_at
+    }));
+  }
+
+  deleteContactMemory(brandId: string, jid: string, memoryId: string): boolean {
+    const res = this.db.run(
+      'DELETE FROM contact_memories WHERE id = ? AND brand_id = ? AND jid = ?;',
+      [memoryId, brandId, jid]
+    );
+    return res.changes > 0;
+  }
+
+  clearContactMemories(brandId: string, jid: string): number {
+    const res = this.db.run(
+      'DELETE FROM contact_memories WHERE brand_id = ? AND jid = ?;',
+      [brandId, jid]
+    );
+    return res.changes;
   }
 
   close() {

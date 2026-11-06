@@ -22,6 +22,8 @@ const { ChatThread } = await vite.ssrLoadModule('/src/components/ChatThread.tsx'
 const { ModeratorDrawer } = await vite.ssrLoadModule('/src/components/ModeratorDrawer.tsx');
 const { App } = await vite.ssrLoadModule('/src/App.tsx');
 const { PersonaSettingsPage } = await vite.ssrLoadModule('/src/components/PersonaSettingsPage.tsx');
+const { OwnerAccessLogin, OwnerSignOutButton } = await vite.ssrLoadModule('/src/components/OwnerAccessGate.tsx');
+const { SimulatorModal } = await vite.ssrLoadModule('/src/components/SimulatorModal.tsx');
 
 const chat = {
   id: '201000000000@s.whatsapp.net',
@@ -198,4 +200,38 @@ test('WhatsApp receipt ticks only reflect explicit outbound statuses', () => {
   assert.equal((html.match(/aria-label="Sent to WhatsApp"/g) || []).length, 1);
   assert.equal((html.match(/aria-label="Delivered"/g) || []).length, 1);
   assert.equal((html.match(/aria-label="Read"/g) || []).length, 1);
+});
+
+test('Owner access uses a bilingual private login with a password field', () => {
+  const props = { onLogin: async () => {}, onRetry: () => {} };
+  const en = render('en', React.createElement(OwnerAccessLogin, props));
+  const ar = render('ar', React.createElement(OwnerAccessLogin, props));
+  assert.match(en, /Owner access/);
+  assert.match(en, /Access your workspace/);
+  assert.match(en, /type="password"/);
+  assert.match(en, /autocomplete="current-password"/i);
+  assert.match(ar, /دخول المالك/);
+  assert.match(ar, /الدخول لمساحة العمل/);
+  assert.match(ar, /dir="rtl"/);
+});
+
+test('Owner can explicitly sign out in Arabic and English when access protection is enabled', () => {
+  const props = { onSignOut: async () => {}, pending: false };
+  const ar = render('ar', React.createElement(OwnerSignOutButton, props));
+  const en = render('en', React.createElement(OwnerSignOutButton, props));
+  assert.match(ar, /تسجيل الخروج/);
+  assert.match(en, /Sign out/);
+  assert.match(en, /type="button"/);
+});
+
+test('Assistant preview explains that messages are not sent or saved', () => {
+  const props = { isOpen: true, onClose: () => {}, onSimulate: async () => ({}) };
+  const en = render('en', React.createElement(SimulatorModal, props));
+  const ar = render('ar', React.createElement(SimulatorModal, props));
+  assert.match(en, /Private preview/);
+  assert.match(en, /No messages are sent or saved/);
+  assert.match(ar, /معاينة خاصة/);
+  assert.match(ar, /مش بيبعت رسائل ولا بيحفظ محادثات/);
+  assert.match(en, /maxLength="4000"/);
+  assert.match(en, /maxLength="120"/);
 });

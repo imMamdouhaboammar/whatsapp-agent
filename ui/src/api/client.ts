@@ -3,6 +3,26 @@ import type { ChatMessage, ChatSummary, ModeratorPersona, PolicyConfig, SystemSt
 const BASE_URL = '/api';
 
 export const api = {
+  async getDashboardStatus(): Promise<{ required: boolean; authenticated: boolean }> {
+    const res = await fetch(`${BASE_URL}/auth/status`, { cache: 'no-store' });
+    if (!res.ok) throw new Error('Owner access status unavailable');
+    return res.json();
+  },
+
+  async startDashboardSession(token: string): Promise<void> {
+    const res = await fetch(`${BASE_URL}/auth/session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token })
+    });
+    if (!res.ok) throw new Error('Invalid owner access token');
+  },
+
+  async endDashboardSession(): Promise<void> {
+    const res = await fetch(`${BASE_URL}/auth/session`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Could not sign out');
+  },
+
   async getStatus(): Promise<SystemStatus> {
     const res = await fetch(`${BASE_URL}/status`);
     if (!res.ok) throw new Error('Failed to fetch status');
@@ -123,6 +143,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, senderName })
     });
+    if (!res.ok) throw new Error('Could not preview assistant response');
     return res.json();
   },
 

@@ -9,9 +9,15 @@ import type { ChatMessage } from '../domain/types';
 import type { WhatsAppSocketClient } from '../transport/whatsapp-socket';
 import type { SSEBroadcaster } from './sse';
 import { FableFunnelEngine, FunnelRegistry } from '../funnel';
+import { registerDashboardAuth } from './dashboard-auth';
+import { UserMemoryManager } from '../domain/user-memory';
+import type { ConversationStyle } from '../ai/adaptive-style';
 
 const allowedOrigins = new Set(['http://localhost:3000','http://127.0.0.1:3000','http://localhost:5173','http://127.0.0.1:5173',...((process.env.AGENT_ALLOWED_ORIGINS??'').split(',').map(v=>v.trim()).filter(Boolean))]);
 const trustedOrigin=(origin:string)=>allowedOrigins.has(origin);
+
+// A short heartbeat survives reverse proxies that drop idle HTTP streams after 10 seconds.
+export const SSE_KEEP_ALIVE_MS = 5000;
 
 export function createApiServer(deps: {
   memoryStore: MemoryStore;
@@ -21,6 +27,8 @@ export function createApiServer(deps: {
   audioTranscriber?: AudioTranscriber;
   voiceSynthesizer?: VoiceSynthesizer;
   funnelEngine?: FableFunnelEngine;
+  dashboardToken?: string;
+  sseHeartbeatMs?: number;
 }): Hono {
   const app = new Hono();
   const funnelEngine = deps.funnelEngine ?? new FableFunnelEngine({
@@ -50,10 +58,11 @@ export function createApiServer(deps: {
   // CLI/service callers without a browser Origin remain supported; bind the server to loopback by default.
   app.use('*',async(c,next)=>{
     const origin=c.req.header('origin');
-    if(origin && !trustedOrigin(origin) && !['GET','HEAD','OPTIONS'].includes(c.req.method))return c.json({error:'Cross-origin request forbidden'},403);
+    if(origin && origin !== new URL(c.req.url).origin && !trustedOrigin(origin) && !['GET','HEAD','OPTIONS'].includes(c.req.method))return c.json({error:'Cross-origin request forbidden'},403);
     await next();
   });
   app.use('*', cors({origin:(origin)=>trustedOrigin(origin)?origin:''}));
+  registerDashboardAuth(app, deps.dashboardToken ?? '');
 
   // Status & Connection
   app.get('/api/status', (c) => {
@@ -339,50 +348,27 @@ export function createApiServer(deps: {
     return c.json({ success: true, dossier: updated });
   });
 
-  // Simulator endpoint
+  // Keep preview requests outside live conversations and customer history.
   app.post('/api/simulate', async (c) => {
-    const body = await c.req.json();
+    const body = await c.req.json().catch(() => null);
+    if (!body || typeof body.text !== 'string' || !body.text.trim() || body.text.length > 4000 ||
+        (body.senderName !== undefined && (typeof body.senderName !== 'string' || body.senderName.length > 120))) {
+      return c.json({ error: 'Enter a test message of up to 4,000 characters' }, 400);
+    }
+
     const simulatedMsg: ChatMessage = {
-      id: `sim_${Date.now()}`,
-      chatId: body.chatId || 'simulation@s.whatsapp.net',
-      sender: body.sender || 'simulator_user',
-      senderName: body.senderName || 'مستخدم تجريبي',
-      text: String(body.text ?? 'أهلاً بك'),
+      id: crypto.randomUUID(),
+      chatId: `sim_${crypto.randomUUID()}@simulator.invalid`,
+      sender: 'simulator_user',
+      senderName: body.senderName?.trim() || 'عميل تجريبي',
+      text: body.text.trim(),
       timestamp: Date.now(),
       isFromMe: false,
       type: 'text'
     };
 
-    deps.memoryStore.addMessage(simulatedMsg);
-    deps.sse.broadcast('new_message', simulatedMsg);
-
-    const result = await deps.moderatorAgent.processInboundMessage(simulatedMsg);
-    deps.sse.broadcast('agent_thought', {
-      chatId: simulatedMsg.chatId,
-      messageId: simulatedMsg.id,
-      decision: result.decision
-    });
-
-    if (result.draftCreated) {
-      deps.sse.broadcast('new_draft', result.draftCreated);
-    }
-
-    if (result.shouldSendImmediately && result.decision.replyText) {
-      const outbound: ChatMessage = {
-        id: `sim_out_${Date.now()}`,
-        chatId: simulatedMsg.chatId,
-        sender: 'me',
-        text: result.decision.replyText,
-        timestamp: Date.now(),
-        isFromMe: true,
-        type: 'text',
-        replyToId: simulatedMsg.id,
-        status: 'sent'
-      };
-      deps.memoryStore.addMessage(outbound);
-      deps.sse.broadcast('new_message', outbound);
-    }
-
+    const result = await deps.moderatorAgent.processInboundMessage(simulatedMsg, { dryRun: true });
+    c.header('Cache-Control', 'no-store');
     return c.json({
       success: true,
       simulatedMessage: simulatedMsg,
@@ -410,8 +396,11 @@ export function createApiServer(deps: {
 
       // Keep alive interval
       const pingInterval = setInterval(() => {
-        void stream.writeSSE({ event: 'ping', data: '{}' });
-      }, 15000);
+        void stream.writeSSE({ event: 'ping', data: '{}' }).catch(() => {
+          clearInterval(pingInterval);
+          unsubscribe();
+        });
+      }, deps.sseHeartbeatMs ?? SSE_KEEP_ALIVE_MS);
 
       stream.onAbort(() => {
         clearInterval(pingInterval);
@@ -481,6 +470,49 @@ export function createApiServer(deps: {
     }
     const reset = funnelEngine.resetCircuitBreaker(body.targetId);
     return c.json({ success: reset, targetId: body.targetId });
+  });
+
+  // Contact Memory Routes
+  app.get('/api/contacts/:jid/memories', (c) => {
+    const jid = c.req.param('jid');
+    const memories = deps.memoryStore.getContactMemories('default', jid);
+    return c.json({ memories });
+  });
+
+  app.post('/api/contacts/:jid/memories', async (c) => {
+    const jid = c.req.param('jid');
+    const body = await c.req.json().catch(() => ({}));
+    const manager = new UserMemoryManager(deps.memoryStore.getSqliteStore());
+
+    const commandText = body.command || `Remember that ${body.content || ''}`;
+    const result = await manager.handleCommand('default', jid, commandText);
+
+    if (result.status === 'rejected_credential') {
+      return c.json(result, 422);
+    }
+    return c.json(result);
+  });
+
+  app.delete('/api/contacts/:jid/memories/:id', (c) => {
+    const jid = c.req.param('jid');
+    const memoryId = c.req.param('id');
+    const success = deps.memoryStore.deleteContactMemory('default', jid, memoryId);
+    return c.json({ success });
+  });
+
+  // Adaptive Conversation Style Routes
+  app.get('/api/chats/:jid/style', (c) => {
+    const jid = c.req.param('jid');
+    const style = deps.memoryStore.getChatStyle(jid) || 'casual';
+    return c.json({ style });
+  });
+
+  app.post('/api/chats/:jid/style', async (c) => {
+    const jid = c.req.param('jid');
+    const body = await c.req.json().catch(() => ({}));
+    const style = (body.style as ConversationStyle) || 'casual';
+    deps.memoryStore.setChatStyle(jid, style);
+    return c.json({ success: true, style });
   });
 
   return app;

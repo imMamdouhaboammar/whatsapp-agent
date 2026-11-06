@@ -3,6 +3,10 @@ import { HumanRateLimiter } from '../domain/rate-limiter';
 import type { MemoryStore } from '../domain/memory-store';
 import type { AgentDecision, AgentDraft, AutonomyAction, ChatMessage, ModeratorPersona, PolicyConfig } from '../domain/types';
 import type { GeminiClient } from './gemini-client';
+import { formatWhatsAppMessage } from '../domain/whatsapp-formatter';
+import { executeWithModelFallback, parseModelChain } from './model-fallback';
+import { formatMemoriesForPrompt } from '../domain/user-memory';
+import { detectConversationStyle, getStylePromptDirective, isExplicitStyleRequest, type ConversationStyle } from './adaptive-style';
 
 export const DEFAULT_MODERATOR_PERSONA: ModeratorPersona = {
   name: 'ممدوح (الموديرتور الذكي)',
@@ -88,7 +92,7 @@ export class ModeratorAgent {
   /**
    * Processes an incoming message and determines the agent's decision and reply
    */
-  async processInboundMessage(message: ChatMessage): Promise<{
+  async processInboundMessage(message: ChatMessage, options: { dryRun?: boolean } = {}): Promise<{
     decision: AgentDecision;
     draftCreated?: AgentDraft;
     shouldSendImmediately: boolean;
@@ -143,10 +147,25 @@ ${factsList}
 ${commitmentsList}\n`;
     }
 
+    // Fetch contact explicit memories
+    const explicitMemories = this.memoryStore.getContactMemories('default', message.chatId);
+    const memoryContext = formatMemoriesForPrompt(explicitMemories);
+    const memoryPrompt = memoryContext ? `\n📌 ${memoryContext}\n` : '';
+
+    // Detect or update conversation style
+    const inboundText = message.text || message.transcription || '';
+    const detectedStyle = detectConversationStyle(inboundText);
+    if (!options.dryRun && isExplicitStyleRequest(inboundText)) {
+      this.memoryStore.setChatStyle(message.chatId, detectedStyle);
+    }
+    const activeStyle = (this.memoryStore.getChatStyle(message.chatId) as ConversationStyle) || detectedStyle;
+    const styleDirective = getStylePromptDirective(activeStyle);
+
     const prompt = `سياق المحادثة السابقة بين الطرفين:
 ${historyText}
 ${quotedContextPrompt}
 ${dossierPrompt}
+${memoryPrompt}
 الرسالة الجديدة الواردة الآن:
 من: ${message.senderName || message.sender}
 نص الرسالة: ${message.text || message.transcription || `[${message.type}]`}
@@ -175,22 +194,37 @@ ${dossierPrompt}
   "contactStage": "lead | qualified | negotiation | customer | vip"
 }`;
 
-    const systemInstruction = `${this.persona.systemPrompt}\nالنبرة المطلوبة: ${this.persona.tone}\nالقواعد:\n${this.persona.rules.map((r) => `- ${r}`).join('\n')}`;
+    const systemInstruction = `${this.persona.systemPrompt}\nالنبرة المطلوبة: ${this.persona.tone}\n${styleDirective}\nالقواعد:\n${this.persona.rules.map((r) => `- ${r}`).join('\n')}`;
 
     let parsedDecision: AgentDecision;
 
     try {
-      const response = await this.gemini.generateContent(
-        [{ role: 'user', parts: [{ text: prompt }] }],
-        {
-          model: this.persona.model,
-          temperature: this.persona.temperature,
-          systemInstruction,
-          responseMimeType: 'application/json'
-        }
+      const fallbackModels = parseModelChain(
+        this.persona.model || 'gemini-2.5-flash',
+        process.env.GEMINI_FALLBACK_MODELS,
+        'gemini-2.5-flash,gemini-2.5-pro,gemini-2.0-flash'
       );
 
+      const fallbackRes = await executeWithModelFallback(fallbackModels, async (model) => {
+        return await this.gemini.generateContent(
+          [{ role: 'user', parts: [{ text: prompt }] }],
+          {
+            model,
+            temperature: this.persona.temperature,
+            systemInstruction,
+            responseMimeType: 'application/json'
+          }
+        );
+      });
+
+      const response = fallbackRes.result;
       const json = JSON.parse(response.text);
+
+      // Apply WhatsApp native markdown formatting to reply
+      if (json.replyText) {
+        json.replyText = formatWhatsAppMessage(json.replyText);
+      }
+
       const simulatedDelay = this.persona.simulateTypingDelay
         ? this.rateLimiter.calculateTypingDelay(json.replyText || '')
         : 500;
@@ -210,7 +244,7 @@ ${dossierPrompt}
       };
 
       // Persist newly discovered facts into the Contact Dossier
-      if (Array.isArray(json.extractedFacts)) {
+      if (!options.dryRun && Array.isArray(json.extractedFacts)) {
         for (const fact of json.extractedFacts) {
           if (typeof fact === 'string' && fact.trim()) {
             this.memoryStore.addFactToDossier(message.chatId, fact.trim());
@@ -219,7 +253,7 @@ ${dossierPrompt}
       }
 
       // Persist newly extracted commitments into the Contact Dossier
-      if (Array.isArray(json.extractedCommitments)) {
+      if (!options.dryRun && Array.isArray(json.extractedCommitments)) {
         for (const comm of json.extractedCommitments) {
           if (typeof comm === 'string' && comm.trim()) {
             this.memoryStore.addCommitmentToDossier(message.chatId, comm.trim());
@@ -228,7 +262,7 @@ ${dossierPrompt}
       }
 
       // Update stage if recognized
-      if (json.contactStage) {
+      if (!options.dryRun && json.contactStage) {
         const existingDossier = this.memoryStore.getDossier(message.chatId);
         if (existingDossier) {
           existingDossier.stage = json.contactStage;
@@ -276,7 +310,7 @@ ${dossierPrompt}
         status: 'pending',
         createdAt: Date.now()
       };
-      this.memoryStore.saveDraft(draftCreated);
+      if (!options.dryRun) this.memoryStore.saveDraft(draftCreated);
       shouldSendImmediately = false;
     } else if (agentMode === 'autopilot' && finalAction === 'reply' && parsedDecision.replyText) {
       shouldSendImmediately = true;

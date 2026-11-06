@@ -8,6 +8,8 @@ import type { ModeratorAgent } from '../ai/moderator-agent';
 import type { MemoryStore } from '../domain/memory-store';
 import type { WhatsAppSocketClient } from '../transport/whatsapp-socket';
 import type { FableFunnelEngine } from '../funnel';
+import { UserMemoryManager } from '../domain/user-memory';
+import type { ConversationStyle } from '../ai/adaptive-style';
 
 export function createWhatsAppMcpServer(deps: {
   memoryStore: MemoryStore;
@@ -154,6 +156,52 @@ export function createWhatsAppMcpServer(deps: {
               }
             },
             required: ['draftId']
+          }
+        },
+        {
+          name: 'whatsapp_manage_memory',
+          description: 'Manage explicit contact facts, preferences, and long-term memory (save, list, delete by index, or clear). Intercepts and rejects credentials.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              chatId: {
+                type: 'string',
+                description: 'Contact WhatsApp JID'
+              },
+              action: {
+                type: 'string',
+                enum: ['save', 'list', 'delete', 'clear'],
+                description: 'Memory operation to perform'
+              },
+              content: {
+                type: 'string',
+                description: 'Fact or preference text to save (required for save action)'
+              },
+              index: {
+                type: 'number',
+                description: '1-based index of the memory to delete (required for delete action)'
+              }
+            },
+            required: ['chatId', 'action']
+          }
+        },
+        {
+          name: 'whatsapp_set_chat_style',
+          description: 'Configure conversational persona and tone for a specific contact: professional, casual, playful, assertive, or empathetic.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              chatId: {
+                type: 'string',
+                description: 'Contact WhatsApp JID'
+              },
+              style: {
+                type: 'string',
+                enum: ['professional', 'casual', 'playful', 'assertive', 'empathetic'],
+                description: 'Conversational persona style to set'
+              }
+            },
+            required: ['chatId', 'style']
           }
         },
         ...(deps.funnelEngine ? [{
@@ -347,6 +395,52 @@ export function createWhatsAppMcpServer(deps: {
             {
               type: 'text',
               text: `Draft ${draftId} approved and sent successfully.`
+            }
+          ]
+        };
+      }
+
+      case 'whatsapp_manage_memory': {
+        const chatId = String(args?.chatId);
+        const action = String(args?.action) as 'save' | 'list' | 'delete' | 'clear';
+        const content = args?.content ? String(args.content) : undefined;
+        const index = args?.index ? Number(args.index) : undefined;
+
+        const manager = new UserMemoryManager(deps.memoryStore.getSqliteStore());
+        let commandText = '';
+        if (action === 'save') {
+          commandText = `Remember that ${content}`;
+        } else if (action === 'list') {
+          commandText = 'What do you remember about me?';
+        } else if (action === 'delete') {
+          commandText = `Forget memory #${index || 1}`;
+        } else if (action === 'clear') {
+          commandText = 'Clear all memories';
+        }
+
+        const brandId = 'default';
+        const res = await manager.handleCommand(brandId, chatId, commandText);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(res, null, 2)
+            }
+          ]
+        };
+      }
+
+      case 'whatsapp_set_chat_style': {
+        const chatId = String(args?.chatId);
+        const style = String(args?.style) as ConversationStyle;
+        deps.memoryStore.setChatStyle(chatId, style);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Chat ${chatId} conversation style updated to ${style}`
             }
           ]
         };
