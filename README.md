@@ -108,4 +108,9 @@ whatsapp-agent/
 ---
 
 ## License
-MIT
+
+The project-authored source code in this repository is licensed under the [Mozilla Public License 2.0](LICENSE) (`MPL-2.0`).
+
+The core is free to use, modify, and self-host, including for commercial purposes. When distributing modifications to MPL-covered files, the MPL source-availability and notice requirements apply. Separately developed extensions, plugins, and skills may have their own licenses, including commercial licenses.
+
+See [Licensing and Extensions](docs/LICENSING.md) for the intended free-core and optional paid-add-on model. Third-party dependencies retain their respective licenses, and this license does not grant rights to WhatsApp or Meta trademarks.
