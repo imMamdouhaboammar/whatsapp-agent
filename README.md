@@ -44,6 +44,12 @@ Open **[http://localhost:3000](http://localhost:3000)** in your browser:
 2. Scan the live QR code with your phone or request an 8-digit phone pairing code.
 3. Configure your persona or start interacting!
 
+### Self-hosted dashboard access
+
+The web app listens on `127.0.0.1` by default. To make it reachable from another device, set `HOST` and a random `AGENT_DASHBOARD_TOKEN` of at least 24 characters in the environment. Put the app behind an HTTPS reverse proxy and set `AGENT_ALLOWED_ORIGINS` to its public origin. The owner signs in using the token on the dashboard. The token stays out of browser storage and the URL; the server issues a temporary HttpOnly session cookie.
+
+Brand Brain has a separate `AGENT_CAPABILITIES_OWNER_TOKEN` for its owner APIs. Set it before connecting private knowledge sources. See [`.env.example`](.env.example) for these settings.
+
 ### 4. Test Gemini Moderator from Terminal
 ```bash
 bun run cli simulate "السلام عليكم، هو الكورس متاح حالياً وبكام؟"

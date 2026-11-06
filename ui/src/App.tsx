@@ -10,10 +10,21 @@ import { ModeratorDrawer } from './components/ModeratorDrawer';
 import { PairingModal } from './components/PairingModal';
 import { PersonaSettingsPage } from './components/PersonaSettingsPage';
 import { SimulatorModal } from './components/SimulatorModal';
+import { OwnerSignOutButton, useOwnerAccess } from './components/OwnerAccessGate';
 import { useLocale } from './locale-context';
 
 export function App() {
   const { language, setLanguage, direction, tr } = useLocale();
+  const ownerAccess = useOwnerAccess();
+  const [signingOut, setSigningOut] = useState(false);
+  const [signOutError, setSignOutError] = useState(false);
+  const handleSignOut = async () => {
+    setSigningOut(true);
+    setSignOutError(false);
+    try { await ownerAccess.signOut(); }
+    catch { setSignOutError(true); }
+    finally { setSigningOut(false); }
+  };
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [selectedChatId, setSelectedChatId] = useState<string | undefined>();
@@ -360,6 +371,11 @@ export function App() {
           <button type="button" className={'wa-icon-button ' + (page === 'funnel' ? 'is-active' : '')} onClick={openFunnel} aria-label={tr('محرك التوزيع المتوازي', 'Scatter-Gather Funnel')} title={tr('محرك التوزيع المتوازي', 'Scatter-Gather Funnel')}><Network size={19} /></button>
           <button type="button" className={'wa-icon-button ' + (page === 'brain' ? 'is-active' : '')} onClick={openBrain} aria-label={tr('ذاكرة البراند', 'Brand Brain')} title={tr('ذاكرة البراند', 'Brand Brain')}><BookOpen size={19} /></button>
           <button type="button" className={'wa-icon-button ' + (page === 'settings' ? 'is-active' : '')} onClick={openSettings} aria-label={tr('إعدادات المساعد', 'Assistant settings')} title={tr('إعدادات المساعد', 'Assistant settings')}><Settings2 size={19} /></button>
+          {ownerAccess.required && <>
+            <span className="wa-header-separator" aria-hidden="true" />
+            {signOutError && <span role="alert" className="wa-signout-error">{tr('تعذّر تسجيل الخروج', 'Could not sign out')}</span>}
+            <OwnerSignOutButton onSignOut={handleSignOut} pending={signingOut} />
+          </>}
           {page === 'chats' && <button type="button" className="wa-header-agent-trigger" onClick={toggleInspector} aria-controls="wa-agent-panel" aria-expanded={inspectorVisible} aria-label={inspectorVisible ? tr('طي لوحة المساعد', 'Collapse AI assistant') : tr('فتح لوحة المساعد', 'Expand AI assistant')}>
             <Bot size={18} /><span>{tr('المساعد الذكي', 'AI assistant')}</span>
             {drafts.length > 0 && <span className="wa-count wa-count-light">{drafts.length}</span>}

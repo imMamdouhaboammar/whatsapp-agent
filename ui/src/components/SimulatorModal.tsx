@@ -1,11 +1,9 @@
 import { useEffect, useState } from 'react';
-import { CheckCircle2, Clock3, Play, Sparkles, X } from 'lucide-react';
+import { CheckCircle2, Play, ShieldCheck, Sparkles, X } from 'lucide-react';
 import type { AgentDecision } from '../api/types';
 import { useLocale } from '../locale-context';
 
-interface SimulationResult {
-  decision?: AgentDecision;
-}
+interface SimulationResult { decision?: AgentDecision }
 
 interface SimulatorModalProps {
   isOpen: boolean;
@@ -22,13 +20,31 @@ export function SimulatorModal({ isOpen, onClose, onSimulate }: SimulatorModalPr
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      setResult(null);
+      setError('');
+      setTestText('');
+      setSenderName('');
+      return;
+    }
     const onEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onEscape);
     return () => window.removeEventListener('keydown', onEscape);
   }, [isOpen, onClose]);
 
   if (!isOpen) return null;
+
+  const action = result?.decision?.action;
+  const actionLabel = action === 'reply' ? tr('رد تلقائي', 'Auto reply')
+    : action === 'draft' ? tr('مسودة للمراجعة', 'Draft for review')
+    : action === 'human' ? tr('تسليم للفريق', 'Human handoff')
+    : action === 'ignore' ? tr('بدون رد', 'No response')
+    : tr('قرار المساعد', 'Assistant decision');
+  const actionDetail = action === 'reply' ? tr('المساعد هيقدر يرد على رسالة بالشكل ده', 'The assistant would reply to a message like this')
+    : action === 'draft' ? tr('المساعد هيجهّز مسودة لمراجعتها', 'The assistant would prepare a draft for review')
+    : action === 'human' ? tr('المساعد هيسيب المحادثة للفريق', 'The assistant would hand the conversation to your team')
+    : action === 'ignore' ? tr('المساعد مش هيرد على الرسالة دي', 'The assistant would leave this message unanswered')
+    : tr('شوف كيف يتصرف المساعد مع الرسالة', 'See how the assistant handles the message');
 
   const handleRun = async () => {
     if (!testText.trim() || loading) return;
@@ -38,7 +54,7 @@ export function SimulatorModal({ isOpen, onClose, onSimulate }: SimulatorModalPr
     try {
       setResult(await onSimulate(testText.trim(), senderName.trim() || undefined));
     } catch {
-      setError(tr('تعذّر اختبار الرد. حاول مرة تانية', 'Could not test the response. Try again'));
+      setError(tr('تعذّر اختبار الرد، حاول تاني', 'Could not preview the response. Try again'));
     } finally {
       setLoading(false);
     }
@@ -51,36 +67,38 @@ export function SimulatorModal({ isOpen, onClose, onSimulate }: SimulatorModalPr
           <div className="wa-modal-heading">
             <span className="wa-modal-icon"><Sparkles size={20} /></span>
             <div>
-              <h2 id="sim-title">{tr('اختبار رد المساعد', 'Test assistant response')}</h2>
-              <p>{tr('جرّب رسالة وشوف قرار المساعد', 'Preview how the assistant handles a message')}</p>
+              <h2 id="sim-title">{tr('معاينة رد المساعد', 'Assistant preview')}</h2>
+              <p>{tr('شوف المساعد هيتصرف إزاي مع رسالة عميل', 'See how the assistant would handle a customer message')}</p>
             </div>
           </div>
           <button type="button" className="wa-icon-button" onClick={onClose} aria-label={tr('إغلاق', 'Close')}><X size={20} /></button>
         </header>
         <div className="wa-modal-content wa-sim-content">
+          <p className="wa-sim-privacy"><ShieldCheck size={17} aria-hidden="true" /><span><strong>{tr('معاينة خاصة', 'Private preview')}</strong> {tr('مش بيبعت رسائل ولا بيحفظ محادثات', 'No messages are sent or saved')}</span></p>
           <label className="wa-field">
-            <span>{tr('اسم الشخص التجريبي', 'Test sender name')}</span>
-            <input dir="auto" value={senderName} onChange={(event) => setSenderName(event.target.value)} placeholder={language === 'ar' ? 'عميل تجريبي' : 'Example contact'} />
+            <span>{tr('اسم العميل التجريبي', 'Test customer name')}</span>
+            <input dir="auto" maxLength={120} value={senderName} onChange={(event) => setSenderName(event.target.value)} placeholder={language === 'ar' ? 'عميل تجريبي' : 'Test customer'} />
           </label>
           <label className="wa-field">
-            <span>{tr('الرسالة التجريبية', 'Test message')}</span>
-            <textarea dir="auto" rows={4} value={testText} onChange={(event) => setTestText(event.target.value)} placeholder={tr('مثال: هل نقدر نحدد موعد بكرة؟', 'Example: Can we schedule a call tomorrow?')} />
+            <span>{tr('رسالة العميل', 'Customer message')}</span>
+            <textarea dir="auto" rows={4} maxLength={4000} value={testText} onChange={(event) => setTestText(event.target.value)} placeholder={tr('مثال: الطلب هيوصل إمتى؟', 'Example: When will my order arrive?')} />
           </label>
-          <button type="button" className="wa-primary-button wa-full-button" onClick={() => void handleRun()} disabled={loading || !testText.trim()}><Play size={17} />{loading ? tr('جارٍ اختبار الرد', 'Testing response') : tr('اختبار الرد الآن', 'Run test')}</button>
+          <button type="button" className="wa-primary-button wa-full-button" onClick={() => void handleRun()} disabled={loading || !testText.trim()}>
+            <Play size={17} />{loading ? tr('جارٍ الاختبار', 'Testing') : tr('معاينة الرد', 'Preview response')}
+          </button>
           {error && <p className="wa-inline-error" role="alert">{error}</p>}
           {result && (
             <section className="wa-sim-result" aria-live="polite">
               <div className="wa-sim-result-heading">
-                <span><CheckCircle2 size={18} /> {tr('قرار المساعد', 'AI decision')}</span>
-                <strong dir="ltr">{result.decision?.action || 'N/A'}</strong>
+                <span><CheckCircle2 size={18} /> {tr('نتيجة المعاينة', 'Preview result')}</span>
+                <strong dir="auto">{actionLabel}</strong>
               </div>
+              <p className="wa-sim-outcome-detail">{actionDetail}</p>
               <div className="wa-sim-facts">
-                <p><span>{tr('الثقة', 'Confidence')}</span><b dir="ltr">{Math.round((result.decision?.confidence || 0) * 100)}%</b></p>
-                <p><span>{tr('النية', 'Intent')}</span><b dir="auto">{result.decision?.intent || tr('غير محددة', 'Unknown')}</b></p>
-                <p><span>{tr('سبب القرار', 'Reasoning')}</span><span dir="auto">{result.decision?.reasoning || tr('لا توجد تفاصيل', 'No details')}</span></p>
+                <p><span>{tr('نوع الطلب', 'Intent')}</span><b dir="auto">{result.decision?.intent?.replaceAll('_', ' ') || tr('غير محدد', 'Unknown')}</b></p>
+                {result.decision?.reasoning && <p><span>{tr('سبب القرار', 'Reason')}</span><span dir="auto">{result.decision.reasoning}</span></p>}
               </div>
-              {result.decision?.replyText && <div className="wa-sim-reply"><span>{tr('الرد المقترح', 'Suggested reply')}</span><p dir="auto">{result.decision.replyText}</p></div>}
-              <div className="wa-sim-latency"><Clock3 size={14} /> {tr('تأخير الكتابة المتوقع', 'Expected typing delay')}: <span dir="ltr">{result.decision?.simulatedDelayMs || 0} ms</span></div>
+              {result.decision?.replyText && <div className="wa-sim-reply"><span>{tr('الرد المتوقع', 'Expected reply')}</span><p dir="auto">{result.decision.replyText}</p></div>}
             </section>
           )}
         </div>
@@ -88,4 +106,3 @@ export function SimulatorModal({ isOpen, onClose, onSimulate }: SimulatorModalPr
     </div>
   );
 }
-

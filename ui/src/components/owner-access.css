@@ -1,0 +1,66 @@
+.wa-owner-access-screen {
+  min-height: 100dvh;
+  padding: clamp(18px, 4vw, 48px);
+  display: grid;
+  place-items: center;
+  background: #f5f7f4;
+  color: #172823;
+}
+.wa-owner-access-card {
+  width: min(100%, 875px);
+  min-height: 490px;
+  display: grid;
+  grid-template-columns: minmax(0, .9fr) minmax(0, 1fr);
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid #e2e9e3;
+  border-radius: 20px;
+  box-shadow: 0 18px 56px #173c3512;
+}
+.wa-owner-access-brand {
+  min-width: 0;
+  background: #163d34;
+  color: #f7f9f6;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 35px;
+}
+.wa-owner-brand-logo { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 650; letter-spacing: -.03em; }
+.wa-owner-brand-logo svg { color: #6de0b5; }
+.wa-owner-brand-logo strong { color: #83d9b3; }
+.wa-owner-brand-content { max-width: 335px; padding-block: 60px; }
+.wa-owner-eyebrow { display: inline-flex; align-items: center; gap: 7px; color: #a3e5c4; font-size: 12px; font-weight: 700; }
+.wa-owner-brand-content h1 { font-size: clamp(27px, 3vw, 35px); line-height: 1.35; font-weight: 740; letter-spacing: -.04em; margin: 17px 0 12px; }
+.wa-owner-brand-content p { color: #cadbd1; font-size: 13px; line-height: 1.85; margin: 0; }
+.wa-owner-brand-footer { color: #9bb8a9; font-size: 11px; font-weight: 600; }
+.wa-owner-access-form-section { position: relative; display: grid; align-items: center; min-width: 0; padding: clamp(24px, 4vw, 56px); }
+.wa-owner-language { position: absolute; top: 21px; inset-inline-end: 24px; border: 1px solid #e0e8e2; background: #fff; color: #466057; border-radius: 8px; padding: 7px 12px; font-size: 12px; font-weight: 700; }
+.wa-owner-language:hover { background: #f1f6f2; }
+.wa-owner-form-content { width: 100%; max-width: 340px; margin-inline: auto; }
+.wa-owner-form-icon { width: 46px; height: 46px; display: grid; place-items: center; border-radius: 12px; background: #e9f4ed; color: #0b7456; margin-bottom: 22px; }
+.wa-owner-form-kicker { font-size: 12px; color: #0a775b; font-weight: 800; margin: 0 0 9px; }
+.wa-owner-form-content h2 { font-size: 25px; letter-spacing: -.04em; line-height: 1.3; font-weight: 760; margin: 0; color: #172823; }
+.wa-owner-description { font-size: 13px; line-height: 1.8; color: #66756d; margin: 12px 0 28px; }
+.wa-owner-form-content form { display: flex; flex-direction: column; gap: 11px; }
+.wa-owner-form-content label { color: #354c40; font-size: 12px; font-weight: 750; }
+.wa-owner-form-content input { width: 100%; height: 46px; border: 1px solid #cddcd2; border-radius: 9px; padding: 0 14px; background: #fff; color: #172823; direction: ltr; }
+.wa-owner-form-content input:focus { outline: 3px solid #a2d8bf; outline-offset: 1px; border-color: #18805f; }
+.wa-owner-form-content input[aria-invalid="true"] { border-color: #be5a4c; }
+.wa-owner-submit { min-height: 46px; margin-top: 11px; border: 0; background: #08795a; color: #fff; border-radius: 9px; display: flex; align-items: center; justify-content: center; gap: 9px; font-size: 13px; font-weight: 750; }
+.wa-owner-submit:hover { background: #046749; }
+.wa-owner-submit:disabled { opacity: .48; }
+.wa-owner-auth-error { color: #a53d31; font-size: 12px; line-height: 1.7; margin: 4px 0; }
+.wa-owner-auth-error button { color: #08795a; border: 0; background: none; display: inline-flex; align-items: center; gap: 6px; margin-inline-start: 6px; text-decoration: underline; }
+.wa-owner-loading { display: flex; align-items: center; gap: 12px; color: #557064; font-size: 13px; font-weight: 650; }
+[dir="rtl"] .wa-owner-submit svg { transform: rotate(180deg); }
+@media (max-width: 730px) {
+  .wa-owner-access-card { grid-template-columns: minmax(0, 1fr); min-height: 0; }
+  .wa-owner-access-brand { padding: 22px 25px; gap: 8px; }
+  .wa-owner-brand-content { display: none; }
+  .wa-owner-brand-footer { display: none; }
+  .wa-owner-access-form-section { min-height: 380px; padding: 64px 25px 35px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wa-owner-access-screen *, .wa-owner-access-screen *::before { transition: none !important; }
+}
