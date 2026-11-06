@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { BookOpenText, Bot, CalendarCheck, Check, CheckCircle2, ChevronLeft, Edit3, Lightbulb, Mic, Play, Plus, Settings2, Sparkles, X } from 'lucide-react';
+import { BookOpenText, Bot, CalendarCheck, Check, CheckCircle2, ChevronLeft, Edit3, Lightbulb, Mic, Plus, Sparkles, X } from 'lucide-react';
 import type { AgentDecision, AgentDraft, AgentMode, ContactDossier, ModeratorPersona } from '../api/types';
 import { api } from '../api/client';
 import { useLocale } from '../locale-context';
@@ -14,8 +14,6 @@ interface ModeratorDrawerProps {
   onSelectChat: (chatId: string) => void;
   onApproveDraft: (draftId: string, editedText?: string, asVoice?: boolean) => Promise<void>;
   onRejectDraft: (draftId: string) => Promise<void>;
-  onOpenSettings: () => void;
-  onOpenSimulator: () => void;
 }
 
 function confidenceLabel(value: number): string {
@@ -24,7 +22,7 @@ function confidenceLabel(value: number): string {
 
 export function ModeratorDrawer({
   view, drafts, latestThought, persona, selectedChatId, selectedChatMode,
-  onSelectChat, onApproveDraft, onRejectDraft, onOpenSettings, onOpenSimulator
+  onSelectChat, onApproveDraft, onRejectDraft
 }: ModeratorDrawerProps) {
   const { tr } = useLocale();
   const [dossier, setDossier] = useState<ContactDossier | null>(null);
@@ -94,10 +92,6 @@ export function ModeratorDrawer({
             <h2>{view === 'drafts' ? tr('المسودات المعلقة', 'Pending drafts') : view === 'memory' ? tr('ذاكرة المحادثة', 'Chat memory') : tr('المساعد الذكي', 'AI assistant')}</h2>
             <p><span className="wa-live-dot" /> {selectedChatMode === 'autopilot' ? tr('Auto-Pilot مفعّل', 'Auto-Pilot active') : selectedChatMode === 'copilot' ? tr('Co-Pilot مفعّل', 'Co-Pilot active') : selectedChatMode === 'human' ? tr('الوضع اليدوي', 'Human mode') : tr('جاهز للمتابعة', 'Ready')}</p>
           </div>
-        </div>
-        <div className="wa-agent-header-actions">
-          <button type="button" className="wa-icon-button" onClick={onOpenSimulator} aria-label={tr('اختبار رد المساعد', 'Test assistant response')} title={tr('اختبار رد المساعد', 'Test assistant response')}><Play size={18} /></button>
-          <button type="button" className="wa-icon-button" onClick={onOpenSettings} aria-label={tr('تخصيص المساعد', 'Customize assistant')} title={tr('تخصيص المساعد', 'Customize assistant')}><Settings2 size={18} /></button>
         </div>
       </header>
 

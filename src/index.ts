@@ -114,8 +114,8 @@ export async function createFableWhatsAppAgent(options: {
                   status: 'sent'
                 };
 
-                memoryStore.addMessage(outboundMsg);
-                sse.broadcast('new_message', outboundMsg);
+                const persistedMessage = memoryStore.addMessage(outboundMsg);
+                sse.broadcast('new_message', persistedMessage);
                 sse.broadcast('chat_updated', { chatId: fusedMsg.chatId });
                 return;
               } catch (err: any) {
@@ -150,8 +150,8 @@ export async function createFableWhatsAppAgent(options: {
                 status: 'sent'
               };
 
-              memoryStore.addMessage(outboundMsg);
-              sse.broadcast('new_message', outboundMsg);
+              const persistedMessage = memoryStore.addMessage(outboundMsg);
+              sse.broadcast('new_message', persistedMessage);
               sse.broadcast('chat_updated', { chatId: fusedMsg.chatId });
             }
           });
@@ -169,6 +169,10 @@ export async function createFableWhatsAppAgent(options: {
       console.log(`📡 [WhatsApp State] ${state.state}`);
       sse.broadcast('state_change', state);
     },
+    onMessageStatus: ({ chatId, messageId, status }) => {
+      const persistedStatus = memoryStore.updateMessageStatus(chatId, messageId, status);
+      if (persistedStatus) sse.broadcast('message_status', { chatId, messageId, status: persistedStatus });
+    },
     onReaction: ({ chatId, messageId, emoji }) => {
       memoryStore.addReaction(chatId, messageId, emoji);
       sse.broadcast('message_reaction', { chatId, messageId, emoji });
@@ -179,8 +183,8 @@ export async function createFableWhatsAppAgent(options: {
       if (msg.text === '[رسالة]') return;
 
       // 1. Record incoming message immediately to SQLite and broadcast to UI
-      memoryStore.addMessage(msg);
-      sse.broadcast('new_message', msg);
+      const persistedMessage = memoryStore.addMessage(msg);
+      sse.broadcast('new_message', persistedMessage);
       sse.broadcast('chat_updated', { chatId: msg.chatId });
 
       // If message is from me, do not run agent reply loop

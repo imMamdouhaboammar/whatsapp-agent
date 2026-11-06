@@ -108,10 +108,10 @@ export function createApiServer(deps: {
         status: 'sent'
       };
 
-      deps.memoryStore.addMessage(message);
-      deps.sse.broadcast('new_message', message);
+      const persistedMessage = deps.memoryStore.addMessage(message);
+      deps.sse.broadcast('new_message', persistedMessage);
 
-      return c.json({ success: true, message });
+      return c.json({ success: true, message: persistedMessage });
     } catch (err: any) {
       return c.json({ error: err.message }, 500);
     }
@@ -197,11 +197,11 @@ export function createApiServer(deps: {
         status: 'sent'
       };
 
-      deps.memoryStore.addMessage(message);
-      deps.sse.broadcast('new_message', message);
+      const persistedMessage = deps.memoryStore.addMessage(message);
+      deps.sse.broadcast('new_message', persistedMessage);
       deps.sse.broadcast('draft_updated', { draftId, status: 'approved' });
 
-      return c.json({ success: true, message });
+      return c.json({ success: true, message: persistedMessage });
     } catch (err: any) {
       return c.json({ error: err.message }, 500);
     }

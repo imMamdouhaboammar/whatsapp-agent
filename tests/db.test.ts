@@ -43,6 +43,39 @@ describe('SqliteStore', () => {
     store.close();
   });
 
+  it('advances outbound receipts without downgrading persisted read status', () => {
+    const store = new SqliteStore({ dbPath: ':memory:' });
+    const msg: ChatMessage = {
+      id: 'out-1', chatId: 'recipient@s.whatsapp.net', sender: 'me', text: 'hello',
+      timestamp: 1700000010000, isFromMe: true, type: 'text', status: 'sent'
+    };
+    store.saveMessage(msg);
+    expect(store.updateMessageStatus(msg.chatId, msg.id, 'delivered')).toBe('delivered');
+    expect(store.updateMessageStatus(msg.chatId, msg.id, 'read')).toBe('read');
+    expect(store.updateMessageStatus(msg.chatId, msg.id, 'sent')).toBeUndefined();
+    store.saveMessage({ ...msg, status: 'sent' });
+    expect(store.getMessage(msg.chatId, msg.id)?.status).toBe('read');
+    store.close();
+  });
+
+  it('buffers receipts arriving before an outgoing message is saved', () => {
+    const store = new SqliteStore({ dbPath: ':memory:' });
+    const chatId = 'recipient@s.whatsapp.net';
+    expect(store.updateMessageStatus(chatId, 'out-early', 'read')).toBeUndefined();
+    store.saveMessage({
+      id: 'out-early', chatId, sender: 'me', text: 'early read',
+      timestamp: 1700000010000, isFromMe: true, type: 'text', status: 'sent'
+    });
+    expect(store.getMessage(chatId, 'out-early')?.status).toBe('read');
+    store.saveMessage({
+      id: 'in-1', chatId, sender: chatId, text: 'incoming',
+      timestamp: 1700000020000, isFromMe: false, type: 'text', status: 'delivered'
+    });
+    expect(store.updateMessageStatus(chatId, 'in-1', 'read')).toBeUndefined();
+    expect(store.getMessage(chatId, 'in-1')?.status).toBe('delivered');
+    store.close();
+  });
+
   it('stores and updates contact dossiers with extracted facts and commitments', () => {
     const store = new SqliteStore({ dbPath: ':memory:' });
 
