@@ -8,6 +8,7 @@ import type { MemoryStore } from '../domain/memory-store';
 import type { ChatMessage } from '../domain/types';
 import type { WhatsAppSocketClient } from '../transport/whatsapp-socket';
 import type { SSEBroadcaster } from './sse';
+import { FableFunnelEngine, FunnelRegistry } from '../funnel';
 
 const allowedOrigins = new Set(['http://localhost:3000','http://127.0.0.1:3000','http://localhost:5173','http://127.0.0.1:5173',...((process.env.AGENT_ALLOWED_ORIGINS??'').split(',').map(v=>v.trim()).filter(Boolean))]);
 const trustedOrigin=(origin:string)=>allowedOrigins.has(origin);
@@ -19,8 +20,31 @@ export function createApiServer(deps: {
   sse: SSEBroadcaster;
   audioTranscriber?: AudioTranscriber;
   voiceSynthesizer?: VoiceSynthesizer;
+  funnelEngine?: FableFunnelEngine;
 }): Hono {
   const app = new Hono();
+  const funnelEngine = deps.funnelEngine ?? new FableFunnelEngine({
+    registry: new FunnelRegistry({
+      initialMethods: [
+        {
+          method: 'INVENTORY_DISPATCH',
+          description: 'Scatter-gather stock lookup across warehouse systems',
+          mode: 'ALL_SETTLED',
+          timeoutMs: 2500,
+          targets: [
+            { id: 'internal-stock', name: 'Internal DB Inventory', url: 'http://127.0.0.1:3000/api/brand/stock', enabled: true }
+          ]
+        },
+        {
+          method: 'WEBHOOK_FANOUT',
+          description: 'Parallel webhook broadcast to CRM and analytics partners',
+          mode: 'ALL_SETTLED',
+          timeoutMs: 3000,
+          targets: []
+        }
+      ]
+    })
+  });
 
   // Only configured origins may issue browser mutations or read cross-origin API responses.
   // CLI/service callers without a browser Origin remain supported; bind the server to loopback by default.
@@ -397,6 +421,66 @@ export function createApiServer(deps: {
       // Sleep until stream closes
       await stream.sleep(86400000);
     });
+  });
+
+  // Funnel Engine Routes (Scatter-Gather & Hedged Dispatches)
+  app.get('/api/funnel/methods', (c) => {
+    return c.json({ methods: funnelEngine.registry.listMethods() });
+  });
+
+  app.post('/api/funnel/methods', async (c) => {
+    const authHeader = c.req.header('authorization') || c.req.header('x-api-key');
+    const token = authHeader?.replace(/^Bearer\s+/i, '').trim();
+    if (!funnelEngine.registry.validateKey(token)) {
+      return c.json({ error: 'Unauthorized: Invalid funnel API key' }, 401);
+    }
+    const body = await c.req.json().catch(() => null);
+    if (!body || !body.method) {
+      return c.json({ error: 'Invalid method configuration' }, 400);
+    }
+    funnelEngine.registry.registerMethod(body);
+    return c.json({ status: 'registered', method: body.method });
+  });
+
+  app.post('/api/funnel/dispatch', async (c) => {
+    const authHeader = c.req.header('authorization') || c.req.header('x-api-key');
+    const token = authHeader?.replace(/^Bearer\s+/i, '').trim();
+    if (!funnelEngine.registry.validateKey(token)) {
+      return c.json({ error: 'Unauthorized: Invalid funnel API key' }, 401);
+    }
+    const body = await c.req.json().catch(() => ({}));
+    if (!body.method) {
+      return c.json({ error: 'Missing method parameter' }, 400);
+    }
+    const receipt = await funnelEngine.dispatch({
+      method: body.method,
+      payload: body.payload,
+      queryParams: body.queryParams,
+      headers: body.headers,
+      timeoutMs: body.timeoutMs
+    });
+    return c.json(receipt);
+  });
+
+  app.get('/api/funnel/stats', (c) => {
+    return c.json({
+      circuitBreakers: funnelEngine.getCircuitBreakerStats(),
+      activeMethodsCount: funnelEngine.registry.listMethods().length
+    });
+  });
+
+  app.post('/api/funnel/circuit-breaker/reset', async (c) => {
+    const authHeader = c.req.header('authorization') || c.req.header('x-api-key');
+    const token = authHeader?.replace(/^Bearer\s+/i, '').trim();
+    if (!funnelEngine.registry.validateKey(token)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+    const body = await c.req.json().catch(() => ({}));
+    if (!body.targetId) {
+      return c.json({ error: 'Missing targetId' }, 400);
+    }
+    const reset = funnelEngine.resetCircuitBreaker(body.targetId);
+    return c.json({ success: reset, targetId: body.targetId });
   });
 
   return app;

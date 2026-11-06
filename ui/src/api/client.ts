@@ -124,5 +124,33 @@ export const api = {
       body: JSON.stringify({ text, senderName })
     });
     return res.json();
+  },
+
+  async getFunnelMethods(): Promise<{ methods: any[] }> {
+    const res = await fetch(`${BASE_URL}/funnel/methods`);
+    return res.json();
+  },
+
+  async getFunnelStats(): Promise<{ circuitBreakers: any[]; activeMethodsCount: number }> {
+    const res = await fetch(`${BASE_URL}/funnel/stats`);
+    return res.json();
+  },
+
+  async dispatchFunnel(data: { method: string; payload?: any; queryParams?: any; timeoutMs?: number }): Promise<any> {
+    const res = await fetch(`${BASE_URL}/funnel/dispatch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    return res.json();
+  },
+
+  async resetCircuitBreaker(targetId: string): Promise<{ success: boolean; targetId: string }> {
+    const res = await fetch(`${BASE_URL}/funnel/circuit-breaker/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetId })
+    });
+    return res.json();
   }
 };
