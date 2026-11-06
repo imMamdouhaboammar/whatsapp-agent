@@ -32,7 +32,7 @@ export function App() {
   // Modals state
   const [isPairingOpen, setIsPairingOpen] = useState(false);
   const [page, setPage] = useState<'chats' | 'settings' | 'brain'>(() =>
-    typeof window !== 'undefined' && window.location.pathname === '/settings/assistant' ? 'settings' :
+    typeof window !== 'undefined' && window.location.pathname.startsWith('/settings/') ? 'settings' :
     typeof window !== 'undefined' && window.location.pathname === '/brand-brain' ? 'brain' : 'chats'
   );
   const [isSimulatorOpen, setIsSimulatorOpen] = useState(false);
@@ -44,7 +44,7 @@ export function App() {
   );
 
   useEffect(() => {
-    const onPopState = () => setPage(window.location.pathname === '/settings/assistant' ? 'settings' : window.location.pathname === '/brand-brain' ? 'brain' : 'chats');
+    const onPopState = () => setPage(window.location.pathname.startsWith('/settings/') ? 'settings' : window.location.pathname === '/brand-brain' ? 'brain' : 'chats');
     window.addEventListener('popstate', onPopState);
     const query = window.matchMedia('(max-width: 1160px)');
     const onViewportChange = (event: MediaQueryListEvent) => {
@@ -319,11 +319,8 @@ export function App() {
     else { window.history.replaceState(null, '', '/'); setPage('chats'); }
   };
   const closeSettings = () => {
-    if (window.history.state?.waSettings) window.history.back();
-    else {
-      window.history.replaceState(null, '', '/');
-      setPage('chats');
-    }
+    window.history.replaceState(null, '', '/');
+    setPage('chats');
   };
 
   return (
@@ -353,7 +350,7 @@ export function App() {
         </div>
       </header>
       {page === 'settings' ? (
-        <PersonaSettingsPage initialPersona={persona} error={personaLoadFailed} onRetry={() => { setPersonaLoadFailed(false); void loadInitialData(); }} onClose={closeSettings} onSave={handleSavePersona} />
+        <PersonaSettingsPage initialPersona={persona} connectionState={status?.state} error={personaLoadFailed} onRetry={() => { setPersonaLoadFailed(false); void loadInitialData(); }} onClose={closeSettings} onOpenKnowledge={openBrain} onOpenSimulator={() => setIsSimulatorOpen(true)} onSave={handleSavePersona} />
       ) : page === 'brain' ? (
         <BrandBrainPage onClose={closeBrain} />
       ) : (
