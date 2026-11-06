@@ -36,8 +36,13 @@ export class MemoryStore {
     });
   }
 
-  addMessage(msg: ChatMessage) {
+  addMessage(msg: ChatMessage): ChatMessage {
     this.sqlite.saveMessage(msg);
+    return this.sqlite.getMessage(msg.chatId, msg.id) ?? msg;
+  }
+
+  updateMessageStatus(chatId: string, messageId: string, status: NonNullable<ChatMessage['status']>): ChatMessage['status'] | undefined {
+    return this.sqlite.updateMessageStatus(chatId, messageId, status);
   }
 
   addReaction(chatId: string, messageId: string, emoji: string) {

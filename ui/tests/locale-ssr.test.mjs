@@ -21,6 +21,7 @@ const { ChatList } = await vite.ssrLoadModule('/src/components/ChatList.tsx');
 const { ChatThread } = await vite.ssrLoadModule('/src/components/ChatThread.tsx');
 const { ModeratorDrawer } = await vite.ssrLoadModule('/src/components/ModeratorDrawer.tsx');
 const { App } = await vite.ssrLoadModule('/src/App.tsx');
+const { PersonaSettingsPage } = await vite.ssrLoadModule('/src/components/PersonaSettingsPage.tsx');
 
 const chat = {
   id: '201000000000@s.whatsapp.net',
@@ -120,7 +121,6 @@ test('Assistant approval is available in English without translating user conten
     onSelectChat: () => {},
     onApproveDraft: noop,
     onRejectDraft: noop,
-    onOpenSettings: () => {},
     onOpenSimulator: () => {}
   }));
   assert.match(html, /AI assistant/);
@@ -128,4 +128,46 @@ test('Assistant approval is available in English without translating user conten
   assert.match(html, /Approve &amp; send/);
   assert.match(html, /94%/);
   assert.match(html, /أهلًا يا نور/);
+});
+
+test('Assistant settings is a standalone bilingual page, not a modal', () => {
+  const persona = {
+    name: 'Mamdouh assistant', language: 'ar-EG', tone: 'Natural', systemPrompt: 'Help with messages',
+    rules: [], model: 'gemini-2.5-flash', temperature: 0.5, minConfidence: 0.75,
+    simulateTypingDelay: true, minTypingDelayMs: 200, maxTypingDelayMs: 600
+  };
+  const en = render('en', React.createElement(PersonaSettingsPage, {
+    initialPersona: persona, onClose: () => {}, onSave: noop
+  }));
+  const ar = render('ar', React.createElement(PersonaSettingsPage, {
+    initialPersona: persona, onClose: () => {}, onSave: noop
+  }));
+  assert.match(en, /class="wa-settings-page"/);
+  assert.match(en, /AI assistant settings/);
+  assert.match(en, /Save settings/);
+  assert.match(ar, /إعدادات المساعد الذكي/);
+  assert.doesNotMatch(en, /role="dialog"/);
+});
+
+test('Only one assistant settings entry and collapsible inspector exist in the workspace', () => {
+  const html = render('en', React.createElement(App));
+  assert.equal((html.match(/aria-label="Assistant settings"/g) || []).length, 1);
+  assert.match(html, /aria-label="Collapse AI assistant"/);
+  assert.match(html, /aria-controls="wa-agent-panel"/);
+});
+
+test('WhatsApp receipt ticks only reflect explicit outbound statuses', () => {
+  const statuses = ['pending', 'sent', 'delivered', 'read', undefined];
+  const messages = statuses.map((status, index) => ({
+    id: 'receipt-' + index, chatId: chat.id, text: 'Receipt ' + index,
+    timestamp: Date.now() + index, isFromMe: true, sender: 'me', type: 'text', status
+  }));
+  const html = render('en', React.createElement(ChatThread, {
+    chat, messages, onSendMessage: noop, onSendReaction: noop,
+    onChangeMode: noop, onBack: () => {}, onOpenInspector: () => {}
+  }));
+  assert.equal((html.match(/aria-label="Pending"/g) || []).length, 1);
+  assert.equal((html.match(/aria-label="Sent to WhatsApp"/g) || []).length, 1);
+  assert.equal((html.match(/aria-label="Delivered"/g) || []).length, 1);
+  assert.equal((html.match(/aria-label="Read"/g) || []).length, 1);
 });

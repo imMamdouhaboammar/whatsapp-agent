@@ -9,6 +9,9 @@ React 19, TypeScript, Vite 8 and Tailwind 4 frontend for WhatsApp Agent. The wor
 - The selected language persists in `localStorage`, with matching document `lang` and `dir` attributes.
 - Content from WhatsApp contacts, AI draft replies and user messages is preserved as received, with automatic direction for mixed-language text.
 - Responsive layouts support desktop, tablet and phone widths. The assistant becomes a dismissible panel on smaller screens.
+- The assistant inspector collapses on desktop and opens as a drawer on smaller screens.
+- Assistant settings live on the standalone `/settings/assistant` route.
+- Outgoing receipt status comes from Baileys events, is stored in SQLite and appears as pending, sent, delivered or read indicators.
 
 ## Run
 

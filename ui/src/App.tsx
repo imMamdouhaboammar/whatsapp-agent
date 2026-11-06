@@ -6,7 +6,7 @@ import { ChatList } from './components/ChatList';
 import { ChatThread } from './components/ChatThread';
 import { ModeratorDrawer } from './components/ModeratorDrawer';
 import { PairingModal } from './components/PairingModal';
-import { PersonaSettingsModal } from './components/PersonaSettingsModal';
+import { PersonaSettingsPage } from './components/PersonaSettingsPage';
 import { SimulatorModal } from './components/SimulatorModal';
 import { useLocale } from './locale-context';
 
@@ -19,6 +19,7 @@ export function App() {
   const [drafts, setDrafts] = useState<AgentDraft[]>([]);
   const [persona, setPersona] = useState<ModeratorPersona | undefined>();
   const [policy, setPolicy] = useState<PolicyConfig | undefined>();
+  const [personaLoadFailed, setPersonaLoadFailed] = useState(false);
   const [latestThought, setLatestThought] = useState<{ chatId: string; messageId: string; decision: AgentDecision } | undefined>();
 
   // Ref to always have the latest selectedChatId in SSE and polling callbacks
@@ -29,10 +30,31 @@ export function App() {
 
   // Modals state
   const [isPairingOpen, setIsPairingOpen] = useState(false);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [page, setPage] = useState<'chats' | 'settings'>(() =>
+    typeof window !== 'undefined' && window.location.pathname === '/settings/assistant' ? 'settings' : 'chats'
+  );
   const [isSimulatorOpen, setIsSimulatorOpen] = useState(false);
   const [inspectorView, setInspectorView] = useState<'assistant' | 'drafts' | 'memory'>('assistant');
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [inspectorExpanded, setInspectorExpanded] = useState(true);
+  const [compactScreen, setCompactScreen] = useState(() =>
+    typeof window !== 'undefined' && window.matchMedia('(max-width: 1160px)').matches
+  );
+
+  useEffect(() => {
+    const onPopState = () => setPage(window.location.pathname === '/settings/assistant' ? 'settings' : 'chats');
+    window.addEventListener('popstate', onPopState);
+    const query = window.matchMedia('(max-width: 1160px)');
+    const onViewportChange = (event: MediaQueryListEvent) => {
+      setCompactScreen(event.matches);
+      setInspectorOpen(false);
+    };
+    query.addEventListener('change', onViewportChange);
+    return () => {
+      window.removeEventListener('popstate', onPopState);
+      query.removeEventListener('change', onViewportChange);
+    };
+  }, []);
   const [mobileView, setMobileView] = useState<'list' | 'chat'>('list');
 
   // Load initial data
@@ -57,9 +79,13 @@ export function App() {
       if (personaRes) {
         setPersona(personaRes.persona);
         setPolicy(personaRes.policy);
+        setPersonaLoadFailed(false);
+      } else {
+        setPersonaLoadFailed(true);
       }
     } catch (err) {
       console.error('Error loading data:', err);
+      setPersonaLoadFailed(true);
     }
   }, []);
 
@@ -140,6 +166,18 @@ export function App() {
       }).catch(() => {});
     });
 
+    eventSource.addEventListener('message_status', (e: MessageEvent) => {
+      const { chatId, messageId, status } = JSON.parse(e.data) as {
+        chatId: string;
+        messageId: string;
+        status: ChatMessage['status'];
+      };
+      if (selectedChatIdRef.current !== chatId) return;
+      setMessages((prev) => prev.map((message) =>
+        message.id === messageId && message.isFromMe ? { ...message, status } : message
+      ));
+    });
+
     eventSource.addEventListener('agent_thought', (e: MessageEvent) => {
       const thoughtData = JSON.parse(e.data);
       setLatestThought(thoughtData);
@@ -191,7 +229,7 @@ export function App() {
     if (!selectedChatId) return;
     const res = await api.sendMessage(selectedChatId, text, replyToMessageId);
     if (res.success && res.message) {
-      setMessages((prev) => [...prev, res.message]);
+      setMessages((prev) => prev.some((message) => message.id === res.message.id) ? prev : [...prev, res.message]);
     }
   };
 
@@ -243,11 +281,37 @@ export function App() {
     setSelectedChatId(chatId);
     setMobileView('chat');
     setInspectorView('assistant');
+    setInspectorOpen(false);
   };
 
   const openInspector = (view: 'assistant' | 'drafts' | 'memory') => {
     setInspectorView(view);
-    setInspectorOpen(true);
+    setInspectorExpanded(true);
+    setInspectorOpen(compactScreen);
+  };
+
+  const inspectorVisible = compactScreen ? inspectorOpen : inspectorExpanded;
+  const toggleInspector = () => {
+    if (compactScreen) setInspectorOpen((open) => !open);
+    else setInspectorExpanded((open) => !open);
+  };
+  const closeInspector = () => {
+    if (compactScreen) setInspectorOpen(false);
+    else setInspectorExpanded(false);
+  };
+
+  const openSettings = () => {
+    if (page === 'settings') return;
+    window.history.pushState({ waSettings: true }, '', '/settings/assistant');
+    setPage('settings');
+    setInspectorOpen(false);
+  };
+  const closeSettings = () => {
+    if (window.history.state?.waSettings) window.history.back();
+    else {
+      window.history.replaceState(null, '', '/');
+      setPage('chats');
+    }
   };
 
   return (
@@ -267,15 +331,18 @@ export function App() {
             <span>{status?.state === 'connected' ? tr('متصل', 'Connected') : status?.state === 'connecting' ? tr('جارٍ الاتصال', 'Connecting') : tr('ربط واتساب', 'Link WhatsApp')}</span>
           </button>
           <span className="wa-header-separator" aria-hidden="true" />
-          <button type="button" className="wa-icon-button" onClick={() => setIsSimulatorOpen(true)} aria-label={tr('اختبار رد المساعد', 'Test the assistant')} title={tr('اختبار رد المساعد', 'Test the assistant')}><Play size={19} /></button>
-          <button type="button" className="wa-icon-button" onClick={() => setIsSettingsOpen(true)} aria-label={tr('إعدادات المساعد', 'Assistant settings')} title={tr('إعدادات المساعد', 'Assistant settings')}><Settings2 size={20} /></button>
-          <button type="button" className="wa-header-agent-trigger" onClick={() => openInspector('assistant')}>
+          <button type="button" className="wa-icon-button wa-simulator-trigger" onClick={() => setIsSimulatorOpen(true)} aria-label={tr('اختبار رد المساعد', 'Test the assistant')} title={tr('اختبار رد المساعد', 'Test the assistant')}><Play size={19} /></button>
+          <button type="button" className={'wa-icon-button ' + (page === 'settings' ? 'is-active' : '')} onClick={openSettings} aria-label={tr('إعدادات المساعد', 'Assistant settings')} title={tr('إعدادات المساعد', 'Assistant settings')}><Settings2 size={19} /></button>
+          {page === 'chats' && <button type="button" className="wa-header-agent-trigger" onClick={toggleInspector} aria-controls="wa-agent-panel" aria-expanded={inspectorVisible} aria-label={inspectorVisible ? tr('طي لوحة المساعد', 'Collapse AI assistant') : tr('فتح لوحة المساعد', 'Expand AI assistant')}>
             <Bot size={18} /><span>{tr('المساعد الذكي', 'AI assistant')}</span>
             {drafts.length > 0 && <span className="wa-count wa-count-light">{drafts.length}</span>}
-          </button>
+          </button>}
         </div>
       </header>
-      <div className={'wa-workspace ' + (mobileView === 'list' ? 'is-list-view' : 'is-chat-view')}>
+      {page === 'settings' ? (
+        <PersonaSettingsPage initialPersona={persona} error={personaLoadFailed} onRetry={() => { setPersonaLoadFailed(false); void loadInitialData(); }} onClose={closeSettings} onSave={handleSavePersona} />
+      ) : (
+      <div className={'wa-workspace ' + (mobileView === 'list' ? 'is-list-view' : 'is-chat-view') + (!inspectorExpanded ? ' is-inspector-collapsed' : '')}>
         <nav className="wa-nav" aria-label={tr('القائمة الرئيسية', 'Main navigation')}>
           <div className="wa-nav-main">
             <button type="button" className={'wa-nav-button ' + (inspectorView === 'assistant' ? 'is-active' : '')} aria-label={tr('الدردشات', 'Chats')} title={tr('الدردشات', 'Chats')} onClick={() => { setInspectorView('assistant'); setInspectorOpen(false); setMobileView('list'); }}>
@@ -287,9 +354,6 @@ export function App() {
             <button type="button" className={'wa-nav-button ' + (inspectorView === 'memory' ? 'is-active' : '')} aria-label={tr('ذاكرة جهة الاتصال', 'Contact memory')} title={tr('ذاكرة جهة الاتصال', 'Contact memory')} onClick={() => openInspector('memory')}>
               <ContactRound size={23} /><span>{tr('الذاكرة', 'Memory')}</span>
             </button>
-            <button type="button" className="wa-nav-button" aria-label={tr('إعدادات المساعد', 'Assistant settings')} title={tr('إعدادات المساعد', 'Assistant settings')} onClick={() => setIsSettingsOpen(true)}>
-              <Settings2 size={23} /><span>{tr('الإعدادات', 'Settings')}</span>
-            </button>
           </div>
           <button type="button" className="wa-nav-device" onClick={() => setIsPairingOpen(true)} aria-label={tr('إدارة الجهاز المرتبط', 'Linked device')} title={tr('إدارة الجهاز المرتبط', 'Linked device')}>
             <Smartphone size={21} /><span className={'wa-presence-dot ' + (status?.state === 'connected' ? 'is-online' : '')} />
@@ -297,14 +361,14 @@ export function App() {
         </nav>
         <ChatList chats={chats} selectedChatId={selectedChatId} pendingDraftChatIds={pendingDraftChatIds} onSelectChat={selectChat} />
         <ChatThread key={selectedChatId || 'empty'} chat={selectedChat} messages={messages} onSendMessage={handleSendMessage} onSendReaction={handleSendReaction} onChangeMode={handleChangeMode} onBack={() => setMobileView('list')} onOpenInspector={() => openInspector('assistant')} />
-        <aside className={'wa-agent-shell ' + (inspectorOpen ? 'is-open' : '')} aria-label={tr('لوحة المساعد الذكي', 'AI assistant panel')}>
-          <button type="button" className="wa-inspector-close wa-icon-button" onClick={() => setInspectorOpen(false)} aria-label={tr('إغلاق لوحة المساعد', 'Close assistant panel')}><X size={20} /></button>
-          <ModeratorDrawer key={(selectedChatId || 'none') + inspectorView} view={inspectorView} drafts={drafts} latestThought={latestThought} persona={persona} selectedChatId={selectedChatId} selectedChatMode={selectedChat?.agentMode} onSelectChat={selectChat} onApproveDraft={handleApproveDraft} onRejectDraft={handleRejectDraft} onOpenSettings={() => setIsSettingsOpen(true)} onOpenSimulator={() => setIsSimulatorOpen(true)} />
+        <aside id="wa-agent-panel" className={'wa-agent-shell ' + (inspectorOpen ? 'is-open' : '')} aria-label={tr('لوحة المساعد الذكي', 'AI assistant panel')} aria-hidden={!inspectorVisible} inert={!inspectorVisible}>
+          <button type="button" className="wa-inspector-close wa-icon-button" onClick={closeInspector} aria-label={tr('إغلاق لوحة المساعد', 'Close assistant panel')}><X size={20} /></button>
+          <ModeratorDrawer key={(selectedChatId || 'none') + inspectorView} view={inspectorView} drafts={drafts} latestThought={latestThought} persona={persona} selectedChatId={selectedChatId} selectedChatMode={selectedChat?.agentMode} onSelectChat={selectChat} onApproveDraft={handleApproveDraft} onRejectDraft={handleRejectDraft} />
         </aside>
         {inspectorOpen && <button type="button" className="wa-scrim" onClick={() => setInspectorOpen(false)} aria-label={tr('إغلاق لوحة المساعد', 'Close assistant panel')} />}
       </div>
+      )}
       <PairingModal isOpen={isPairingOpen} status={status} onClose={() => setIsPairingOpen(false)} onConnect={handleConnect} onDisconnect={handleDisconnect} />
-      <PersonaSettingsModal isOpen={isSettingsOpen} initialPersona={persona} initialPolicy={policy} onClose={() => setIsSettingsOpen(false)} onSave={handleSavePersona} />
       <SimulatorModal isOpen={isSimulatorOpen} onClose={() => setIsSimulatorOpen(false)} onSimulate={handleSimulate} />
     </div>
   );

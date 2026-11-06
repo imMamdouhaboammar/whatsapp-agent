@@ -1,25 +1,41 @@
-import { useEffect, useState } from 'react';
-import { Save, Settings2, X } from 'lucide-react';
+import { useState } from 'react';
+import { ArrowRight, Save, Settings2 } from 'lucide-react';
 import type { ModeratorPersona, PolicyConfig } from '../api/types';
 import { useLocale } from '../locale-context';
 
-interface PersonaSettingsModalProps {
-  isOpen: boolean;
+interface PersonaSettingsPageProps {
   onClose: () => void;
   initialPersona?: ModeratorPersona;
-  initialPolicy?: PolicyConfig;
+  error?: boolean;
+  onRetry?: () => void;
   onSave: (persona: Partial<ModeratorPersona>, policy?: Partial<PolicyConfig>) => Promise<void>;
 }
 
-export function PersonaSettingsModal(props: PersonaSettingsModalProps) {
-  if (!props.isOpen || !props.initialPersona) return null;
+export function PersonaSettingsPage(props: PersonaSettingsPageProps) {
+  const { tr } = useLocale();
+  if (!props.initialPersona) {
+    return (
+      <main className="wa-settings-page">
+        <div className="wa-settings-page-inner">
+          <header className="wa-settings-page-header">
+            <button type="button" className="wa-settings-back" onClick={props.onClose}><ArrowRight size={18} />{tr('المحادثات', 'Chats')}</button>
+            <h1>{tr('إعدادات المساعد الذكي', 'AI assistant settings')}</h1>
+          </header>
+          <div className="wa-settings-loading" role={props.error ? 'alert' : 'status'}>
+            <p>{props.error ? tr('تعذّر تحميل الإعدادات', 'Could not load settings') : tr('جارٍ تحميل الإعدادات', 'Loading settings')}</p>
+            {props.error && <button type="button" className="wa-secondary-button" onClick={props.onRetry}>{tr('إعادة المحاولة', 'Try again')}</button>}
+          </div>
+        </div>
+      </main>
+    );
+  }
   return <PersonaEditor initialPersona={props.initialPersona} onClose={props.onClose} onSave={props.onSave} />;
 }
 
 function PersonaEditor({ onClose, initialPersona, onSave }: {
   onClose: () => void;
   initialPersona: ModeratorPersona;
-  onSave: PersonaSettingsModalProps['onSave'];
+  onSave: PersonaSettingsPageProps['onSave'];
 }) {
   const { tr } = useLocale();
   const [persona, setPersona] = useState<ModeratorPersona>(() => ({
@@ -28,12 +44,6 @@ function PersonaEditor({ onClose, initialPersona, onSave }: {
   }));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-
-  useEffect(() => {
-    const onEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onEscape);
-    return () => window.removeEventListener('keydown', onEscape);
-  }, [onClose]);
 
   const handleSave = async () => {
     if (saving) return;
@@ -52,19 +62,22 @@ function PersonaEditor({ onClose, initialPersona, onSave }: {
   const applyPreset = (tone: string, prompt: string) => setPersona({ ...persona, tone, systemPrompt: prompt });
 
   return (
-    <div className="wa-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <section className="wa-modal wa-modal-wide" role="dialog" aria-modal="true" aria-labelledby="persona-title">
-        <header className="wa-modal-header">
-          <div className="wa-modal-heading">
-            <span className="wa-modal-icon"><Settings2 size={20} /></span>
-            <div>
-              <h2 id="persona-title">{tr('إعدادات المساعد الذكي', 'AI assistant settings')}</h2>
-              <p>{tr('الشخصية، النموذج وطريقة الرد', 'Persona, model and response behavior')}</p>
+    <main className="wa-settings-page" aria-labelledby="persona-title">
+      <div className="wa-settings-page-inner">
+        <header className="wa-settings-page-header">
+          <div className="wa-settings-page-title">
+            <button type="button" className="wa-settings-back" onClick={onClose}><ArrowRight size={18} />{tr('المحادثات', 'Chats')}</button>
+            <div className="wa-settings-heading">
+              <span className="wa-modal-icon"><Settings2 size={20} /></span>
+              <div>
+                <h1 id="persona-title">{tr('إعدادات المساعد الذكي', 'AI assistant settings')}</h1>
+                <p>{tr('الشخصية، النموذج وطريقة الرد', 'Persona, model and response behavior')}</p>
+              </div>
             </div>
           </div>
-          <button type="button" className="wa-icon-button" onClick={onClose} aria-label={tr('إغلاق', 'Close')}><X size={20} /></button>
         </header>
-        <div className="wa-modal-content wa-settings-content">
+        <div className="wa-settings-page-scroll">
+          <div className="wa-settings-page-content wa-settings-content">
           <section className="wa-settings-section">
             <h3>{tr('قوالب جاهزة', 'Quick presets')}</h3>
             <div className="wa-presets">
@@ -146,13 +159,13 @@ function PersonaEditor({ onClose, initialPersona, onSave }: {
             </label>
           </section>
           {error && <p className="wa-inline-error" role="alert">{error}</p>}
+          </div>
         </div>
-        <footer className="wa-modal-footer">
-          <button type="button" className="wa-secondary-button" onClick={onClose}>{tr('إلغاء', 'Cancel')}</button>
+        <footer className="wa-settings-page-footer">
           <button type="button" className="wa-primary-button" disabled={saving} onClick={() => void handleSave()}><Save size={16} /> {saving ? tr('جارٍ الحفظ', 'Saving') : tr('حفظ الإعدادات', 'Save settings')}</button>
         </footer>
-      </section>
-    </div>
+      </div>
+    </main>
   );
 }
 

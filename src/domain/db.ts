@@ -10,6 +10,19 @@ import type {
   QuotedMessageInfo
 } from './types';
 
+const STATUS_RANK: Record<NonNullable<ChatMessage['status']>, number> = {
+  pending: 0,
+  sent: 1,
+  delivered: 2,
+  read: 3
+};
+
+function advancedStatus(current: ChatMessage['status'], next: ChatMessage['status']): ChatMessage['status'] {
+  if (!current) return next;
+  if (!next) return current;
+  return STATUS_RANK[current] >= STATUS_RANK[next] ? current : next;
+}
+
 export interface SqliteStoreOptions {
   dbPath?: string;
   legacyDataDir?: string;
@@ -18,6 +31,7 @@ export interface SqliteStoreOptions {
 export class SqliteStore {
   private db: Database;
   private dbPath: string;
+  private pendingStatuses = new Map<string, NonNullable<ChatMessage['status']>>();
 
   constructor(options: SqliteStoreOptions = {}) {
     this.dbPath = options.dbPath ?? './data/fable_whatsapp.db';
@@ -210,6 +224,14 @@ export class SqliteStore {
     if (!msg.text?.trim() && msg.type === 'text') return;
     if (msg.text === '[رسالة]') return;
 
+    const pendingKey = `${msg.chatId}::${msg.id}`;
+    const previous = msg.isFromMe ? this.getMessage(msg.chatId, msg.id)?.status : undefined;
+    const buffered = this.pendingStatuses.get(pendingKey);
+    const messageStatus = msg.isFromMe
+      ? advancedStatus(advancedStatus(previous, msg.status ?? 'sent'), buffered)
+      : (msg.status ?? 'delivered');
+    this.pendingStatuses.delete(pendingKey);
+
     const stmt = this.db.prepare(`
       INSERT INTO messages (
         id, chat_id, sender, sender_name, text, timestamp, is_from_me,
@@ -237,7 +259,7 @@ export class SqliteStore {
       $quoted_json: msg.quotedMessage ? JSON.stringify(msg.quotedMessage) : null,
       $reactions_json: msg.reactions && msg.reactions.length > 0 ? JSON.stringify(msg.reactions) : null,
       $transcription: msg.transcription ?? null,
-      $status: msg.status ?? 'sent'
+      $status: messageStatus
     });
 
     // Automatically update or create chat summary
@@ -261,6 +283,25 @@ export class SqliteStore {
       lastMessage: msg.text || (msg.type === 'audio' ? '🎵 [رسالة صوتية]' : `[${msg.type}]`),
       lastTimestamp: msg.timestamp
     });
+  }
+
+  updateMessageStatus(chatId: string, messageId: string, status: NonNullable<ChatMessage['status']>): ChatMessage['status'] | undefined {
+    const existing = this.getMessage(chatId, messageId);
+    if (!existing) {
+      const key = `${chatId}::${messageId}`;
+      const pending = advancedStatus(this.pendingStatuses.get(key), status);
+      if (pending) this.pendingStatuses.set(key, pending);
+      if (this.pendingStatuses.size > 256) {
+        const oldest = this.pendingStatuses.keys().next().value;
+        if (oldest) this.pendingStatuses.delete(oldest);
+      }
+      return undefined;
+    }
+    if (!existing.isFromMe) return undefined;
+    const next = advancedStatus(existing.status, status);
+    if (!next || next === existing.status) return undefined;
+    this.db.run('UPDATE messages SET status = ? WHERE chat_id = ? AND id = ? AND is_from_me = 1;', [next, chatId, messageId]);
+    return next;
   }
 
   getMessages(chatId: string, limit = 50): ChatMessage[] {

@@ -5,6 +5,7 @@ import makeWASocket, {
   fetchLatestBaileysVersion,
   useMultiFileAuthState,
   Browsers,
+  WAMessageStatus,
   jidNormalizedUser,
   type WASocket,
   type proto
@@ -21,12 +22,30 @@ export interface WhatsAppReactionEvent {
   fromMe: boolean;
 }
 
+export interface WhatsAppMessageStatusEvent {
+  chatId: string;
+  messageId: string;
+  status: NonNullable<ChatMessage['status']>;
+}
+
+export function mapWhatsAppMessageStatus(status: number | null | undefined): ChatMessage['status'] | undefined {
+  switch (status) {
+    case WAMessageStatus.PENDING: return 'pending';
+    case WAMessageStatus.SERVER_ACK: return 'sent';
+    case WAMessageStatus.DELIVERY_ACK: return 'delivered';
+    case WAMessageStatus.READ:
+    case WAMessageStatus.PLAYED: return 'read';
+    default: return undefined;
+  }
+}
+
 export interface WhatsAppSocketOptions {
   sessionDir?: string;
   audioTranscriber?: AudioTranscriber;
   onStateChange?: (state: PairingState) => void;
   onMessage?: (message: ChatMessage) => void;
   onReaction?: (reaction: WhatsAppReactionEvent) => void;
+  onMessageStatus?: (event: WhatsAppMessageStatusEvent) => void;
 }
 
 export class WhatsAppSocketClient {
@@ -37,6 +56,7 @@ export class WhatsAppSocketClient {
   private onStateChange?: (state: PairingState) => void;
   private onMessageCallback?: (message: ChatMessage) => void;
   private onReactionCallback?: (reaction: WhatsAppReactionEvent) => void;
+  private onMessageStatusCallback?: (event: WhatsAppMessageStatusEvent) => void;
   private rawMessages = new Map<string, proto.IWebMessageInfo>();
   private transportJids = new Map<string, string>();
   private currentState: PairingState = {
@@ -53,6 +73,7 @@ export class WhatsAppSocketClient {
     this.onStateChange = options.onStateChange;
     this.onMessageCallback = options.onMessage;
     this.onReactionCallback = options.onReaction;
+    this.onMessageStatusCallback = options.onMessageStatus;
   }
 
   getState(): PairingState {
@@ -84,6 +105,8 @@ export class WhatsAppSocketClient {
         this.sock.ev.removeAllListeners('connection.update');
         this.sock.ev.removeAllListeners('creds.update');
         this.sock.ev.removeAllListeners('messages.upsert');
+        this.sock.ev.removeAllListeners('messages.update');
+        this.sock.ev.removeAllListeners('message-receipt.update');
         this.sock.end(undefined);
       } catch {}
       this.sock = null;
@@ -205,6 +228,29 @@ export class WhatsAppSocketClient {
           }
         }, 3000);
       }
+
+      const publishStatus = (remoteJid: string, messageId: string, status: NonNullable<ChatMessage['status']>) => {
+        void this.canonicalizeJid(remoteJid)
+          .then((chatId) => this.onMessageStatusCallback?.({ chatId, messageId, status }))
+          .catch((error) => console.warn('[WhatsApp] Could not resolve receipt JID:', error));
+      };
+
+      this.sock.ev.on('messages.update', (updates) => {
+        for (const { key, update } of updates) {
+          if (!key.id || !key.remoteJid || key.fromMe === false) continue;
+          const status = mapWhatsAppMessageStatus(update.status);
+          if (status) publishStatus(key.remoteJid, key.id, status);
+        }
+      });
+
+      // Participant receipts do not establish group-wide delivery or read state.
+      this.sock.ev.on('message-receipt.update', (receipts) => {
+        for (const { key, receipt } of receipts) {
+          if (!key.id || !key.remoteJid || key.fromMe === false || key.remoteJid.endsWith('@g.us')) continue;
+          const status = receipt.readTimestamp ? 'read' : receipt.receiptTimestamp ? 'delivered' : undefined;
+          if (status) publishStatus(key.remoteJid, key.id, status);
+        }
+      });
 
       // Handle incoming & synced messages (both real-time 'notify' and background 'append')
       this.sock.ev.on('messages.upsert', async ({ messages }) => {
@@ -453,7 +499,7 @@ export class WhatsAppSocketClient {
       mediaBuffer: audioBuffer,
       replyToId: replyToId || undefined,
       quotedMessage,
-      status: isFromMe ? 'sent' : 'delivered'
+      status: isFromMe ? (mapWhatsAppMessageStatus(raw.status) ?? 'sent') : 'delivered'
     };
   }
 

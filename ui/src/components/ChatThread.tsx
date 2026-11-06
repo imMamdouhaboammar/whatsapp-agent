@@ -154,8 +154,12 @@ export function ChatThread({ chat, messages, onSendMessage, onSendReaction, onCh
                     {isOutbound && (message.status === 'pending'
                       ? <Clock3 size={13} aria-label={tr('قيد الإرسال', 'Pending')} />
                       : message.status === 'sent'
-                        ? <Check size={14} aria-label={tr('تم الإرسال', 'Sent')} />
-                        : <CheckCheck size={15} className={message.status === 'read' ? 'is-read' : ''} aria-label={message.status === 'read' ? tr('مقروءة', 'Read') : tr('تم التسليم', 'Delivered')} />)}
+                        ? <Check size={14} aria-label={tr('أُرسلت إلى واتساب', 'Sent to WhatsApp')} />
+                        : message.status === 'delivered'
+                          ? <CheckCheck size={15} aria-label={tr('تم التسليم', 'Delivered')} />
+                          : message.status === 'read'
+                            ? <CheckCheck size={15} className="is-read" aria-label={tr('تمت القراءة', 'Read')} />
+                            : null)}
                   </div>
                   {Boolean(message.reactions?.length) && (
                     <div className="wa-message-reactions">
