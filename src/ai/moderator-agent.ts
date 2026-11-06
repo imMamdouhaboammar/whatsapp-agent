@@ -3,6 +3,10 @@ import { HumanRateLimiter } from '../domain/rate-limiter';
 import type { MemoryStore } from '../domain/memory-store';
 import type { AgentDecision, AgentDraft, AutonomyAction, ChatMessage, ModeratorPersona, PolicyConfig } from '../domain/types';
 import type { GeminiClient } from './gemini-client';
+import { formatWhatsAppMessage } from '../domain/whatsapp-formatter';
+import { executeWithModelFallback, parseModelChain } from './model-fallback';
+import { formatMemoriesForPrompt } from '../domain/user-memory';
+import { detectConversationStyle, getStylePromptDirective, isExplicitStyleRequest, type ConversationStyle } from './adaptive-style';
 
 export const DEFAULT_MODERATOR_PERSONA: ModeratorPersona = {
   name: 'ممدوح (الموديرتور الذكي)',
@@ -143,10 +147,25 @@ ${factsList}
 ${commitmentsList}\n`;
     }
 
+    // Fetch contact explicit memories
+    const explicitMemories = this.memoryStore.getContactMemories('default', message.chatId);
+    const memoryContext = formatMemoriesForPrompt(explicitMemories);
+    const memoryPrompt = memoryContext ? `\n📌 ${memoryContext}\n` : '';
+
+    // Detect or update conversation style
+    const inboundText = message.text || message.transcription || '';
+    const detectedStyle = detectConversationStyle(inboundText);
+    if (isExplicitStyleRequest(inboundText)) {
+      this.memoryStore.setChatStyle(message.chatId, detectedStyle);
+    }
+    const activeStyle = (this.memoryStore.getChatStyle(message.chatId) as ConversationStyle) || detectedStyle;
+    const styleDirective = getStylePromptDirective(activeStyle);
+
     const prompt = `سياق المحادثة السابقة بين الطرفين:
 ${historyText}
 ${quotedContextPrompt}
 ${dossierPrompt}
+${memoryPrompt}
 الرسالة الجديدة الواردة الآن:
 من: ${message.senderName || message.sender}
 نص الرسالة: ${message.text || message.transcription || `[${message.type}]`}
@@ -175,22 +194,37 @@ ${dossierPrompt}
   "contactStage": "lead | qualified | negotiation | customer | vip"
 }`;
 
-    const systemInstruction = `${this.persona.systemPrompt}\nالنبرة المطلوبة: ${this.persona.tone}\nالقواعد:\n${this.persona.rules.map((r) => `- ${r}`).join('\n')}`;
+    const systemInstruction = `${this.persona.systemPrompt}\nالنبرة المطلوبة: ${this.persona.tone}\n${styleDirective}\nالقواعد:\n${this.persona.rules.map((r) => `- ${r}`).join('\n')}`;
 
     let parsedDecision: AgentDecision;
 
     try {
-      const response = await this.gemini.generateContent(
-        [{ role: 'user', parts: [{ text: prompt }] }],
-        {
-          model: this.persona.model,
-          temperature: this.persona.temperature,
-          systemInstruction,
-          responseMimeType: 'application/json'
-        }
+      const fallbackModels = parseModelChain(
+        this.persona.model || 'gemini-2.5-flash',
+        process.env.GEMINI_FALLBACK_MODELS,
+        'gemini-2.5-flash,gemini-2.5-pro,gemini-2.0-flash'
       );
 
+      const fallbackRes = await executeWithModelFallback(fallbackModels, async (model) => {
+        return await this.gemini.generateContent(
+          [{ role: 'user', parts: [{ text: prompt }] }],
+          {
+            model,
+            temperature: this.persona.temperature,
+            systemInstruction,
+            responseMimeType: 'application/json'
+          }
+        );
+      });
+
+      const response = fallbackRes.result;
       const json = JSON.parse(response.text);
+
+      // Apply WhatsApp native markdown formatting to reply
+      if (json.replyText) {
+        json.replyText = formatWhatsAppMessage(json.replyText);
+      }
+
       const simulatedDelay = this.persona.simulateTypingDelay
         ? this.rateLimiter.calculateTypingDelay(json.replyText || '')
         : 500;
