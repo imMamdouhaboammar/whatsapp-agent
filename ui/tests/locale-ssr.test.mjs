@@ -130,23 +130,51 @@ test('Assistant approval is available in English without translating user conten
   assert.match(html, /أهلًا يا نور/);
 });
 
-test('Assistant settings is a standalone bilingual page, not a modal', () => {
+test('Assistant settings provides a bilingual, accessible multi-section layout', () => {
   const persona = {
     name: 'Mamdouh assistant', language: 'ar-EG', tone: 'Natural', systemPrompt: 'Help with messages',
     rules: [], model: 'gemini-2.5-flash', temperature: 0.5, minConfidence: 0.75,
     simulateTypingDelay: true, minTypingDelayMs: 200, maxTypingDelayMs: 600
   };
-  const en = render('en', React.createElement(PersonaSettingsPage, {
-    initialPersona: persona, onClose: () => {}, onSave: noop
-  }));
-  const ar = render('ar', React.createElement(PersonaSettingsPage, {
-    initialPersona: persona, onClose: () => {}, onSave: noop
-  }));
-  assert.match(en, /class="wa-settings-page"/);
-  assert.match(en, /AI assistant settings/);
-  assert.match(en, /Save settings/);
-  assert.match(ar, /إعدادات المساعد الذكي/);
+  const props = { initialPersona: persona, onClose: () => {}, onSave: noop };
+  const en = render('en', React.createElement(PersonaSettingsPage, props));
+  const ar = render('ar', React.createElement(PersonaSettingsPage, props));
+  assert.match(en, /class="wa-premium-settings"/);
+  assert.match(en, /AI assistant/);
+  assert.match(en, /Models &amp; providers/);
+  assert.match(en, /Core instructions/);
+  assert.match(en, /Save changes/);
+  assert.match(en, /Try your assistant/);
+  assert.match(ar, /المساعد الذكي/);
+  assert.match(ar, /النماذج ومزودو الخدمة/);
+  assert.match(ar, /التعليمات الأساسية/);
+  assert.match(ar, /حفظ التغييرات/);
+  assert.match(ar, /dir="auto"/);
   assert.doesNotMatch(en, /role="dialog"/);
+});
+
+test('Models & providers is directly accessible with existing controls', () => {
+  const persona = {
+    name: 'Mamdouh', language: 'ar-EG', tone: 'Natural', systemPrompt: 'Help',
+    rules: [], model: 'gemini-2.5-pro', temperature: 0.5, minConfidence: 0.85,
+    simulateTypingDelay: false, minTypingDelayMs: 200, maxTypingDelayMs: 600,
+    voiceName: 'kore'
+  };
+  const previousWindow = globalThis.window;
+  globalThis.window = { location: { pathname: '/settings/models' } };
+  try {
+    const html = render('en', React.createElement(PersonaSettingsPage, {
+      initialPersona: persona, onClose: () => {}, onSave: noop
+    }));
+    assert.match(html, /Primary AI model/);
+    assert.match(html, /Voice notes/);
+    assert.match(html, /Minimum confidence/);
+    assert.match(html, /Natural typing delay/);
+    assert.match(html, /85%/);
+    assert.match(html, /gemini-2.5-pro/);
+  } finally {
+    globalThis.window = previousWindow;
+  }
 });
 
 test('Only one assistant settings entry and collapsible inspector exist in the workspace', () => {
