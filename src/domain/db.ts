@@ -212,7 +212,11 @@ export class SqliteStore {
   }
 
   setChatMode(id: string, mode: AgentMode) {
-    this.db.run('UPDATE chats SET agent_mode = ? WHERE id = ?;', [mode, id]);
+    this.db.run(`
+      INSERT INTO chats (id, name, unread_count, is_group, agent_mode)
+      VALUES (?, ?, 0, 0, ?)
+      ON CONFLICT(id) DO UPDATE SET agent_mode = excluded.agent_mode;
+    `, [id, id.split('@')[0], mode]);
   }
 
   markChatRead(id: string) {
