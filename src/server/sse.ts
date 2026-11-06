@@ -5,7 +5,9 @@ export type SSEEventType =
   | 'agent_thought'
   | 'new_draft'
   | 'draft_updated'
-  | 'chat_updated';
+  | 'chat_updated'
+  | 'message_reaction'
+  | 'dossier_updated';
 
 export interface SSEMessage {
   event: SSEEventType;

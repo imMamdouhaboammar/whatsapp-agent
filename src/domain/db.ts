@@ -259,7 +259,7 @@ export class SqliteStore {
       $quoted_json: msg.quotedMessage ? JSON.stringify(msg.quotedMessage) : null,
       $reactions_json: msg.reactions && msg.reactions.length > 0 ? JSON.stringify(msg.reactions) : null,
       $transcription: msg.transcription ?? null,
-      $status: messageStatus
+      $status: messageStatus ?? null
     });
 
     // Automatically update or create chat summary

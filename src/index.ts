@@ -1,4 +1,6 @@
 import { serveStatic } from 'hono/bun';
+import { createCapabilities, registerCapabilityRoutes } from './agent/capabilities-api';
+import { AgentTurnCoordinator } from './agent/turn-coordinator';
 import { AudioTranscriber } from './ai/audio-transcriber';
 import { GeminiClient } from './ai/gemini-client';
 import { ModeratorAgent } from './ai/moderator-agent';
@@ -16,6 +18,9 @@ export async function createFableWhatsAppAgent(options: {
   port?: number;
   dataDir?: string;
   autoConnect?: boolean;
+  capabilityToken?: string;
+  capabilityAutopilotBrandId?: string;
+  capabilityModel?: Pick<GeminiClient,'generateContent'>;
 } = {}) {
   const port = options.port ?? Number(process.env.PORT || 3000);
   const dataDir = options.dataDir ?? './data';
@@ -25,6 +30,7 @@ export async function createFableWhatsAppAgent(options: {
   const sse = new SSEBroadcaster();
   const memoryStore = new MemoryStore({ dataDir });
   const geminiClient = new GeminiClient();
+  const capabilities = createCapabilities(dataDir, options.capabilityModel ?? geminiClient);
   const audioTranscriber = new AudioTranscriber(geminiClient);
   const voiceSynthesizer = new VoiceSynthesizer();
   const rateLimiter = new HumanRateLimiter({
@@ -36,6 +42,14 @@ export async function createFableWhatsAppAgent(options: {
 
   const moderatorAgent = new ModeratorAgent(geminiClient, memoryStore, {
     rateLimiter
+  });
+
+  const coordinator = new AgentTurnCoordinator({
+    moderator: moderatorAgent,
+    memory: memoryStore,
+    operator: capabilities.operator,
+    brandId: options.capabilityAutopilotBrandId ?? process.env.AGENT_AUTOPILOT_BRAND_ID,
+    enabled: process.env.AGENT_CAPABILITIES_AUTOPILOT === '1' || Boolean(options.capabilityAutopilotBrandId)
   });
 
   let whatsappClient: WhatsAppSocketClient;
@@ -61,7 +75,7 @@ export async function createFableWhatsAppAgent(options: {
       console.log(`💬 [Burst Fused] From: ${fusedMsg.senderName || fusedMsg.sender} | Messages: ${fusedMsg.text.replace(/\n/g, ' ↵ ')}`);
 
       try {
-        const result = await moderatorAgent.processInboundMessage(fusedMsg);
+        const result = await coordinator.processInboundMessage(fusedMsg);
 
         // Broadcast thought & reasoning to live UI
         sse.broadcast('agent_thought', {
@@ -130,7 +144,7 @@ export async function createFableWhatsAppAgent(options: {
             for (let i = 0; i < bubbles.length; i++) {
               const bubbleText = bubbles[i];
               const isFirstBubble = i === 0;
-              const delay = messageSplitter.calculateTypingDelay(bubbleText);
+              const delay = messageSplitter.calculateDelay(bubbleText, isFirstBubble);
 
               const sent = await whatsappClient.sendMessage(fusedMsg.chatId, bubbleText, {
                 replyToMessageId: isFirstBubble ? fusedMsg.id : undefined,
@@ -178,9 +192,11 @@ export async function createFableWhatsAppAgent(options: {
       sse.broadcast('message_reaction', { chatId, messageId, emoji });
       sse.broadcast('chat_updated', { chatId });
     },
-    onMessage: async (msg: ChatMessage) => {
+    onMessage: async (msg: ChatMessage, delivery?: { historical: boolean }) => {
       if (!msg.text?.trim() && msg.type === 'text') return;
       if (msg.text === '[رسالة]') return;
+      // Transport reconnects/history replay the same message ID. Do not count or reply twice.
+      if (memoryStore.getMessage(msg.chatId,msg.id)) return;
 
       // 1. Record incoming message immediately to SQLite and broadcast to UI
       const persistedMessage = memoryStore.addMessage(msg);
@@ -188,7 +204,7 @@ export async function createFableWhatsAppAgent(options: {
       sse.broadcast('chat_updated', { chatId: msg.chatId });
 
       // If message is from me, do not run agent reply loop
-      if (msg.isFromMe) {
+      if (msg.isFromMe || delivery?.historical) {
         return;
       }
 
@@ -213,6 +229,8 @@ export async function createFableWhatsAppAgent(options: {
     voiceSynthesizer
   });
 
+  registerCapabilityRoutes(app, capabilities, options.capabilityToken ?? process.env.AGENT_CAPABILITIES_OWNER_TOKEN ?? '');
+
   // Serve static UI assets if built
   app.use('/*', serveStatic({ root: './ui/dist' }));
   app.get('*', serveStatic({ path: './ui/dist/index.html' }));
@@ -227,7 +245,10 @@ export async function createFableWhatsAppAgent(options: {
     memoryStore,
     whatsappClient,
     moderatorAgent,
-    sse
+    coordinator,
+    burstAccumulator,
+    sse,
+    capabilities
   };
 }
 
@@ -236,6 +257,7 @@ if (import.meta.main) {
   console.log(`✨ [Fable Agentic WhatsApp] Live at http://localhost:${agent.port}`);
   Bun.serve({
     fetch: agent.app.fetch,
-    port: agent.port
+    port: agent.port,
+    hostname: process.env.HOST || '127.0.0.1'
   });
 }

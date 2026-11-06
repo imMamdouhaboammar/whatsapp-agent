@@ -75,3 +75,52 @@ describe('Engine Integration & Autonomous Loop', () => {
     agent.memoryStore.close();
   });
 });
+
+describe('S01 no automated replies to history or duplicate inbound messages',()=>{
+ it('persists historical messages but never adds them to the live burst queue',async()=>{
+  const agent=await createFableWhatsAppAgent({dataDir:':memory:',autoConnect:false});
+  try{
+   const inbound:ChatMessage={id:'old-message-id',chatId:'201099900000@s.whatsapp.net',sender:'contact',text:'Hello from history',timestamp:Date.now()-100000,type:'text',isFromMe:false};
+   const onMessage=(agent.whatsappClient as any).onMessageCallback as (msg:ChatMessage,meta?:{historical:boolean})=>Promise<void>;
+   await onMessage(inbound,{historical:true});
+   expect(agent.memoryStore.getMessage(inbound.chatId,inbound.id)?.text).toBe(inbound.text);
+   expect(agent.burstAccumulator.hasPending(inbound.chatId)).toBe(false);
+   await onMessage(inbound,{historical:false});
+   expect(agent.burstAccumulator.hasPending(inbound.chatId)).toBe(false);
+  }finally{agent.burstAccumulator.destroy();agent.capabilities.close();agent.memoryStore.close();}
+ });
+});
+
+describe('E10 simulated WhatsApp-to-confirmed-provider round trip',()=>{
+ it('runs socket inbound -> stored burst -> authorized stock lookup -> fake outbound -> saved receipt, without a network send',async()=>{
+  const agent=await createFableWhatsAppAgent({
+    dataDir:':memory:',autoConnect:false,capabilityAutopilotBrandId:'store'
+  });
+  const sent:Array<{chatId:string;text:string}>=[];
+  const chatId='201018880000@s.whatsapp.net';
+  try {
+   agent.capabilities.registry.register('store',{
+     name:'inventory.lookup',kind:'read',scope:'inventory:read',
+     validate:(args):args is {sku:string}=>typeof (args as any)?.sku==='string',
+     execute:async({sku})=>({sku,stock:3,price:240,currency:'SAR',observedAt:Date.now()})
+   });
+   (agent.whatsappClient as any).sendMessage=async(chat:string,text:string)=>{
+     sent.push({chatId:chat,text});return {messageId:'simulated-sent-001'};
+   };
+   const inbound:ChatMessage={
+     id:'inbound-001',chatId,sender:chatId,text:'هل SKU-42 موجود وبكام؟',
+     timestamp:Date.now(),isFromMe:false,type:'text'
+   };
+   const handler=(agent.whatsappClient as any).onMessageCallback as (msg:ChatMessage,meta?:{historical:boolean})=>Promise<void>;
+   await handler(inbound,{historical:false});
+   expect(agent.burstAccumulator.hasPending(chatId)).toBe(true);
+   await agent.burstAccumulator.flush(chatId);
+   expect(sent).toHaveLength(1);
+   expect(sent[0].text).toContain('SKU-42');
+   expect(sent[0].text).toContain('240 SAR');
+   expect(agent.memoryStore.getMessage(chatId,'simulated-sent-001')?.status).toBe('sent');
+  } finally{
+   agent.burstAccumulator.destroy();agent.capabilities.close();agent.memoryStore.close();
+  }
+ });
+});

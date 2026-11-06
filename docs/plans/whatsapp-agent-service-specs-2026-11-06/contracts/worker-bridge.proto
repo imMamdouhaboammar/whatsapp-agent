@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package waagent.bridge.v1;
+
+// Proposed local sidecar contracts. Bun remains the only WhatsApp socket owner.
+// Generate language bindings with the official Protocol Buffers/gRPC toolchain.
+
+service MediaInspector {
+  // Input is streamed so the Bun gateway can enforce cumulative byte caps.
+  rpc Inspect(stream MediaChunk) returns (MediaInspection);
+}
+
+service SendQueueGateway {
+  // Both methods are implemented by Bun; a conditional Go coordinator calls them.
+  // The coordinator never receives raw WhatsApp session credentials.
+  rpc ClaimNext(ClaimRequest) returns (ClaimResponse);
+  rpc DispatchClaimed(DispatchRequest) returns (DispatchResponse);
+}
+
+message MediaChunk {
+  string request_id = 1;
+  string scoped_chat_token = 2;
+  string mime_type = 3;
+  bytes content = 4;
+  bool final_chunk = 5;
+  string trace_id = 6;
+}
+
+message Evidence {
+  string source_locator = 1; // page/time/region, never a privileged file path
+  string excerpt = 2;
+  string extraction_method = 3;
+}
+
+message MediaInspection {
+  string request_id = 1;
+  string status = 2; // ok | partial | rejected | failed
+  string detected_type = 3;
+  string extracted_text = 4;
+  repeated Evidence evidence = 5;
+  repeated string safety_flags = 6;
+  string parser_version = 7;
+  string failure_code = 8;
+}
+
+message ClaimRequest {
+  string worker_id = 1;
+  uint32 max_jobs = 2;
+  string trace_id = 3;
+}
+
+message SendLease {
+  string intent_id = 1;
+  string lease_token = 2;
+  int64 expires_at_unix_ms = 3;
+}
+
+message ClaimResponse {
+  repeated SendLease jobs = 1;
+}
+
+message DispatchRequest {
+  string intent_id = 1;
+  string lease_token = 2;
+  string trace_id = 3;
+}
+
+message DispatchResponse {
+  string intent_id = 1;
+  string state = 2; // accepted | failed_pre_send | uncertain
+  string native_message_id = 3;
+  string failure_code = 4;
+}

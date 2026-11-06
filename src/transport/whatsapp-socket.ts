@@ -1,4 +1,3 @@
-import { Boom } from '@hapi/boom';
 import makeWASocket, {
   DisconnectReason,
   downloadMediaMessage,
@@ -8,7 +7,8 @@ import makeWASocket, {
   WAMessageStatus,
   jidNormalizedUser,
   type WASocket,
-  type proto
+  type proto,
+  type WAMessage
 } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import pino from 'pino';
@@ -43,7 +43,7 @@ export interface WhatsAppSocketOptions {
   sessionDir?: string;
   audioTranscriber?: AudioTranscriber;
   onStateChange?: (state: PairingState) => void;
-  onMessage?: (message: ChatMessage) => void;
+  onMessage?: (message: ChatMessage, metadata?: { historical: boolean }) => void;
   onReaction?: (reaction: WhatsAppReactionEvent) => void;
   onMessageStatus?: (event: WhatsAppMessageStatusEvent) => void;
 }
@@ -54,10 +54,10 @@ export class WhatsAppSocketClient {
   private sessionDir: string;
   private audioTranscriber?: AudioTranscriber;
   private onStateChange?: (state: PairingState) => void;
-  private onMessageCallback?: (message: ChatMessage) => void;
+  private onMessageCallback?: (message: ChatMessage, metadata?: { historical: boolean }) => void;
   private onReactionCallback?: (reaction: WhatsAppReactionEvent) => void;
   private onMessageStatusCallback?: (event: WhatsAppMessageStatusEvent) => void;
-  private rawMessages = new Map<string, proto.IWebMessageInfo>();
+  private rawMessages = new Map<string, WAMessage>();
   private transportJids = new Map<string, string>();
   private currentState: PairingState = {
     state: 'disconnected',
@@ -173,7 +173,7 @@ export class WhatsAppSocketClient {
 
         if (connection === 'close') {
           this.isConnecting = false;
-          const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
+          const statusCode = (lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)?.output?.statusCode;
           const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
           if (statusCode === DisconnectReason.loggedOut) {
@@ -253,7 +253,7 @@ export class WhatsAppSocketClient {
       });
 
       // Handle incoming & synced messages (both real-time 'notify' and background 'append')
-      this.sock.ev.on('messages.upsert', async ({ messages }) => {
+      this.sock.ev.on('messages.upsert', async ({ messages, type }) => {
         for (const raw of messages) {
           if (!raw.message) continue;
           // Ignore status broadcasts
@@ -271,7 +271,7 @@ export class WhatsAppSocketClient {
           try {
             const parsed = await this.parseIncomingMessage(raw);
             if (parsed) {
-              this.onMessageCallback?.(parsed);
+              this.onMessageCallback?.(parsed, { historical: type !== "notify" });
             }
           } catch (err) {
             // Log message parsing error gracefully
@@ -293,7 +293,7 @@ export class WhatsAppSocketClient {
           try {
             const parsed = await this.parseIncomingMessage(raw);
             if (parsed) {
-              this.onMessageCallback?.(parsed);
+              this.onMessageCallback?.(parsed, { historical: true });
             }
           } catch {}
         }
@@ -351,7 +351,7 @@ export class WhatsAppSocketClient {
    */
   private async parseIncomingMessage(raw: proto.IWebMessageInfo): Promise<ChatMessage | null> {
     const key = raw.key;
-    if (!key.remoteJid) return null;
+    if (!key?.remoteJid) return null;
 
     const chatId = await this.canonicalizeJid(key.remoteJid);
     const rawMessage = raw.message;
@@ -406,7 +406,7 @@ export class WhatsAppSocketClient {
       type = 'audio';
       try {
         if (this.sock) {
-          const buffer = (await downloadMediaMessage(raw, 'buffer', {})) as Buffer;
+          const buffer = (await downloadMediaMessage(raw as WAMessage, 'buffer', {})) as Buffer;
           audioBuffer = buffer;
           if (this.audioTranscriber && buffer && buffer.length > 0) {
             const result = await this.audioTranscriber.transcribeAudio(buffer, message.audioMessage.mimetype || 'audio/ogg; codecs=opus');
@@ -531,7 +531,7 @@ export class WhatsAppSocketClient {
     } catch {}
 
     // Safely resolve quoted message: only pass if raw message is cached with authentic proto.IMessage
-    let quoted: proto.IWebMessageInfo | undefined = undefined;
+    let quoted: WAMessage | undefined = undefined;
     if (options.replyToMessageId) {
       const cached = this.rawMessages.get(options.replyToMessageId);
       if (cached && cached.message) {
@@ -577,7 +577,7 @@ export class WhatsAppSocketClient {
     } catch {}
 
     // Safely resolve quoted message if available
-    let quoted: proto.IWebMessageInfo | undefined = undefined;
+    let quoted: WAMessage | undefined = undefined;
     if (options.replyToMessageId) {
       const cached = this.rawMessages.get(options.replyToMessageId);
       if (cached && cached.message) {

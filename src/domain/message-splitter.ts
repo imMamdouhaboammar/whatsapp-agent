@@ -44,7 +44,7 @@ export class MessageSplitter {
         .filter(Boolean);
 
       if (paragraphs.length > 1) {
-        return paragraphs.slice(0, 3);
+        return paragraphs.length <= 3 ? paragraphs : [...paragraphs.slice(0, 2), paragraphs.slice(2).join('\n\n')];
       }
     }
 

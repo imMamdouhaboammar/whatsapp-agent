@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:waagent:events:v1",
+  "title": "WhatsApp Agent proposed internal event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "event_id", "type", "occurred_at", "trace_id", "chat_id", "payload"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "event_id": {"type": "string", "minLength": 8},
+    "type": {
+      "enum": ["message.inbound", "send.intent_created", "send.state_changed", "receipt.updated", "media.inspected", "draft.reviewed"]
+    },
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "trace_id": {"type": "string", "minLength": 8},
+    "chat_id": {"type": "string", "minLength": 1},
+    "payload": {"type": "object"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"type": {"const": "send.state_changed"}}},
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["intent_id", "state"],
+            "properties": {
+              "intent_id": {"type": "string", "minLength": 1},
+              "state": {
+                "enum": ["queued", "reserved", "attempting", "accepted", "delivered", "read", "failed_pre_send", "uncertain"]
+              },
+              "native_message_id": {"type": "string"},
+              "reason_code": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "receipt.updated"}}},
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["native_message_id", "status"],
+            "properties": {
+              "native_message_id": {"type": "string", "minLength": 1},
+              "status": {"enum": ["sent", "delivered", "read"]},
+              "source": {"const": "baileys"}
+            }
+          }
+        }
+      }
+    }
+  ]
+}

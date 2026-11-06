@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { MessageSplitter } from '../src/domain/message-splitter';
+import { readFileSync } from 'node:fs';
 
 describe('MessageSplitter', () => {
   const splitter = new MessageSplitter();
@@ -22,6 +23,18 @@ describe('MessageSplitter', () => {
     expect(bubbles.length).toBeGreaterThanOrEqual(2);
     expect(bubbles[0]).toContain('أهلاً بحضرتك يا أستاذ أحمد');
     expect(bubbles.some((b) => b.includes('بخصوص باقات'))).toBe(true);
+  });
+
+  it('exposes the typing delay call used by the WhatsApp send path', () => {
+    const handler = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8');
+    expect(handler).toContain('messageSplitter.calculateDelay(bubbleText, isFirstBubble)');
+  });
+
+  it('never silently drops content when replying in more than three paragraphs', () => {
+    const text=['الجزء الأول طويل ويصف الطلب بشكل واضح','المعلومات الثانية متاحة في السجل','التفاصيل الثالثة مهمة','تفاصيل رابعة لا يجب فقدانها'].join('\n\n');
+    const bubbles=splitter.split(text);
+    expect(bubbles.length).toBeLessThanOrEqual(3);
+    for(const paragraph of text.split('\n\n'))expect(bubbles.join('\n')).toContain(paragraph);
   });
 
   it('calculates human typing delays bounded within realistic limits', () => {
