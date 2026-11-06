@@ -5,6 +5,7 @@ import makeWASocket, {
   fetchLatestBaileysVersion,
   useMultiFileAuthState,
   Browsers,
+  jidNormalizedUser,
   type WASocket,
   type proto
 } from '@whiskeysockets/baileys';
@@ -13,19 +14,31 @@ import pino from 'pino';
 import type { AudioTranscriber } from '../ai/audio-transcriber';
 import type { ChatMessage, ConnectionState, PairingState } from '../domain/types';
 
+export interface WhatsAppReactionEvent {
+  chatId: string;
+  messageId: string;
+  emoji: string;
+  fromMe: boolean;
+}
+
 export interface WhatsAppSocketOptions {
   sessionDir?: string;
   audioTranscriber?: AudioTranscriber;
   onStateChange?: (state: PairingState) => void;
   onMessage?: (message: ChatMessage) => void;
+  onReaction?: (reaction: WhatsAppReactionEvent) => void;
 }
 
 export class WhatsAppSocketClient {
   private sock: WASocket | null = null;
+  private authState: any = null;
   private sessionDir: string;
   private audioTranscriber?: AudioTranscriber;
   private onStateChange?: (state: PairingState) => void;
   private onMessageCallback?: (message: ChatMessage) => void;
+  private onReactionCallback?: (reaction: WhatsAppReactionEvent) => void;
+  private rawMessages = new Map<string, proto.IWebMessageInfo>();
+  private transportJids = new Map<string, string>();
   private currentState: PairingState = {
     state: 'disconnected',
     updatedAt: Date.now()
@@ -39,6 +52,7 @@ export class WhatsAppSocketClient {
     this.audioTranscriber = options.audioTranscriber;
     this.onStateChange = options.onStateChange;
     this.onMessageCallback = options.onMessage;
+    this.onReactionCallback = options.onReaction;
   }
 
   getState(): PairingState {
@@ -79,6 +93,7 @@ export class WhatsAppSocketClient {
 
     try {
       const { state, saveCreds } = await useMultiFileAuthState(this.sessionDir);
+      this.authState = state;
       const { version } = await fetchLatestBaileysVersion();
 
       const logger = pino({ level: 'silent' });
@@ -191,14 +206,21 @@ export class WhatsAppSocketClient {
         }, 3000);
       }
 
-      // Handle incoming messages
-      this.sock.ev.on('messages.upsert', async ({ messages, type }) => {
-        if (type !== 'notify') return;
-
+      // Handle incoming & synced messages (both real-time 'notify' and background 'append')
+      this.sock.ev.on('messages.upsert', async ({ messages }) => {
         for (const raw of messages) {
           if (!raw.message) continue;
           // Ignore status broadcasts
           if (raw.key.remoteJid === 'status@broadcast') continue;
+
+          // Cache raw message for replying/quoting
+          if (raw.key?.id && raw.message) {
+            this.rawMessages.set(raw.key.id, raw);
+            if (this.rawMessages.size > 500) {
+              const firstKey = this.rawMessages.keys().next().value;
+              if (firstKey) this.rawMessages.delete(firstKey);
+            }
+          }
 
           try {
             const parsed = await this.parseIncomingMessage(raw);
@@ -210,6 +232,26 @@ export class WhatsAppSocketClient {
           }
         }
       });
+
+      // Handle continuous history harvest synced from phone
+      this.sock.ev.on('messaging-history.set', async ({ messages: historyMessages }) => {
+        if (!historyMessages || !Array.isArray(historyMessages)) return;
+        for (const raw of historyMessages) {
+          if (!raw.message) continue;
+          if (raw.key.remoteJid === 'status@broadcast') continue;
+
+          if (raw.key?.id && raw.message) {
+            this.rawMessages.set(raw.key.id, raw);
+          }
+
+          try {
+            const parsed = await this.parseIncomingMessage(raw);
+            if (parsed) {
+              this.onMessageCallback?.(parsed);
+            }
+          } catch {}
+        }
+      });
     } catch (err: any) {
       this.isConnecting = false;
       this.setState({ state: 'failed', error: err.message });
@@ -217,20 +259,91 @@ export class WhatsAppSocketClient {
   }
 
   /**
+   * Canonicalizes any WhatsApp JID (phone, companion device, or LID) into standard <phone>@s.whatsapp.net
+   */
+  async canonicalizeJid(jid: string): Promise<string> {
+    if (!jid) return jid;
+    const normalized = jidNormalizedUser(jid);
+
+    if (normalized.endsWith('@lid')) {
+      const lidUser = normalized.split('@')[0];
+      try {
+        if (this.authState?.keys) {
+          const mapping = await this.authState.keys.get('lid-mapping', [`${lidUser}_reverse`]);
+          const phone = mapping?.[`${lidUser}_reverse`];
+          if (phone) {
+            const canonical = `${phone}@s.whatsapp.net`;
+            this.transportJids.set(canonical, jid);
+            this.transportJids.set(jid, canonical);
+            return canonical;
+          }
+        }
+      } catch {}
+    }
+
+    this.transportJids.set(normalized, jid);
+    return normalized;
+  }
+
+  /**
+   * Recursively unwraps nested message containers (ephemeral, viewOnce, edited, etc.)
+   */
+  private unwrapMessage(msg: proto.IMessage | null | undefined): proto.IMessage | null {
+    if (!msg) return null;
+    if (msg.ephemeralMessage?.message) return this.unwrapMessage(msg.ephemeralMessage.message);
+    if (msg.viewOnceMessage?.message) return this.unwrapMessage(msg.viewOnceMessage.message);
+    if (msg.viewOnceMessageV2?.message) return this.unwrapMessage(msg.viewOnceMessageV2.message);
+    if (msg.documentWithCaptionMessage?.message) return this.unwrapMessage(msg.documentWithCaptionMessage.message);
+    if (msg.editedMessage?.message?.protocolMessage?.editedMessage) {
+      return this.unwrapMessage(msg.editedMessage.message.protocolMessage.editedMessage);
+    }
+    return msg;
+  }
+
+  /**
    * Parses raw Baileys proto.IWebMessageInfo into clean ChatMessage
    */
   private async parseIncomingMessage(raw: proto.IWebMessageInfo): Promise<ChatMessage | null> {
     const key = raw.key;
-    const chatId = key.remoteJid;
-    if (!chatId) return null;
+    if (!key.remoteJid) return null;
 
-    const message = raw.message;
+    const chatId = await this.canonicalizeJid(key.remoteJid);
+    const rawMessage = raw.message;
+    if (!rawMessage) return null;
+
+    const message = this.unwrapMessage(rawMessage);
     if (!message) return null;
+
+    // Handle reaction messages without creating phantom message bubbles
+    if (message.reactionMessage) {
+      const reaction = message.reactionMessage;
+      const targetId = reaction.key?.id;
+      const emoji = reaction.text || '';
+      if (targetId) {
+        this.onReactionCallback?.({
+          chatId,
+          messageId: targetId,
+          emoji,
+          fromMe: Boolean(key.fromMe)
+        });
+      }
+      return null;
+    }
+
+    // Filter out internal sync and protocol messages
+    if (
+      message.protocolMessage ||
+      message.senderKeyDistributionMessage ||
+      message.keepInChatMessage ||
+      message.pollUpdateMessage
+    ) {
+      return null;
+    }
 
     const isFromMe = Boolean(key.fromMe);
     const sender = isFromMe
       ? this.sock?.user?.id || 'me'
-      : (key.participant || chatId);
+      : (key.participant ? await this.canonicalizeJid(key.participant) : chatId);
 
     let type: ChatMessage['type'] = 'text';
     let text = '';
@@ -268,13 +381,64 @@ export class WhatsAppSocketClient {
       text = message.videoMessage.caption ? `🎥 ${message.videoMessage.caption}` : '🎥 [فيديو]';
     } else if (message.documentMessage) {
       type = 'document';
-      text = `📄 [ملف: ${message.documentMessage.fileName || 'مستند'}]`;
-    } else {
-      type = 'other';
-      text = '[رسالة]';
+      text = message.documentMessage.caption
+        ? `📄 ${message.documentMessage.caption}`
+        : `📄 [ملف: ${message.documentMessage.fileName || 'مستند'}]`;
     }
 
-    const replyToId = message.extendedTextMessage?.contextInfo?.stanzaId;
+    // Do NOT generate phantom bubbles for empty / unsupported messages
+    if (!text.trim() && type === 'text') {
+      return null;
+    }
+
+    const contextInfo =
+      message.extendedTextMessage?.contextInfo ||
+      message.imageMessage?.contextInfo ||
+      message.videoMessage?.contextInfo ||
+      message.audioMessage?.contextInfo ||
+      message.documentMessage?.contextInfo;
+
+    const replyToId = contextInfo?.stanzaId || undefined;
+    let quotedMessage: ChatMessage['quotedMessage'] = undefined;
+
+    if (replyToId && contextInfo) {
+      const qMsg = this.unwrapMessage(contextInfo.quotedMessage);
+      let quotedText = '';
+      let quotedType = 'text';
+
+      if (qMsg) {
+        if (qMsg.conversation) {
+          quotedText = qMsg.conversation;
+        } else if (qMsg.extendedTextMessage?.text) {
+          quotedText = qMsg.extendedTextMessage.text;
+        } else if (qMsg.imageMessage) {
+          quotedText = qMsg.imageMessage.caption ? `📷 ${qMsg.imageMessage.caption}` : '📷 صورة';
+          quotedType = 'image';
+        } else if (qMsg.videoMessage) {
+          quotedText = qMsg.videoMessage.caption ? `🎥 ${qMsg.videoMessage.caption}` : '🎥 فيديو';
+          quotedType = 'video';
+        } else if (qMsg.audioMessage) {
+          quotedText = '🎵 رسالة صوتية';
+          quotedType = 'audio';
+        } else if (qMsg.documentMessage) {
+          quotedText = `📄 ${qMsg.documentMessage.fileName || 'مستند'}`;
+          quotedType = 'document';
+        }
+      }
+
+      const myId = this.sock?.user?.id;
+      const isQuotedFromMe = contextInfo.participant
+        ? (myId ? jidNormalizedUser(contextInfo.participant) === jidNormalizedUser(myId) : false)
+        : false;
+
+      quotedMessage = {
+        id: replyToId,
+        sender: contextInfo.participant ? await this.canonicalizeJid(contextInfo.participant) : chatId,
+        senderName: isQuotedFromMe ? 'أنت' : (raw.pushName || undefined),
+        text: quotedText,
+        type: quotedType
+      };
+    }
 
     return {
       id: key.id || `msg_${Date.now()}`,
@@ -288,6 +452,7 @@ export class WhatsAppSocketClient {
       transcription,
       mediaBuffer: audioBuffer,
       replyToId: replyToId || undefined,
+      quotedMessage,
       status: isFromMe ? 'sent' : 'delivered'
     };
   }
@@ -304,9 +469,11 @@ export class WhatsAppSocketClient {
       throw new Error('WhatsApp socket is not connected');
     }
 
+    const targetJid = this.transportJids.get(chatId) || chatId;
+
     // Emit composing presence indicator
     try {
-      await this.sock.sendPresenceUpdate('composing', chatId);
+      await this.sock.sendPresenceUpdate('composing', targetJid);
     } catch {}
 
     if (options.simulatedDelayMs && options.simulatedDelayMs > 0) {
@@ -314,15 +481,81 @@ export class WhatsAppSocketClient {
     }
 
     try {
-      await this.sock.sendPresenceUpdate('paused', chatId);
+      await this.sock.sendPresenceUpdate('paused', targetJid);
     } catch {}
 
-    const quoted = options.replyToMessageId
-      ? ({ key: { remoteJid: chatId, id: options.replyToMessageId } } as any)
-      : undefined;
+    // Safely resolve quoted message: only pass if raw message is cached with authentic proto.IMessage
+    let quoted: proto.IWebMessageInfo | undefined = undefined;
+    if (options.replyToMessageId) {
+      const cached = this.rawMessages.get(options.replyToMessageId);
+      if (cached && cached.message) {
+        quoted = cached;
+      }
+    }
 
-    const sent = await this.sock.sendMessage(chatId, { text }, { quoted });
-    return { messageId: sent?.key.id || `msg_${Date.now()}` };
+    const sent = await this.sock.sendMessage(targetJid, { text }, quoted ? { quoted } : undefined);
+
+    if (sent?.key?.id && sent.message) {
+      this.rawMessages.set(sent.key.id, sent);
+    }
+
+    return { messageId: sent?.key?.id || `msg_${Date.now()}` };
+  }
+
+  /**
+   * Sends a native WhatsApp PTT voice note (recording audio)
+   */
+  async sendVoiceNote(
+    chatId: string,
+    audioBuffer: Buffer | Uint8Array,
+    options: { replyToMessageId?: string; simulatedRecordingDurationMs?: number } = {}
+  ): Promise<{ messageId: string }> {
+    if (!this.sock) {
+      throw new Error('WhatsApp socket is not connected');
+    }
+
+    const targetJid = this.transportJids.get(chatId) || chatId;
+
+    // Emit recording audio presence indicator
+    try {
+      await this.sock.sendPresenceUpdate('recording', targetJid);
+    } catch {}
+
+    const recordingDelay = options.simulatedRecordingDurationMs ?? 2500;
+    if (recordingDelay > 0) {
+      await new Promise((resolve) => setTimeout(resolve, recordingDelay));
+    }
+
+    try {
+      await this.sock.sendPresenceUpdate('paused', targetJid);
+    } catch {}
+
+    // Safely resolve quoted message if available
+    let quoted: proto.IWebMessageInfo | undefined = undefined;
+    if (options.replyToMessageId) {
+      const cached = this.rawMessages.get(options.replyToMessageId);
+      if (cached && cached.message) {
+        quoted = cached;
+      }
+    }
+
+    const buf = Buffer.isBuffer(audioBuffer) ? audioBuffer : Buffer.from(audioBuffer);
+
+    const sent = await this.sock.sendMessage(
+      targetJid,
+      {
+        audio: buf,
+        mimetype: 'audio/ogg; codecs=opus',
+        ptt: true
+      },
+      quoted ? { quoted } : undefined
+    );
+
+    if (sent?.key?.id && sent.message) {
+      this.rawMessages.set(sent.key.id, sent);
+    }
+
+    return { messageId: sent?.key?.id || `msg_${Date.now()}` };
   }
 
   /**
@@ -330,11 +563,12 @@ export class WhatsAppSocketClient {
    */
   async sendReaction(chatId: string, messageId: string, emoji: string): Promise<void> {
     if (!this.sock) throw new Error('WhatsApp socket is not connected');
-    await this.sock.sendMessage(chatId, {
+    const targetJid = this.transportJids.get(chatId) || chatId;
+    await this.sock.sendMessage(targetJid, {
       react: {
         text: emoji,
         key: {
-          remoteJid: chatId,
+          remoteJid: targetJid,
           id: messageId
         }
       }

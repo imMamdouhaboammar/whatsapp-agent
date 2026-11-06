@@ -117,21 +117,40 @@ export function PersonaSettingsModal({
             />
           </div>
 
-          {/* Model Selection */}
+          {/* Model & Voice Selection */}
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="text-xs font-semibold text-slate-300 block mb-1.5">موديل Gemini المعتمد:</label>
               <select
                 value={persona.model}
                 onChange={(e) => setPersona({ ...persona, model: e.target.value })}
-                className="w-full px-3 py-2 bg-[#0b0f14] border border-[#263140] rounded-xl text-xs text-slate-100 focus:outline-hidden focus:border-emerald-500"
+                className="w-full px-3 py-2 bg-[#0b0f14] border border-[#263140] rounded-xl text-xs text-slate-100 focus:outline-hidden focus:border-emerald-500 font-mono"
               >
-                <option value="gemini-2.5-flash">Gemini 2.5 Flash (فائق السرعة - ننصح به)</option>
-                <option value="gemini-2.5-pro">Gemini 2.5 Pro (تفكير عميق)</option>
-                <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
+                <option value="gemini-4-argon">gemini-4-argon (أقوى موديل تفكير عميق لـ Google - مفعل)</option>
+                <option value="gemini-3.8-flash">gemini-3.8-flash (الأحدث والأسرع)</option>
+                <option value="gemini-2.5-flash">gemini-2.5-flash (مستقر وعام)</option>
+                <option value="gemini-2.5-pro">gemini-2.5-pro (احترافي متقدم)</option>
               </select>
             </div>
 
+            <div>
+              <label className="text-xs font-semibold text-slate-300 block mb-1.5">صوت الفويس نوت (Gemini 3.8 Flash TTS):</label>
+              <select
+                value={persona.voiceName || 'kore'}
+                onChange={(e) => setPersona({ ...persona, voiceName: e.target.value })}
+                className="w-full px-3 py-2 bg-[#0b0f14] border border-[#263140] rounded-xl text-xs text-slate-100 focus:outline-hidden focus:border-emerald-500"
+              >
+                <option value="kore">🎙️ Kore (Gemini 3.8 Flash TTS - تفاعلي وطبيعي)</option>
+                <option value="fenrir">🎙️ Fenrir (Gemini 3.8 Flash TTS - دافئ ورجالي)</option>
+                <option value="puck">🎙️ Puck (Gemini 3.8 Flash TTS - شبابي وحيوي)</option>
+                <option value="aoede">🎙️ Aoede (Gemini 3.8 Flash TTS - نسائي هادئ وراقي)</option>
+                <option value="charon">🎙️ Charon (Gemini 3.8 Flash TTS - رسمي وفخم)</option>
+                <option value="ar-XA-Chirp3-HD-Fenrir">🎙️ Chirp 3 HD Fenrir (عربي/مصري)</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="text-xs font-semibold text-slate-300 block mb-1.5">
                 حد أدنى للثقة قبل الموافقة التلقائية: {(persona.minConfidence * 100).toFixed(0)}%
@@ -146,17 +165,16 @@ export function PersonaSettingsModal({
                 className="w-full mt-2 accent-emerald-500"
               />
             </div>
-          </div>
 
-          {/* Tone Description */}
-          <div>
-            <label className="text-xs font-semibold text-slate-300 block mb-1.5">نبرة وأسلوب الحديث (Tone):</label>
-            <input
-              type="text"
-              value={persona.tone}
-              onChange={(e) => setPersona({ ...persona, tone: e.target.value })}
-              className="w-full px-3.5 py-2 bg-[#0b0f14] border border-[#263140] rounded-xl text-xs text-slate-100 focus:outline-hidden focus:border-emerald-500"
-            />
+            <div>
+              <label className="text-xs font-semibold text-slate-300 block mb-1.5">نبرة وأسلوب الحديث (Tone):</label>
+              <input
+                type="text"
+                value={persona.tone}
+                onChange={(e) => setPersona({ ...persona, tone: e.target.value })}
+                className="w-full px-3.5 py-2 bg-[#0b0f14] border border-[#263140] rounded-xl text-xs text-slate-100 focus:outline-hidden focus:border-emerald-500"
+              />
+            </div>
           </div>
 
           {/* System Prompt / Guidelines */}

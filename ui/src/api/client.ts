@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatSummary, ModeratorPersona, PolicyConfig, SystemStatus, AgentDraft } from './types';
+import type { ChatMessage, ChatSummary, ModeratorPersona, PolicyConfig, SystemStatus, AgentDraft, ContactDossier } from './types';
 
 const BASE_URL = '/api';
 
@@ -6,6 +6,30 @@ export const api = {
   async getStatus(): Promise<SystemStatus> {
     const res = await fetch(`${BASE_URL}/status`);
     if (!res.ok) throw new Error('Failed to fetch status');
+    return res.json();
+  },
+
+  async getDossier(chatId: string): Promise<{ dossier: ContactDossier }> {
+    const res = await fetch(`${BASE_URL}/contacts/${encodeURIComponent(chatId)}/dossier`);
+    if (!res.ok) throw new Error('Failed to fetch dossier');
+    return res.json();
+  },
+
+  async addFact(chatId: string, fact: string): Promise<{ success: boolean; dossier: ContactDossier }> {
+    const res = await fetch(`${BASE_URL}/contacts/${encodeURIComponent(chatId)}/dossier/facts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fact })
+    });
+    return res.json();
+  },
+
+  async addCommitment(chatId: string, commitment: string): Promise<{ success: boolean; dossier: ContactDossier }> {
+    const res = await fetch(`${BASE_URL}/contacts/${encodeURIComponent(chatId)}/dossier/commitments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commitment })
+    });
     return res.json();
   },
 
@@ -65,11 +89,11 @@ export const api = {
     return res.json();
   },
 
-  async approveDraft(draftId: string, editedText?: string): Promise<{ success: boolean }> {
+  async approveDraft(draftId: string, editedText?: string, asVoice?: boolean): Promise<{ success: boolean }> {
     const res = await fetch(`${BASE_URL}/drafts/${draftId}/approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ editedText })
+      body: JSON.stringify({ editedText, asVoice })
     });
     return res.json();
   },

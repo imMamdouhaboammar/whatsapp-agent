@@ -2,6 +2,14 @@ export type AutonomyAction = 'reply' | 'draft' | 'ignore' | 'human' | 'act';
 export type PolicyEffect = 'allow' | 'require_approval' | 'deny';
 export type AgentMode = 'autopilot' | 'copilot' | 'human';
 
+export interface QuotedMessageInfo {
+  id: string;
+  sender: string;
+  senderName?: string;
+  text: string;
+  type?: string;
+}
+
 export interface ChatMessage {
   id: string;
   chatId: string;
@@ -15,6 +23,8 @@ export interface ChatMessage {
   mediaBuffer?: Buffer | Uint8Array;
   transcription?: string;
   replyToId?: string;
+  quotedMessage?: QuotedMessageInfo;
+  reactions?: string[];
   status?: 'pending' | 'sent' | 'delivered' | 'read';
 }
 
@@ -34,10 +44,14 @@ export interface AgentDecision {
   action: AutonomyAction;
   intent: string;
   replyText?: string;
+  sendAsVoiceNote?: boolean;
   reasoning: string;
   confidence: number;
   simulatedDelayMs: number;
   suggestedReaction?: string;
+  extractedFacts?: string[];
+  extractedCommitments?: string[];
+  contactStage?: ContactStage;
 }
 
 export interface PolicyRule {
@@ -67,6 +81,7 @@ export interface ModeratorPersona {
   simulateTypingDelay: boolean;
   minTypingDelayMs: number;
   maxTypingDelayMs: number;
+  voiceName?: string;
 }
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'qr_ready' | 'pairing_code_ready' | 'connected' | 'failed';
@@ -90,8 +105,23 @@ export interface AgentDraft {
   incomingMessageId: string;
   incomingText: string;
   proposedReply: string;
+  sendAsVoiceNote?: boolean;
   reasoning: string;
   confidence: number;
   status: 'pending' | 'approved' | 'rejected' | 'sent';
   createdAt: number;
+}
+
+export type ContactStage = 'lead' | 'qualified' | 'negotiation' | 'customer' | 'vip' | 'archived';
+
+export interface ContactDossier {
+  chatId: string;
+  name: string;
+  phone?: string;
+  stage: ContactStage;
+  facts: string[];
+  commitments: string[];
+  preferredTone?: string;
+  notes?: string;
+  updatedAt: number;
 }

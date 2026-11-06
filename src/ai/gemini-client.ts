@@ -23,38 +23,33 @@ export interface ChatContent {
 export class GeminiClient {
   private apiKey?: string;
   private project?: string;
-  private location = 'us-central1';
+  private location = 'global';
   private accessToken?: string;
   private tokenExpiresAt = 0;
-  private preferVertex = false;
+  private preferVertex = true;
 
   constructor(options: { apiKey?: string; project?: string; location?: string } = {}) {
     this.apiKey = options.apiKey || process.env.GEMINI_API_KEY;
-    this.project = options.project || process.env.GOOGLE_CLOUD_PROJECT;
+    this.project = options.project || process.env.GOOGLE_CLOUD_PROJECT || 'project-3a53318f-795c-46b9-888';
     if (options.location) this.location = options.location;
   }
 
   /**
-   * Lazily fetches or refreshes access token from gcloud CLI if no API key is specified
+   * Lazily fetches or refreshes access token from gcloud CLI
    */
   private async ensureAuth(): Promise<{ type: 'api_key' | 'vertex'; tokenOrKey: string; project?: string }> {
-    if (this.apiKey) {
-      return { type: 'api_key', tokenOrKey: this.apiKey };
-    }
-
     const now = Date.now();
     if (this.accessToken && now < this.tokenExpiresAt - 60_000) {
       return { type: 'vertex', tokenOrKey: this.accessToken, project: this.project };
     }
 
     try {
-      // Resolve project if not specified
       if (!this.project) {
         const proc = Bun.spawn(['gcloud', 'config', 'get-value', 'project'], { stdout: 'pipe' });
-        this.project = (await new Response(proc.stdout).text()).trim();
+        this.project = (await new Response(proc.stdout).text()).trim() || 'project-3a53318f-795c-46b9-888';
       }
 
-      // Fetch access token via gcloud
+      // Fetch access token via gcloud CLI (active user: mohammedkhaledopuus@gmail.com)
       const tokenProc = Bun.spawn(['gcloud', 'auth', 'print-access-token'], { stdout: 'pipe' });
       const token = (await new Response(tokenProc.stdout).text()).trim();
 
@@ -83,19 +78,12 @@ export class GeminiClient {
     usage?: { promptTokens?: number; candidatesTokens?: number };
   }> {
     const auth = await this.ensureAuth();
-    const model = options.model ?? 'gemini-2.5-flash';
+    const model = options.model ?? 'gemini-4-argon';
 
-    let endpoint = '';
     const headers: Record<string, string> = {
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
+      'x-goog-api-client': 'vertex-agent-studio-getcode/1'
     };
-
-    if (auth.type === 'vertex') {
-      endpoint = `https://${this.location}-aiplatform.googleapis.com/v1/projects/${auth.project}/locations/${this.location}/publishers/google/models/${model}:generateContent`;
-      headers.Authorization = `Bearer ${auth.tokenOrKey}`;
-    } else {
-      endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${auth.tokenOrKey}`;
-    }
 
     const body: any = {
       contents: contents.map((c) => ({
@@ -120,13 +108,33 @@ export class GeminiClient {
       body.generationConfig = generationConfig;
     }
 
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body)
-    });
+    const callApi = async (targetModel: string) => {
+      let url = '';
+      if (auth.type === 'vertex') {
+        const host = this.location === 'global' ? 'aiplatform.googleapis.com' : `${this.location}-aiplatform.googleapis.com`;
+        url = `https://${host}/v1/projects/${auth.project}/locations/${this.location}/publishers/google/models/${targetModel}:generateContent`;
+        headers.Authorization = `Bearer ${auth.tokenOrKey}`;
+      } else {
+        url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${auth.tokenOrKey}`;
+      }
 
-    const data: any = await res.json();
+      return fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body)
+      });
+    };
+
+    let res = await callApi(model);
+    let data: any = await res.json();
+
+    // Fallback gracefully if model not yet enabled on Vertex AI endpoint
+    if (!res.ok && res.status === 404 && auth.type === 'vertex') {
+      const fallbackModel = model.includes('argon') || model.includes('pro') ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
+      console.warn(`⚠️ [GeminiClient] Model "${model}" is not enabled in this region, gracefully falling back to "${fallbackModel}"`);
+      res = await callApi(fallbackModel);
+      data = await res.json();
+    }
     if (!res.ok) {
       const msg = data.error?.message || `HTTP ${res.status}: ${res.statusText}`;
       throw new Error(`Gemini API Error: ${msg}`);

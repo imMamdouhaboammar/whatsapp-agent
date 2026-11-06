@@ -23,23 +23,45 @@ export class AudioTranscriber {
   "language": "اللهجة أو اللغة المكتشفة"
 }`;
 
-    const response = await this.gemini.generateContent([
-      {
-        role: 'user',
-        parts: [
-          {
-            inlineData: {
-              mimeType,
-              data: base64Audio
-            }
-          },
-          { text: prompt }
-        ]
-      }
-    ], {
-      model: 'gemini-2.5-flash',
-      responseMimeType: 'application/json'
-    });
+    let response;
+    try {
+      response = await this.gemini.generateContent([
+        {
+          role: 'user',
+          parts: [
+            {
+              inlineData: {
+                mimeType,
+                data: base64Audio
+              }
+            },
+            { text: prompt }
+          ]
+        }
+      ], {
+        model: 'gemini-3.5-transcribe',
+        responseMimeType: 'application/json'
+      });
+    } catch {
+      // Graceful fallback to gemini-2.5-flash
+      response = await this.gemini.generateContent([
+        {
+          role: 'user',
+          parts: [
+            {
+              inlineData: {
+                mimeType,
+                data: base64Audio
+              }
+            },
+            { text: prompt }
+          ]
+        }
+      ], {
+        model: 'gemini-2.5-flash',
+        responseMimeType: 'application/json'
+      });
+    }
 
     try {
       const parsed = JSON.parse(response.text);

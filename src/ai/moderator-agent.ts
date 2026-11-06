@@ -17,18 +17,20 @@ export const DEFAULT_MODERATOR_PERSONA: ModeratorPersona = {
 3. تفاعل مع السياق السابق للحديث وافهم قصد المتصل بدقة.
 4. إذا سأل المتصل عن أمر حساس أو مالي أو طلب قرار مصيري لا تعرفه، اختر الأكشن "draft" أو "human" ليراجعه صاحب الحساب.
 5. لا تتجاهل رسائل العملاء أو الأصدقاء، بل رد بما يفيد ويسهل التعامل.
-6. يمكنك اقتراح إيموجي خفيف مناسب لطبيعة الكلام (مثل: 🙏, 👍, 😊) لجعل المحادثة دافئة وطبيعية.`,
+6. يمكنك اقتراح إيموجي خفيف مناسب لطبيعة الكلام (مثل: 🙏, 👍, 😊) لجعل المحادثة دافئة وطبيعية.
+7. أنت تمتلك ميزة تسجيل وإرسال رسائل صوتية حقيقية (Voice Notes / PTT)! إذا طلب المتصل فويس نوت (مثل: "ابعتلي فويس"، "اشرحلي بفويس نوت"، "سجل فويس")، أو أردت إرسال رد صوتي دافئ، اختر الأكشن "reply" واجعل sendAsVoiceNote: true. لا تحول الطلب إلى draft لمجرد أنه طلب فويس نوت لأن النظام يسجله ويبعثه تلقائياً كفويس نوت حقيقي!`,
   rules: [
     'عدم إعطاء وعود مالية أو خصومات بدون مراجعة',
     'الترحيب الودود في بداية المحادثات',
     'التحدث باختصار ووضوح كإنسان طبيعي'
   ],
-  model: 'gemini-2.5-flash',
+  model: process.env.GEMINI_MODEL || 'gemini-4-argon',
   temperature: 0.7,
   minConfidence: 0.8,
   simulateTypingDelay: true,
   minTypingDelayMs: 2000,
-  maxTypingDelayMs: 5000
+  maxTypingDelayMs: 5000,
+  voiceName: 'kore'
 };
 
 export const DEFAULT_POLICY_CONFIG: PolicyConfig = {
@@ -105,13 +107,54 @@ export class ModeratorAgent {
       })
       .join('\n');
 
-    const prompt = `سياق المحادثة السابقة بين الطرفين:\n${historyText}\n
+    let quotedContextPrompt = '';
+    if (message.quotedMessage) {
+      quotedContextPrompt = `\n📌 تنبيه وسياق محوري (الرد بالسحب / Reply):
+قام المستخدم بعمل Reply مخصص على الرسالة التالية:
+- صاحب الرسالة المقتبسة: ${message.quotedMessage.senderName || 'صاحب الحساب'}
+- نص الرسالة المقتبسة: "${message.quotedMessage.text}"
+(ملاحظة مهمة: كلام المستخدم الحالي هو تعليق أو إجابة مباشرة على محتوى هذه الرسالة المقتبسة بعينها! خذ هذا السياق في عين الاعتبار أثناء صياغة الرد).\n`;
+    } else if (message.replyToId) {
+      const referenced = this.memoryStore.getMessage(message.chatId, message.replyToId);
+      if (referenced) {
+        quotedContextPrompt = `\n📌 تنبيه وسياق محوري (الرد بالسحب / Reply):
+قام المستخدم بعمل Reply مخصص على الرسالة التالية:
+- صاحب الرسالة المقتبسة: ${referenced.isFromMe ? 'أنا (صاحب الحساب/الموديرتور)' : (referenced.senderName || 'الطرف الآخر')}
+- نص الرسالة المقتبسة: "${referenced.text}"
+(ملاحظة مهمة: كلام المستخدم الحالي هو تعليق أو إجابة مباشرة على محتوى هذه الرسالة المقتبسة بعينها! خذ هذا السياق في عين الاعتبار أثناء صياغة الرد).\n`;
+      }
+    }
+
+    // Fetch contact dossier if available for long-term episodic memory
+    const dossier = this.memoryStore.getDossier(message.chatId);
+    let dossierPrompt = '';
+    if (dossier) {
+      const factsList = dossier.facts?.length
+        ? dossier.facts.map((f) => `- ${f}`).join('\n')
+        : 'لا توجد حقائق مسجلة بعد';
+      const commitmentsList = dossier.commitments?.length
+        ? dossier.commitments.map((c) => `- ${c}`).join('\n')
+        : 'لا توجد التزامات معلقة';
+      dossierPrompt = `\n📌 ملف جهة الاتصال والذاكرة التراكمية (Contact Dossier):
+- المرحلة الحالية: ${dossier.stage || 'lead'}
+- حقائق سابقة معروفة عن الشخص:
+${factsList}
+- وعود والتزامات سابقة:
+${commitmentsList}\n`;
+    }
+
+    const prompt = `سياق المحادثة السابقة بين الطرفين:
+${historyText}
+${quotedContextPrompt}
+${dossierPrompt}
 الرسالة الجديدة الواردة الآن:
 من: ${message.senderName || message.sender}
 نص الرسالة: ${message.text || message.transcription || `[${message.type}]`}
 
 المطلوب منك:
 حلل الرسالة كإنسان موديرتور، وحدد النية (intent)، ومستوى الثقة، والرد الطبيعي المناسب جداً بالسياق.
+واستخرج أي حقائق جديدة أو التزامات ذكرها الطرفان لتحديث ملف جهة الاتصال التراكمي.
+
 اختر الأكشن من بين:
 - "reply": للرد التلقائي المباشر على الرسالة.
 - "draft": إذا كانت الرسالة تحتاج مراجعة أو موافقة من صاحب الحساب أولاً.
@@ -120,12 +163,16 @@ export class ModeratorAgent {
 
 أرجع النتيجة بصيغة JSON فقط:
 {
-  "action": "reply",
+  "action": "reply | draft | human | ignore",
   "intent": "greeting | general_faq | casual_chat | sensitive_inquiry | spam | other",
-  "replyText": "الرد البشري الطبيعي الذي سيتم إرساله",
+  "replyText": "الرد البشري الطبيعي الذي سيتم إرساله أو تسجيله صوتياً",
+  "sendAsVoiceNote": false, // اجعلها true إذا طلب المتصل رسالة صوتية/فويس نوت صراحة
   "reasoning": "سبب اختيار هذا الرد والتصرف في جملة واحدة",
   "confidence": 0.95,
-  "suggestedReaction": "إيموجي اختياري أو اتركه فارغ"
+  "suggestedReaction": "إيموجي اختياري أو اتركه فارغ",
+  "extractedFacts": ["أي معلومة جديدة مفيدة عن الشخص أو متطلباته، مثل: ميزانيته، طبيعة عمله"],
+  "extractedCommitments": ["أي وعد أو التزام قدمه أحد الطرفين، مثل: وعدته بالتواصل غداً"],
+  "contactStage": "lead | qualified | negotiation | customer | vip"
 }`;
 
     const systemInstruction = `${this.persona.systemPrompt}\nالنبرة المطلوبة: ${this.persona.tone}\nالقواعد:\n${this.persona.rules.map((r) => `- ${r}`).join('\n')}`;
@@ -152,11 +199,43 @@ export class ModeratorAgent {
         action: json.action || 'reply',
         intent: json.intent || 'general_faq',
         replyText: json.replyText,
+        sendAsVoiceNote: Boolean(json.sendAsVoiceNote),
         reasoning: json.reasoning || 'Automated moderation evaluation',
         confidence: Number(json.confidence ?? 0.85),
         simulatedDelayMs: simulatedDelay,
-        suggestedReaction: json.suggestedReaction
+        suggestedReaction: json.suggestedReaction,
+        extractedFacts: Array.isArray(json.extractedFacts) ? json.extractedFacts : undefined,
+        extractedCommitments: Array.isArray(json.extractedCommitments) ? json.extractedCommitments : undefined,
+        contactStage: json.contactStage
       };
+
+      // Persist newly discovered facts into the Contact Dossier
+      if (Array.isArray(json.extractedFacts)) {
+        for (const fact of json.extractedFacts) {
+          if (typeof fact === 'string' && fact.trim()) {
+            this.memoryStore.addFactToDossier(message.chatId, fact.trim());
+          }
+        }
+      }
+
+      // Persist newly extracted commitments into the Contact Dossier
+      if (Array.isArray(json.extractedCommitments)) {
+        for (const comm of json.extractedCommitments) {
+          if (typeof comm === 'string' && comm.trim()) {
+            this.memoryStore.addCommitmentToDossier(message.chatId, comm.trim());
+          }
+        }
+      }
+
+      // Update stage if recognized
+      if (json.contactStage) {
+        const existingDossier = this.memoryStore.getDossier(message.chatId);
+        if (existingDossier) {
+          existingDossier.stage = json.contactStage;
+          existingDossier.updatedAt = Date.now();
+          this.memoryStore.saveDossier(existingDossier);
+        }
+      }
     } catch (err: any) {
       parsedDecision = {
         action: 'human',
@@ -191,6 +270,7 @@ export class ModeratorAgent {
         incomingMessageId: message.id,
         incomingText: message.text || message.transcription || '',
         proposedReply: parsedDecision.replyText || '',
+        sendAsVoiceNote: parsedDecision.sendAsVoiceNote,
         reasoning: parsedDecision.reasoning,
         confidence: parsedDecision.confidence,
         status: 'pending',

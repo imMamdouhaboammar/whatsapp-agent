@@ -2,6 +2,9 @@ import { serveStatic } from 'hono/bun';
 import { AudioTranscriber } from './ai/audio-transcriber';
 import { GeminiClient } from './ai/gemini-client';
 import { ModeratorAgent } from './ai/moderator-agent';
+import { VoiceSynthesizer } from './ai/voice-synthesizer';
+import { BurstAccumulator, type FusedBurst } from './domain/burst-accumulator';
+import { MessageSplitter } from './domain/message-splitter';
 import { MemoryStore } from './domain/memory-store';
 import { HumanRateLimiter } from './domain/rate-limiter';
 import type { ChatMessage } from './domain/types';
@@ -23,84 +26,176 @@ export async function createFableWhatsAppAgent(options: {
   const memoryStore = new MemoryStore({ dataDir });
   const geminiClient = new GeminiClient();
   const audioTranscriber = new AudioTranscriber(geminiClient);
+  const voiceSynthesizer = new VoiceSynthesizer();
   const rateLimiter = new HumanRateLimiter({
-    minDelayMs: 2000,
-    maxDelayMs: 5000
+    minDelayMs: 1500,
+    maxDelayMs: 4500
   });
+
+  const messageSplitter = new MessageSplitter();
 
   const moderatorAgent = new ModeratorAgent(geminiClient, memoryStore, {
     rateLimiter
   });
 
-  const whatsappClient = new WhatsAppSocketClient({
+  let whatsappClient: WhatsAppSocketClient;
+
+  // Burst Accumulator: fuses multi-line rapid messages before calling Gemini
+  const burstAccumulator = new BurstAccumulator({
+    windowMs: 2000,
+    maxBurstMessages: 6,
+    onBurst: async (burst: FusedBurst) => {
+      const fusedMsg: ChatMessage = {
+        id: burst.lastMessageId,
+        chatId: burst.chatId,
+        sender: burst.sender,
+        senderName: burst.senderName,
+        text: burst.fusedText,
+        timestamp: burst.timestamp,
+        isFromMe: false,
+        type: 'text',
+        replyToId: burst.replyToId,
+        quotedMessage: burst.quotedMessage
+      };
+
+      console.log(`💬 [Burst Fused] From: ${fusedMsg.senderName || fusedMsg.sender} | Messages: ${fusedMsg.text.replace(/\n/g, ' ↵ ')}`);
+
+      try {
+        const result = await moderatorAgent.processInboundMessage(fusedMsg);
+
+        // Broadcast thought & reasoning to live UI
+        sse.broadcast('agent_thought', {
+          chatId: fusedMsg.chatId,
+          messageId: fusedMsg.id,
+          decision: result.decision
+        });
+
+        if (result.draftCreated) {
+          console.log(`📝 [Draft Created] Approval needed for chat ${fusedMsg.chatId}`);
+          sse.broadcast('new_draft', result.draftCreated);
+        }
+
+        if (result.shouldSendImmediately && result.decision.replyText) {
+          await rateLimiter.enqueue(fusedMsg.chatId, async () => {
+            // 1. Send out-of-band immediate reaction if suggested
+            if (result.decision.suggestedReaction) {
+              try {
+                await whatsappClient.sendReaction(fusedMsg.chatId, fusedMsg.id, result.decision.suggestedReaction);
+                memoryStore.addReaction(fusedMsg.chatId, fusedMsg.id, result.decision.suggestedReaction);
+                sse.broadcast('message_reaction', {
+                  chatId: fusedMsg.chatId,
+                  messageId: fusedMsg.id,
+                  emoji: result.decision.suggestedReaction
+                });
+              } catch {}
+            }
+
+            // 2. Decide between Voice Note (PTT) vs Split Text Bubbles
+            if (result.decision.sendAsVoiceNote) {
+              const personaVoice = moderatorAgent.getPersona().voiceName;
+              console.log(`🎙️ [Agent Voice Auto-Reply] Synthesizing & sending WhatsApp voice note using ${personaVoice || 'Chirp3-HD-Fenrir'}...`);
+              try {
+                const audioBuffer = await voiceSynthesizer.synthesizeVoice(result.decision.replyText!, personaVoice);
+                const sent = await whatsappClient.sendVoiceNote(fusedMsg.chatId, audioBuffer, {
+                  replyToMessageId: fusedMsg.id
+                });
+
+                const outboundMsg: ChatMessage = {
+                  id: sent.messageId,
+                  chatId: fusedMsg.chatId,
+                  sender: 'me',
+                  text: `🎵 [رسالة صوتية صادرة: ${result.decision.replyText!}]`,
+                  transcription: result.decision.replyText!,
+                  timestamp: Date.now(),
+                  isFromMe: true,
+                  type: 'audio',
+                  replyToId: fusedMsg.id,
+                  quotedMessage: fusedMsg.quotedMessage,
+                  status: 'sent'
+                };
+
+                memoryStore.addMessage(outboundMsg);
+                sse.broadcast('new_message', outboundMsg);
+                sse.broadcast('chat_updated', { chatId: fusedMsg.chatId });
+                return;
+              } catch (err: any) {
+                console.warn('⚠️ [Voice Synthesis Failed, falling back to text]:', err.message);
+              }
+            }
+
+            // Natural multi-bubble human splitting for text replies
+            const bubbles = messageSplitter.split(result.decision.replyText!);
+            console.log(`🤖 [Agent Auto-Reply] Replying in ${bubbles.length} natural bubble(s)...`);
+
+            for (let i = 0; i < bubbles.length; i++) {
+              const bubbleText = bubbles[i];
+              const isFirstBubble = i === 0;
+              const delay = messageSplitter.calculateTypingDelay(bubbleText);
+
+              const sent = await whatsappClient.sendMessage(fusedMsg.chatId, bubbleText, {
+                replyToMessageId: isFirstBubble ? fusedMsg.id : undefined,
+                simulatedDelayMs: delay
+              });
+
+              const outboundMsg: ChatMessage = {
+                id: sent.messageId,
+                chatId: fusedMsg.chatId,
+                sender: 'me',
+                text: bubbleText,
+                timestamp: Date.now(),
+                isFromMe: true,
+                type: 'text',
+                replyToId: isFirstBubble ? fusedMsg.id : undefined,
+                quotedMessage: isFirstBubble ? fusedMsg.quotedMessage : undefined,
+                status: 'sent'
+              };
+
+              memoryStore.addMessage(outboundMsg);
+              sse.broadcast('new_message', outboundMsg);
+              sse.broadcast('chat_updated', { chatId: fusedMsg.chatId });
+            }
+          });
+        }
+      } catch (err: any) {
+        console.error('❌ [Agent Processing Error]:', err.message);
+      }
+    }
+  });
+
+  whatsappClient = new WhatsAppSocketClient({
     sessionDir: `${dataDir}/session`,
     audioTranscriber,
     onStateChange: (state) => {
       console.log(`📡 [WhatsApp State] ${state.state}`);
       sse.broadcast('state_change', state);
     },
+    onReaction: ({ chatId, messageId, emoji }) => {
+      memoryStore.addReaction(chatId, messageId, emoji);
+      sse.broadcast('message_reaction', { chatId, messageId, emoji });
+      sse.broadcast('chat_updated', { chatId });
+    },
     onMessage: async (msg: ChatMessage) => {
-      // 1. Record incoming message
+      if (!msg.text?.trim() && msg.type === 'text') return;
+      if (msg.text === '[رسالة]') return;
+
+      // 1. Record incoming message immediately to SQLite and broadcast to UI
       memoryStore.addMessage(msg);
       sse.broadcast('new_message', msg);
       sse.broadcast('chat_updated', { chatId: msg.chatId });
 
       // If message is from me, do not run agent reply loop
-      if (msg.isFromMe) return;
-
-      console.log(`💬 [Inbound Message] From: ${msg.senderName || msg.sender} | Text: ${msg.text.slice(0, 50)}`);
-
-      // 2. Process message through Moderator Agent
-      try {
-        const result = await moderatorAgent.processInboundMessage(msg);
-
-        // Broadcast thought & reasoning to live UI
-        sse.broadcast('agent_thought', {
-          chatId: msg.chatId,
-          messageId: msg.id,
-          decision: result.decision
-        });
-
-        if (result.draftCreated) {
-          console.log(`📝 [Draft Created] Approval needed for chat ${msg.chatId}`);
-          sse.broadcast('new_draft', result.draftCreated);
-        }
-
-        if (result.shouldSendImmediately && result.decision.replyText) {
-          console.log(`🤖 [Agent Auto-Reply] Replying with ${result.decision.simulatedDelayMs}ms typing delay...`);
-
-          // Optionally send reaction first
-          if (result.decision.suggestedReaction) {
-            whatsappClient.sendReaction(msg.chatId, msg.id, result.decision.suggestedReaction).catch(() => {});
-          }
-
-          // Enqueue reply through human rate limiter
-          await rateLimiter.enqueue(msg.chatId, async () => {
-            const sent = await whatsappClient.sendMessage(msg.chatId, result.decision.replyText!, {
-              replyToMessageId: msg.id,
-              simulatedDelayMs: result.decision.simulatedDelayMs
-            });
-
-            const outboundMsg: ChatMessage = {
-              id: sent.messageId,
-              chatId: msg.chatId,
-              sender: 'me',
-              text: result.decision.replyText!,
-              timestamp: Date.now(),
-              isFromMe: true,
-              type: 'text',
-              replyToId: msg.id,
-              status: 'sent'
-            };
-
-            memoryStore.addMessage(outboundMsg);
-            sse.broadcast('new_message', outboundMsg);
-            sse.broadcast('chat_updated', { chatId: msg.chatId });
-          });
-        }
-      } catch (err: any) {
-        console.error('❌ [Agent Processing Error]:', err.message);
+      if (msg.isFromMe) {
+        return;
       }
+
+      const myPhone = whatsappClient.getState().connectedUser?.phone;
+      if (myPhone && msg.chatId.startsWith(myPhone)) {
+        // Self note (Note to Self) - do not auto-reply to own sync chat
+        return;
+      }
+
+      // 2. Push into Burst Accumulator (debounces rapid messages into single conversational turn)
+      burstAccumulator.push(msg);
     }
   });
 
@@ -110,7 +205,8 @@ export async function createFableWhatsAppAgent(options: {
     whatsappClient,
     moderatorAgent,
     sse,
-    audioTranscriber
+    audioTranscriber,
+    voiceSynthesizer
   });
 
   // Serve static UI assets if built

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Bot, QrCode, Sliders, Play, Smartphone, Wifi, WifiOff } from 'lucide-react';
 import { api } from './api/client';
 import type { AgentDecision, AgentDraft, AgentMode, ChatMessage, ChatSummary, ModeratorPersona, PolicyConfig, SystemStatus } from './api/types';
@@ -19,6 +19,12 @@ export function App() {
   const [policy, setPolicy] = useState<PolicyConfig | undefined>();
   const [latestThought, setLatestThought] = useState<{ chatId: string; messageId: string; decision: AgentDecision } | undefined>();
 
+  // Ref to always have the latest selectedChatId in SSE and polling callbacks
+  const selectedChatIdRef = useRef<string | undefined>(selectedChatId);
+  useEffect(() => {
+    selectedChatIdRef.current = selectedChatId;
+  }, [selectedChatId]);
+
   // Modals state
   const [isPairingOpen, setIsPairingOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -35,11 +41,12 @@ export function App() {
       ]);
 
       if (statusRes) setStatus(statusRes);
-      if (chatsRes.chats) {
+      if (chatsRes.chats && Array.isArray(chatsRes.chats)) {
         setChats(chatsRes.chats);
-        if (!selectedChatId && chatsRes.chats.length > 0) {
-          setSelectedChatId(chatsRes.chats[0].id);
-        }
+        setSelectedChatId((prev) => {
+          const exists = chatsRes.chats.some((c: any) => c.id === prev);
+          return (!prev || !exists) && chatsRes.chats.length > 0 ? chatsRes.chats[0].id : prev;
+        });
       }
       if (draftsRes.drafts) setDrafts(draftsRes.drafts);
       if (personaRes) {
@@ -49,17 +56,60 @@ export function App() {
     } catch (err) {
       console.error('Error loading data:', err);
     }
-  }, [selectedChatId]);
+  }, []);
 
-  // Load messages when selectedChatId changes
+  // Continuous Harvest Sync: Poll active chat messages every 2.5s for seamless resilience
   useEffect(() => {
     if (!selectedChatId) return;
+
+    // Immediately fetch messages when chat is selected
     api.getMessages(selectedChatId).then((res) => {
       setMessages(res.messages || []);
     }).catch(console.error);
+
+    const harvestTimer = setInterval(async () => {
+      try {
+        const res = await api.getMessages(selectedChatId);
+        if (res.messages && Array.isArray(res.messages)) {
+          setMessages((prev) => {
+            if (prev.length !== res.messages.length) return res.messages;
+            const isDifferent = res.messages.some((newMsg, idx) => {
+              const oldMsg = prev[idx];
+              return (
+                !oldMsg ||
+                oldMsg.id !== newMsg.id ||
+                oldMsg.status !== newMsg.status ||
+                (oldMsg.reactions?.length ?? 0) !== (newMsg.reactions?.length ?? 0)
+              );
+            });
+            return isDifferent ? res.messages : prev;
+          });
+        }
+      } catch {}
+    }, 2500);
+
+    return () => clearInterval(harvestTimer);
   }, [selectedChatId]);
 
-  // Setup Server-Sent Events (SSE) for live streaming
+  // Periodic Chat List Harvest: Poll every 4s for fresh chats & unread counts
+  useEffect(() => {
+    const chatListTimer = setInterval(async () => {
+      try {
+        const res = await api.listChats();
+        if (res.chats && Array.isArray(res.chats)) {
+          setChats(res.chats);
+          setSelectedChatId((prev) => {
+            const exists = res.chats.some((c: any) => c.id === prev);
+            return (!prev || !exists) && res.chats.length > 0 ? res.chats[0].id : prev;
+          });
+        }
+      } catch {}
+    }, 4000);
+
+    return () => clearInterval(chatListTimer);
+  }, []);
+
+  // Setup Server-Sent Events (SSE) for live streaming (mounted once)
   useEffect(() => {
     void loadInitialData();
 
@@ -72,22 +122,41 @@ export function App() {
 
     eventSource.addEventListener('new_message', (e: MessageEvent) => {
       const newMsg: ChatMessage = JSON.parse(e.data);
-      setSelectedChatId((currentId) => {
-        if (currentId === newMsg.chatId) {
-          setMessages((prev) => {
-            if (prev.some((m) => m.id === newMsg.id)) return prev;
-            return [...prev, newMsg];
-          });
-        }
-        return currentId;
-      });
+      const activeId = selectedChatIdRef.current;
+      if (activeId === newMsg.chatId) {
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === newMsg.id)) return prev;
+          return [...prev, newMsg];
+        });
+      }
 
-      api.listChats().then((res) => setChats(res.chats || [])).catch(() => {});
+      api.listChats().then((res) => {
+        if (res.chats) setChats(res.chats);
+      }).catch(() => {});
     });
 
     eventSource.addEventListener('agent_thought', (e: MessageEvent) => {
       const thoughtData = JSON.parse(e.data);
       setLatestThought(thoughtData);
+    });
+
+    eventSource.addEventListener('message_reaction', (e: MessageEvent) => {
+      const { chatId, messageId, emoji } = JSON.parse(e.data);
+      const activeId = selectedChatIdRef.current;
+      if (activeId === chatId) {
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (m.id === messageId) {
+              const current = m.reactions || [];
+              const updated = emoji
+                ? Array.from(new Set([...current, emoji]))
+                : current;
+              return { ...m, reactions: updated };
+            }
+            return m;
+          })
+        );
+      }
     });
 
     eventSource.addEventListener('new_draft', (e: MessageEvent) => {
@@ -101,7 +170,9 @@ export function App() {
     });
 
     eventSource.addEventListener('chat_updated', () => {
-      api.listChats().then((res) => setChats(res.chats || [])).catch(() => {});
+      api.listChats().then((res) => {
+        if (res.chats) setChats(res.chats);
+      }).catch(() => {});
     });
 
     return () => {
@@ -110,9 +181,9 @@ export function App() {
   }, [loadInitialData]);
 
   // Handlers
-  const handleSendMessage = async (text: string) => {
+  const handleSendMessage = async (text: string, replyToMessageId?: string) => {
     if (!selectedChatId) return;
-    const res = await api.sendMessage(selectedChatId, text);
+    const res = await api.sendMessage(selectedChatId, text, replyToMessageId);
     if (res.success && res.message) {
       setMessages((prev) => [...prev, res.message]);
     }
@@ -131,8 +202,8 @@ export function App() {
     );
   };
 
-  const handleApproveDraft = async (draftId: string, editedText?: string) => {
-    await api.approveDraft(draftId, editedText);
+  const handleApproveDraft = async (draftId: string, editedText?: string, asVoice?: boolean) => {
+    await api.approveDraft(draftId, editedText, asVoice);
     setDrafts((prev) => prev.filter((d) => d.id !== draftId));
   };
 
@@ -174,15 +245,25 @@ export function App() {
             <div className="flex items-center gap-2">
               <h1 className="text-sm font-bold text-slate-100 tracking-wide">Fable Agentic WhatsApp</h1>
               <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded-md border border-emerald-500/20">
-                ZapFast Edition
+                Argon & 3.8 Edition
               </span>
             </div>
-            <p className="text-[10px] text-slate-400">Gemini 2.5 Moderator & Autonomous Control Plane</p>
+            <p className="text-[10px] text-emerald-400 font-medium">Gemini 4 Argon & 3.8 Flash-TTS Autonomous Control Plane</p>
           </div>
         </div>
 
         {/* Center / Status Pill */}
         <div className="flex items-center gap-2">
+          {/* Active Models Pill */}
+          <div className="hidden lg:flex items-center gap-2 px-3 py-1 rounded-full bg-[#0b0f14] border border-[#263140] text-[11px]">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="text-slate-400">النموذج:</span>
+            <span className="font-mono text-emerald-400 font-semibold">{persona?.model || 'gemini-4-argon'}</span>
+            <span className="text-slate-600">|</span>
+            <span className="text-slate-400">الصوت:</span>
+            <span className="font-mono text-cyan-400 font-semibold">{persona?.voiceName || 'kore'}</span>
+          </div>
+
           {status?.state === 'connected' ? (
             <div
               onClick={() => setIsPairingOpen(true)}
@@ -261,6 +342,7 @@ export function App() {
           drafts={drafts}
           latestThought={latestThought}
           persona={persona}
+          selectedChatId={selectedChatId}
           onApproveDraft={handleApproveDraft}
           onRejectDraft={handleRejectDraft}
           onOpenSettings={() => setIsSettingsOpen(true)}

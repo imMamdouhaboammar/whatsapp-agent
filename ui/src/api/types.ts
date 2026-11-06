@@ -1,5 +1,13 @@
 export type AgentMode = 'autopilot' | 'copilot' | 'human';
 
+export interface QuotedMessageInfo {
+  id: string;
+  sender: string;
+  senderName?: string;
+  text: string;
+  type?: string;
+}
+
 export interface ChatMessage {
   id: string;
   chatId: string;
@@ -12,6 +20,8 @@ export interface ChatMessage {
   mediaUrl?: string;
   transcription?: string;
   replyToId?: string;
+  quotedMessage?: QuotedMessageInfo;
+  reactions?: string[];
   status?: 'pending' | 'sent' | 'delivered' | 'read';
 }
 
@@ -43,10 +53,23 @@ export interface AgentDraft {
   incomingMessageId: string;
   incomingText: string;
   proposedReply: string;
+  sendAsVoiceNote?: boolean;
   reasoning: string;
   confidence: number;
   status: 'pending' | 'approved' | 'rejected' | 'sent';
   createdAt: number;
+}
+
+export interface ContactDossier {
+  chatId: string;
+  name: string;
+  phone?: string;
+  stage?: 'lead' | 'qualified' | 'negotiation' | 'customer' | 'vip';
+  facts: string[];
+  commitments: string[];
+  preferredTone?: string;
+  notes?: string;
+  updatedAt: number;
 }
 
 export interface SystemStatus {
@@ -75,6 +98,7 @@ export interface ModeratorPersona {
   simulateTypingDelay: boolean;
   minTypingDelayMs: number;
   maxTypingDelayMs: number;
+  voiceName?: string;
 }
 
 export interface PolicyConfig {
