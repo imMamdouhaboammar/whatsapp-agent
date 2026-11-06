@@ -52,7 +52,7 @@ export function createApiServer(deps: {
   // CLI/service callers without a browser Origin remain supported; bind the server to loopback by default.
   app.use('*',async(c,next)=>{
     const origin=c.req.header('origin');
-    if(origin && !trustedOrigin(origin) && !['GET','HEAD','OPTIONS'].includes(c.req.method))return c.json({error:'Cross-origin request forbidden'},403);
+    if(origin && origin !== new URL(c.req.url).origin && !trustedOrigin(origin) && !['GET','HEAD','OPTIONS'].includes(c.req.method))return c.json({error:'Cross-origin request forbidden'},403);
     await next();
   });
   app.use('*', cors({origin:(origin)=>trustedOrigin(origin)?origin:''}));
