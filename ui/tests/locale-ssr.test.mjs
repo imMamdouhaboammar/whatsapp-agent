@@ -1,12 +1,15 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
 // Render the real components in both locales without a WhatsApp connection.
 // The API payloads stay unchanged while the surrounding interface is localized.
+const uiRoot = fileURLToPath(new URL('..', import.meta.url));
 const vite = await createServer({
+  root: uiRoot,
   configFile: false,
   server: { middlewareMode: true },
   appType: 'custom'
