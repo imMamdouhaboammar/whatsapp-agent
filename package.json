@@ -10,6 +10,7 @@
     "mcp": "bun run src/mcp/cli.ts",
     "cli": "bun run src/cli.ts",
     "test": "bun test",
+    "db:postgres": "bun run src/persistence/postgres/cli.ts",
     "ui:dev": "bun --cwd ui dev",
     "ui:build": "bun --cwd ui build",
     "build": "bun --cwd ui build"

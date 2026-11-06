@@ -20,7 +20,7 @@ This document distinguishes implemented features, verified tests, and work still
 | Customer memory | Contact dossier, explicit memory, conversational style, MCP/API methods | Core tests verified; tenant and privacy review is ongoing |
 | Agent behavior | Autonomous reply, drafts, human handoff, permissions, contact context | Tests verified; live business account acceptance is pending |
 | Business knowledge | Brand knowledge and retrieval paths exist | Evaluate against actual product catalogs and conflicting data |
-| Hosting data | Existing SQLite persistence | PostgreSQL and Supabase migration is pending |
+| Hosting data | SQLite runtime; PostgreSQL schema and offline import implemented with mocked DB contract tests | PostgreSQL runtime, live database verification and cutover are pending |
 | Messaging transport | Existing WhatsApp socket integration | Live compatibility, recovery, and account-policy risks need pilot validation |
 
 ### Verified checks
