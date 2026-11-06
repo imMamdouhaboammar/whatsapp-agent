@@ -6,7 +6,7 @@
 
 **Architecture:** An LSM-style multi-generational context engine backed by Bun-native SQLite. Contiguous past messages beyond the verbatim recent zone (10–15 messages) are incrementally folded into Tier-1 session blocks and Tier-2 milestone blocks with full message lineage. Prompts sent to Gemini are hierarchically structured to keep the prefix cache intact, supplemented by on-demand decompression and full-text memory search tools.
 
-**Tech Stack:** Bun, TypeScript, SQLite WAL (`bun:sqlite`), Google GenAI / Gemini 2.5 Flash & Pro (`@google/genai`), Vitest / Bun test.
+**Tech Stack:** Bun, TypeScript, SQLite WAL (`bun:sqlite`), Google GenAI / Gemini 3.8 Flash (`@google/genai`), Vitest / Bun test.
 
 **Spec:** Reverse-engineering breakdown and architectural distillation of `ranxianglei/billion-context` (`acp-kernel`).
 
@@ -36,7 +36,7 @@
 
 > [!IMPORTANT]
 > **Gemini Model Choice for Background Folding**:
-> By default, the folding worker uses `gemini-2.5-flash` for high-speed, cost-effective background summarization, while the interactive moderator agent continues to use its configured persona model (`gemini-2.5-flash` or `gemini-2.5-pro`).
+> The folding worker uses `gemini-3.8-flash` for high-speed, cost-effective background summarization and epoch distillation, while the interactive moderator agent uses its configured persona model (`gemini-3.8-flash` or `gemini-4-argon`).
 
 > [!NOTE]
 > **Storage Footprint**:
@@ -64,7 +64,7 @@ flowchart TD
     TIER2 --> PROMPT_BUILDER
     DOSSIER --> PROMPT_BUILDER
 
-    PROMPT_BUILDER -->|"1. Static Persona (Prefix Cache)"| GEMINI["Gemini 2.5 API"]
+    PROMPT_BUILDER -->|"1. Static Persona (Prefix Cache)"| GEMINI["Gemini 3.8 Flash API"]
     PROMPT_BUILDER -->|"2. Dossier & Milestones"| GEMINI
     PROMPT_BUILDER -->|"3. Tier-1 Folds"| GEMINI
     PROMPT_BUILDER -->|"4. Verbatim Tail"| GEMINI
@@ -72,7 +72,7 @@ flowchart TD
     GEMINI -->|"Reply / Draft Decision"| OUT["WhatsApp Socket / Human Moderator"]
     
     subgraph BACKGROUND ["Autonomous Growth-Gated Folding Loop"]
-        MONITOR["Fold Trigger Check (Unfolded Msgs > 15 OR Idle > 2h)"] --> SUMMARIZER["Gemini Flash Distillation"]
+        MONITOR["Fold Trigger Check (Unfolded Msgs > 15 OR Idle > 2h)"] --> SUMMARIZER["Gemini 3.8 Flash Distillation"]
         SUMMARIZER --> SAVE_FOLD["Save to conversation_folds table"]
     end
 ```
