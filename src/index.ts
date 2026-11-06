@@ -13,6 +13,7 @@ import type { ChatMessage } from './domain/types';
 import { createApiServer } from './server/api';
 import { SSEBroadcaster } from './server/sse';
 import { WhatsAppSocketClient } from './transport/whatsapp-socket';
+import { FableFunnelEngine, FunnelRegistry } from './funnel';
 
 export async function createFableWhatsAppAgent(options: {
   port?: number;
@@ -219,6 +220,30 @@ export async function createFableWhatsAppAgent(options: {
     }
   });
 
+  // Initialize Scatter-Gather Funnel Engine
+  const funnelEngine = new FableFunnelEngine({
+    registry: new FunnelRegistry({
+      initialMethods: [
+        {
+          method: 'INVENTORY_DISPATCH',
+          description: 'Scatter-gather stock lookup across warehouse systems',
+          mode: 'ALL_SETTLED',
+          timeoutMs: 2500,
+          targets: [
+            { id: 'internal-stock', name: 'Internal DB Inventory', url: 'http://127.0.0.1:3000/api/brand/stock', enabled: true }
+          ]
+        },
+        {
+          method: 'WEBHOOK_FANOUT',
+          description: 'Parallel webhook broadcast to CRM and analytics partners',
+          mode: 'ALL_SETTLED',
+          timeoutMs: 3000,
+          targets: []
+        }
+      ]
+    })
+  });
+
   // Create API App
   const app = createApiServer({
     memoryStore,
@@ -226,7 +251,8 @@ export async function createFableWhatsAppAgent(options: {
     moderatorAgent,
     sse,
     audioTranscriber,
-    voiceSynthesizer
+    voiceSynthesizer,
+    funnelEngine
   });
 
   registerCapabilityRoutes(app, capabilities, options.capabilityToken ?? process.env.AGENT_CAPABILITIES_OWNER_TOKEN ?? '');
@@ -248,7 +274,8 @@ export async function createFableWhatsAppAgent(options: {
     coordinator,
     burstAccumulator,
     sse,
-    capabilities
+    capabilities,
+    funnelEngine
   };
 }
 

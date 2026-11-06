@@ -7,12 +7,14 @@ import type { AudioTranscriber } from '../ai/audio-transcriber';
 import type { ModeratorAgent } from '../ai/moderator-agent';
 import type { MemoryStore } from '../domain/memory-store';
 import type { WhatsAppSocketClient } from '../transport/whatsapp-socket';
+import type { FableFunnelEngine } from '../funnel';
 
 export function createWhatsAppMcpServer(deps: {
   memoryStore: MemoryStore;
   whatsappClient: WhatsAppSocketClient;
   moderatorAgent: ModeratorAgent;
   audioTranscriber?: AudioTranscriber;
+  funnelEngine?: FableFunnelEngine;
 }): Server {
   const server = new Server(
     {
@@ -153,7 +155,33 @@ export function createWhatsAppMcpServer(deps: {
             },
             required: ['draftId']
           }
-        }
+        },
+        ...(deps.funnelEngine ? [{
+          name: 'whatsapp_funnel_scatter_gather',
+          description: 'Execute concurrent scatter-gather or hedged race dispatch across multiple external APIs/ERPs/CRMs with automatic circuit breaking and telemetry receipt.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              method: {
+                type: 'string',
+                description: 'The registered funnel method (e.g. INVENTORY_DISPATCH, WEBHOOK_FANOUT)'
+              },
+              payload: {
+                type: 'object',
+                description: 'Optional JSON payload for POST/PUT requests'
+              },
+              queryParams: {
+                type: 'object',
+                description: 'Optional query parameters'
+              },
+              timeoutMs: {
+                type: 'number',
+                description: 'Optional maximum timeout in ms'
+              }
+            },
+            required: ['method']
+          }
+        }] : [])
       ]
     };
   });
@@ -319,6 +347,27 @@ export function createWhatsAppMcpServer(deps: {
             {
               type: 'text',
               text: `Draft ${draftId} approved and sent successfully.`
+            }
+          ]
+        };
+      }
+
+      case 'whatsapp_funnel_scatter_gather': {
+        if (!deps.funnelEngine) {
+          throw new Error('Funnel engine is not initialized');
+        }
+        const method = String(args?.method);
+        const receipt = await deps.funnelEngine.dispatch({
+          method,
+          payload: (args?.payload as any) || undefined,
+          queryParams: (args?.queryParams as any) || undefined,
+          timeoutMs: args?.timeoutMs ? Number(args.timeoutMs) : undefined
+        });
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(receipt, null, 2)
             }
           ]
         };
