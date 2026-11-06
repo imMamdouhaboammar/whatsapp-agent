@@ -1,32 +1,32 @@
-# React + TypeScript + Vite
+# WhatsApp Agent UI
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React 19, TypeScript, Vite 8 and Tailwind 4 frontend for WhatsApp Agent. The workspace includes live chats, message replies, per-chat automation mode, pending AI drafts, contact memory, device pairing, assistant settings and a reply simulator.
 
-Currently, two official plugins are available:
+## Languages and layout
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- **العربية (RTL)** is the default language. The navigation and three work areas mirror to the right-to-left layout.
+- **English (LTR)** is available from the `عربي / EN` switch in the header. The navigation and work areas follow left-to-right layout.
+- The selected language persists in `localStorage`, with matching document `lang` and `dir` attributes.
+- Content from WhatsApp contacts, AI draft replies and user messages is preserved as received, with automatic direction for mixed-language text.
+- Responsive layouts support desktop, tablet and phone widths. The assistant becomes a dismissible panel on smaller screens.
 
-## React Compiler
+## Run
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+From the repository root, run the backend according to the root README, then in this directory:
 
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+bun install
+bun run dev
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+The frontend calls the backend through the existing `/api` endpoints and server-sent events. It does not invent local demo data.
+
+## Verify
+
+```bash
+bun run test:ui
+bun run lint
+bun run build
+```
+
+The UI test suite uses Node's built-in test runner and server-side React rendering to check the Arabic and English interfaces and real component contracts. Test browser interactions against a running backend before shipping.

@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
-import { X, Save, Sliders } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Save, Settings2, X } from 'lucide-react';
 import type { ModeratorPersona, PolicyConfig } from '../api/types';
+import { useLocale } from '../locale-context';
 
 interface PersonaSettingsModalProps {
   isOpen: boolean;
@@ -10,219 +11,148 @@ interface PersonaSettingsModalProps {
   onSave: (persona: Partial<ModeratorPersona>, policy?: Partial<PolicyConfig>) => Promise<void>;
 }
 
-export function PersonaSettingsModal({
-  isOpen,
-  onClose,
-  initialPersona,
-  onSave
-}: PersonaSettingsModalProps) {
-  const [persona, setPersona] = useState<ModeratorPersona | null>(null);
+export function PersonaSettingsModal(props: PersonaSettingsModalProps) {
+  if (!props.isOpen || !props.initialPersona) return null;
+  return <PersonaEditor initialPersona={props.initialPersona} onClose={props.onClose} onSave={props.onSave} />;
+}
+
+function PersonaEditor({ onClose, initialPersona, onSave }: {
+  onClose: () => void;
+  initialPersona: ModeratorPersona;
+  onSave: PersonaSettingsModalProps['onSave'];
+}) {
+  const { tr } = useLocale();
+  const [persona, setPersona] = useState<ModeratorPersona>(() => ({
+    ...initialPersona,
+    rules: [...initialPersona.rules]
+  }));
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    if (initialPersona) {
-      setPersona(JSON.parse(JSON.stringify(initialPersona)));
-    }
-  }, [initialPersona, isOpen]);
-
-  if (!isOpen || !persona) return null;
+    const onEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onEscape);
+    return () => window.removeEventListener('keydown', onEscape);
+  }, [onClose]);
 
   const handleSave = async () => {
+    if (saving) return;
     setSaving(true);
+    setError('');
     try {
       await onSave(persona);
       onClose();
+    } catch {
+      setError(tr('تعذّر حفظ الإعدادات، حاول مرة تانية', 'Could not save settings. Try again'));
     } finally {
       setSaving(false);
     }
   };
 
-  const applyPreset = (tone: string, prompt: string) => {
-    setPersona({
-      ...persona,
-      tone,
-      systemPrompt: prompt
-    });
-  };
+  const applyPreset = (tone: string, prompt: string) => setPersona({ ...persona, tone, systemPrompt: prompt });
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xs p-4">
-      <div className="w-full max-w-2xl bg-[#131922] border border-[#263140] rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-[#263140] bg-[#0b0f14]/50">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400">
-              <Sliders className="w-4 h-4" />
-            </div>
+    <div className="wa-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="wa-modal wa-modal-wide" role="dialog" aria-modal="true" aria-labelledby="persona-title">
+        <header className="wa-modal-header">
+          <div className="wa-modal-heading">
+            <span className="wa-modal-icon"><Settings2 size={20} /></span>
             <div>
-              <h2 className="text-base font-semibold text-slate-100">تخصيص شخصية الموديرتور والقواعد</h2>
-              <p className="text-xs text-slate-400">Agent Persona & Policy Controls</p>
+              <h2 id="persona-title">{tr('إعدادات المساعد الذكي', 'AI assistant settings')}</h2>
+              <p>{tr('الشخصية، النموذج وطريقة الرد', 'Persona, model and response behavior')}</p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-[#1c2430] transition-colors"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        {/* Content */}
-        <div className="p-6 overflow-y-auto space-y-5 text-right">
-          {/* Quick Presets */}
-          <div>
-            <label className="text-xs font-semibold text-slate-300 block mb-2">قوالب جاهزة سريعة:</label>
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() =>
-                  applyPreset(
-                    'طبيعي جداً، بشوش، محترف، باللهجة المصرية الراقية بدون أي تكلف أو تصنع كأنك صاحب الشات تماماً',
-                    `أنت الموديرتور المسؤول عن الرد على رسائل الواتساب نيابة عن صاحب الحساب.
-مهمتك الرد على جهات الاتصال بطريقة بشرية 100% كأن صاحب الحساب هو من يكتب بنفسه.
-القواعد:
-1. لا تذكر إطلاقاً أنك ذكاء اصطناعي أو بوت.
-2. اكتب بلغة عامية مصرية طبيعية وسلسة وودودة وجمل قصيرة.
-3. تفاعل مع سياق الحديث باهتمام وافهم قصد الطرف الآخر.`
-                  )
-                }
-                className="px-3 py-1.5 rounded-xl bg-[#1c2430] hover:bg-emerald-500/20 text-xs text-slate-300 hover:text-emerald-400 border border-[#263140] transition-colors"
-              >
-                🇪🇬 موديرتور مصري بشوش وطبيعي
+          <button type="button" className="wa-icon-button" onClick={onClose} aria-label={tr('إغلاق', 'Close')}><X size={20} /></button>
+        </header>
+        <div className="wa-modal-content wa-settings-content">
+          <section className="wa-settings-section">
+            <h3>{tr('قوالب جاهزة', 'Quick presets')}</h3>
+            <div className="wa-presets">
+              <button type="button" onClick={() => applyPreset(
+                'طبيعي وبشوش باللهجة المصرية',
+                ['أنت مسؤول عن مساعدة صاحب الحساب في الرد على رسائل واتساب',
+                  'استخدم عامية مصرية طبيعية، وراعِ سياق كل محادثة',
+                  'لا تختلق معلومات أو مواعيد أو وعودًا غير موجودة في سياق المحادثة'].join('\n')
+              )}>
+                <span>🇪🇬</span><strong>{tr('مصري ودود', 'Friendly Egyptian')}</strong><small>{tr('أسلوب شخصي وطبيعي', 'Warm personal tone')}</small>
               </button>
-              <button
-                type="button"
-                onClick={() =>
-                  applyPreset(
-                    'مهني، راقي، محترف، باللغة العربية الفصحى المعاصرة المريحة',
-                    `أنت الموديرتور الرسمي لخدمة العملاء على واتساب.
-أجب باحترافية واضحة، دقيقة، ومرحبة للغاية، مع حل مشكلات العملاء وتقديم يد العون بلغة فصحى راقية.`
-                  )
-                }
-                className="px-3 py-1.5 rounded-xl bg-[#1c2430] hover:bg-emerald-500/20 text-xs text-slate-300 hover:text-emerald-400 border border-[#263140] transition-colors"
-              >
-                🏢 خدمة عملاء احترافية (فصحى)
+              <button type="button" onClick={() => applyPreset(
+                'مهني وواضح باللغة العربية الفصحى المعاصرة',
+                ['أنت مساعد خدمة عملاء على واتساب',
+                  'قدّم إجابات واضحة ومختصرة بلغة عربية فصحى معاصرة',
+                  'التزم بالمعلومات المتاحة واطلب توضيحًا عند الحاجة'].join('\n')
+              )}>
+                <span>💼</span><strong>{tr('خدمة العملاء', 'Customer support')}</strong><small>{tr('لغة رسمية واضحة', 'Clear professional tone')}</small>
               </button>
             </div>
-          </div>
+          </section>
 
-          {/* Persona Name */}
-          <div>
-            <label className="text-xs font-semibold text-slate-300 block mb-1.5">اسم الموديرتور / الحساب:</label>
-            <input
-              type="text"
-              value={persona.name}
-              onChange={(e) => setPersona({ ...persona, name: e.target.value })}
-              className="w-full px-3.5 py-2 bg-[#0b0f14] border border-[#263140] rounded-xl text-xs text-slate-100 focus:outline-hidden focus:border-emerald-500"
-            />
-          </div>
-
-          {/* Model & Voice Selection */}
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="text-xs font-semibold text-slate-300 block mb-1.5">موديل Gemini المعتمد:</label>
-              <select
-                value={persona.model}
-                onChange={(e) => setPersona({ ...persona, model: e.target.value })}
-                className="w-full px-3 py-2 bg-[#0b0f14] border border-[#263140] rounded-xl text-xs text-slate-100 focus:outline-hidden focus:border-emerald-500 font-mono"
-              >
-                <option value="gemini-4-argon">gemini-4-argon (أقوى موديل تفكير عميق لـ Google - مفعل)</option>
-                <option value="gemini-3.8-flash">gemini-3.8-flash (الأحدث والأسرع)</option>
-                <option value="gemini-2.5-flash">gemini-2.5-flash (مستقر وعام)</option>
-                <option value="gemini-2.5-pro">gemini-2.5-pro (احترافي متقدم)</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="text-xs font-semibold text-slate-300 block mb-1.5">صوت الفويس نوت (Gemini 3.8 Flash TTS):</label>
-              <select
-                value={persona.voiceName || 'kore'}
-                onChange={(e) => setPersona({ ...persona, voiceName: e.target.value })}
-                className="w-full px-3 py-2 bg-[#0b0f14] border border-[#263140] rounded-xl text-xs text-slate-100 focus:outline-hidden focus:border-emerald-500"
-              >
-                <option value="kore">🎙️ Kore (Gemini 3.8 Flash TTS - تفاعلي وطبيعي)</option>
-                <option value="fenrir">🎙️ Fenrir (Gemini 3.8 Flash TTS - دافئ ورجالي)</option>
-                <option value="puck">🎙️ Puck (Gemini 3.8 Flash TTS - شبابي وحيوي)</option>
-                <option value="aoede">🎙️ Aoede (Gemini 3.8 Flash TTS - نسائي هادئ وراقي)</option>
-                <option value="charon">🎙️ Charon (Gemini 3.8 Flash TTS - رسمي وفخم)</option>
-                <option value="ar-XA-Chirp3-HD-Fenrir">🎙️ Chirp 3 HD Fenrir (عربي/مصري)</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="text-xs font-semibold text-slate-300 block mb-1.5">
-                حد أدنى للثقة قبل الموافقة التلقائية: {(persona.minConfidence * 100).toFixed(0)}%
+          <section className="wa-settings-section">
+            <h3>{tr('الشخصية', 'Persona')}</h3>
+            <div className="wa-settings-grid">
+              <label className="wa-field">
+                <span>{tr('اسم المساعد', 'Assistant name')}</span>
+                <input value={persona.name} onChange={(event) => setPersona({ ...persona, name: event.target.value })} />
               </label>
-              <input
-                type="range"
-                min="0.5"
-                max="0.95"
-                step="0.05"
-                value={persona.minConfidence}
-                onChange={(e) => setPersona({ ...persona, minConfidence: parseFloat(e.target.value) })}
-                className="w-full mt-2 accent-emerald-500"
-              />
+              <label className="wa-field">
+                <span>{tr('نبرة الحديث', 'Tone of voice')}</span>
+                <input dir="auto" value={persona.tone} onChange={(event) => setPersona({ ...persona, tone: event.target.value })} />
+              </label>
             </div>
+            <label className="wa-field">
+              <span>{tr('تعليمات المساعد', 'Assistant instructions')}</span>
+              <textarea dir="auto" rows={5} value={persona.systemPrompt} onChange={(event) => setPersona({ ...persona, systemPrompt: event.target.value })} />
+            </label>
+          </section>
 
-            <div>
-              <label className="text-xs font-semibold text-slate-300 block mb-1.5">نبرة وأسلوب الحديث (Tone):</label>
-              <input
-                type="text"
-                value={persona.tone}
-                onChange={(e) => setPersona({ ...persona, tone: e.target.value })}
-                className="w-full px-3.5 py-2 bg-[#0b0f14] border border-[#263140] rounded-xl text-xs text-slate-100 focus:outline-hidden focus:border-emerald-500"
-              />
+          <section className="wa-settings-section">
+            <h3>{tr('النموذج والصوت', 'Model & voice')}</h3>
+            <div className="wa-settings-grid">
+              <label className="wa-field">
+                <span>{tr('نموذج Gemini', 'Gemini model')}</span>
+                <select dir="ltr" value={persona.model} onChange={(event) => setPersona({ ...persona, model: event.target.value })}>
+                  <option value="gemini-4-argon">gemini-4-argon</option>
+                  <option value="gemini-3.8-flash">gemini-3.8-flash</option>
+                  <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                  <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+                </select>
+              </label>
+              <label className="wa-field">
+                <span>{tr('صوت الرسائل', 'Voice-note voice')}</span>
+                <select dir="ltr" value={persona.voiceName || 'kore'} onChange={(event) => setPersona({ ...persona, voiceName: event.target.value })}>
+                  <option value="kore">Kore</option>
+                  <option value="fenrir">Fenrir</option>
+                  <option value="puck">Puck</option>
+                  <option value="aoede">Aoede</option>
+                  <option value="charon">Charon</option>
+                  <option value="ar-XA-Chirp3-HD-Fenrir">Chirp 3 HD Fenrir</option>
+                </select>
+              </label>
             </div>
-          </div>
+          </section>
 
-          {/* System Prompt / Guidelines */}
-          <div>
-            <label className="text-xs font-semibold text-slate-300 block mb-1.5">تعليمات الموديرتور المفصلة (System Prompt):</label>
-            <textarea
-              rows={6}
-              value={persona.systemPrompt}
-              onChange={(e) => setPersona({ ...persona, systemPrompt: e.target.value })}
-              className="w-full p-3 bg-[#0b0f14] border border-[#263140] rounded-xl text-xs text-slate-100 leading-relaxed focus:outline-hidden focus:border-emerald-500"
-            />
-          </div>
-
-          {/* Simulated Typing Delays */}
-          <div className="p-3 bg-[#0b0f14] border border-[#263140] rounded-xl space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-slate-200">محاكاة سرعة الكتابة البشرية (Typing Delay)</span>
-              <input
-                type="checkbox"
-                checked={persona.simulateTypingDelay}
-                onChange={(e) => setPersona({ ...persona, simulateTypingDelay: e.target.checked })}
-                className="accent-emerald-500 rounded-sm"
-              />
-            </div>
-            <p className="text-[11px] text-slate-400">
-              يقوم بإظهار حالة "يكتب الآن... (typing)" على واتساب لفترة زمنية تتناسب مع طول الرسالة كإنسان طبيعي لتجنب الحظر الآلي.
-            </p>
-          </div>
+          <section className="wa-settings-section">
+            <h3>{tr('التحكم في الردود', 'Response controls')}</h3>
+            <label className="wa-field wa-range-field">
+              <span>{tr('الحد الأدنى للثقة', 'Minimum confidence')} <b dir="ltr">{Math.round(persona.minConfidence * 100)}%</b></span>
+              <input type="range" min=".5" max=".95" step=".05" value={persona.minConfidence} onChange={(event) => setPersona({ ...persona, minConfidence: Number(event.target.value) })} />
+            </label>
+            <label className="wa-toggle-row">
+              <span>
+                <strong>{tr('محاكاة الكتابة الطبيعية', 'Natural typing delay')}</strong>
+                <small>{tr('انتظار قصير قبل إرسال الردود التلقائية', 'A short pause before automatic replies')}</small>
+              </span>
+              <input type="checkbox" checked={persona.simulateTypingDelay} onChange={(event) => setPersona({ ...persona, simulateTypingDelay: event.target.checked })} />
+            </label>
+          </section>
+          {error && <p className="wa-inline-error" role="alert">{error}</p>}
         </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-[#263140] bg-[#0b0f14]/50">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-slate-200 transition-colors"
-          >
-            إلغاء
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="flex items-center gap-1.5 px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-medium transition-colors shadow-lg shadow-emerald-900/20"
-          >
-            <Save className="w-3.5 h-3.5" />
-            <span>حفظ الإعدادات</span>
-          </button>
-        </div>
-      </div>
+        <footer className="wa-modal-footer">
+          <button type="button" className="wa-secondary-button" onClick={onClose}>{tr('إلغاء', 'Cancel')}</button>
+          <button type="button" className="wa-primary-button" disabled={saving} onClick={() => void handleSave()}><Save size={16} /> {saving ? tr('جارٍ الحفظ', 'Saving') : tr('حفظ الإعدادات', 'Save settings')}</button>
+        </footer>
+      </section>
     </div>
   );
 }
+

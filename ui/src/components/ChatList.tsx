@@ -1,179 +1,120 @@
 import { useState } from 'react';
-import { Search, Bot, User, FileText } from 'lucide-react';
+import { MessageCircle, Search } from 'lucide-react';
 import type { ChatSummary } from '../api/types';
+import { useLocale, type Language } from '../locale-context';
 
 interface ChatListProps {
   chats: ChatSummary[];
   selectedChatId?: string;
+  pendingDraftChatIds: string[];
   onSelectChat: (chatId: string) => void;
 }
 
-export function ChatList({ chats, selectedChatId, onSelectChat }: ChatListProps) {
+type ChatFilter = 'all' | 'unread' | 'review';
+
+function displayTime(timestamp: number | undefined, language: Language): string {
+  if (!timestamp) return '';
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return '';
+  const today = new Date();
+  if (date.toDateString() === today.toDateString()) {
+    return date.toLocaleTimeString(language === 'ar' ? 'ar-EG' : 'en-US', { hour: 'numeric', minute: '2-digit' });
+  }
+  return date.toLocaleDateString(language === 'ar' ? 'ar-EG' : 'en-US', { day: 'numeric', month: 'short' });
+}
+
+export function ChatList({ chats, selectedChatId, pendingDraftChatIds, onSelectChat }: ChatListProps) {
+  const { language, tr } = useLocale();
   const [search, setSearch] = useState('');
-  const [filter, setFilter] = useState<'all' | 'unread' | 'autopilot' | 'copilot'>('all');
+  const [filter, setFilter] = useState<ChatFilter>('all');
+  const query = search.trim().toLocaleLowerCase();
 
   const filtered = chats.filter((chat) => {
-    const matchSearch =
-      chat.name.toLowerCase().includes(search.toLowerCase()) ||
-      chat.id.toLowerCase().includes(search.toLowerCase()) ||
-      (chat.lastMessage && chat.lastMessage.toLowerCase().includes(search.toLowerCase()));
-
-    if (!matchSearch) return false;
+    const matchesQuery = !query || [chat.name, chat.id, chat.lastMessage ?? '']
+      .some((value) => value.toLocaleLowerCase().includes(query));
+    if (!matchesQuery) return false;
     if (filter === 'unread') return chat.unreadCount > 0;
-    if (filter === 'autopilot') return chat.agentMode === 'autopilot';
-    if (filter === 'copilot') return chat.agentMode === 'copilot';
+    if (filter === 'review') return pendingDraftChatIds.includes(chat.id);
     return true;
   });
 
-  const formatTime = (ts?: number) => {
-    if (!ts) return '';
-    const date = new Date(ts);
-    const now = new Date();
-    if (date.toDateString() === now.toDateString()) {
-      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    }
-    return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
-  };
-
-  const getModeBadge = (mode: string) => {
-    switch (mode) {
-      case 'autopilot':
-        return (
-          <span className="flex items-center gap-1 text-[10px] font-medium text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded-md border border-emerald-500/20">
-            <Bot className="w-2.5 h-2.5" />
-            تلقائي
-          </span>
-        );
-      case 'copilot':
-        return (
-          <span className="flex items-center gap-1 text-[10px] font-medium text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded-md border border-amber-500/20">
-            <FileText className="w-2.5 h-2.5" />
-            مسودات
-          </span>
-        );
-      default:
-        return (
-          <span className="flex items-center gap-1 text-[10px] font-medium text-slate-400 bg-slate-500/10 px-1.5 py-0.5 rounded-md border border-slate-500/20">
-            <User className="w-2.5 h-2.5" />
-            يدوي
-          </span>
-        );
-    }
-  };
-
   return (
-    <div className="w-80 md:w-96 border-r border-[#263140] bg-[#131922] flex flex-col h-full shrink-0">
-      {/* Search Header */}
-      <div className="p-3 border-b border-[#263140] space-y-2">
-        <div className="relative">
-          <Search className="w-4 h-4 text-slate-400 absolute right-3 top-2.5" />
+    <section className="wa-inbox" aria-label={tr('قائمة الدردشات', 'Chat list')}>
+      <div className="wa-inbox-header">
+        <div className="wa-section-heading">
+          <h1>{tr('الدردشات', 'Chats')}</h1>
+          <span className="wa-inbox-total" aria-label={tr('عدد المحادثات', 'Number of chats')}>{chats.length}</span>
+        </div>
+        <label className="wa-search">
+          <Search size={19} aria-hidden="true" />
+          <span className="sr-only">{tr('ابحث عن محادثة', 'Search chats')}</span>
           <input
-            type="text"
-            placeholder="بحث في المحادثات..."
+            type="search"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-3 pr-9 py-2 bg-[#0b0f14] border border-[#263140] rounded-xl text-xs text-slate-100 placeholder:text-slate-500 focus:outline-hidden focus:border-emerald-500"
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder={tr('ابحث عن محادثة', 'Search chats')}
           />
-        </div>
-
-        {/* Filter chips */}
-        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
-          <button
-            onClick={() => setFilter('all')}
-            className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors shrink-0 ${
-              filter === 'all'
-                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                : 'text-slate-400 hover:text-slate-200 bg-[#0b0f14]'
-            }`}
-          >
-            الكل ({chats.length})
-          </button>
-          <button
-            onClick={() => setFilter('unread')}
-            className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors shrink-0 ${
-              filter === 'unread'
-                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                : 'text-slate-400 hover:text-slate-200 bg-[#0b0f14]'
-            }`}
-          >
-            غير مقروء
-          </button>
-          <button
-            onClick={() => setFilter('autopilot')}
-            className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors shrink-0 ${
-              filter === 'autopilot'
-                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                : 'text-slate-400 hover:text-slate-200 bg-[#0b0f14]'
-            }`}
-          >
-            تلقائي
-          </button>
-          <button
-            onClick={() => setFilter('copilot')}
-            className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors shrink-0 ${
-              filter === 'copilot'
-                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                : 'text-slate-400 hover:text-slate-200 bg-[#0b0f14]'
-            }`}
-          >
-            مسودة
-          </button>
+        </label>
+        <div className="wa-filters" role="group" aria-label={tr('تصفية المحادثات', 'Chat filters')}>
+          {([
+            ['all', tr('الكل', 'All')],
+            ['unread', tr('غير المقروءة', 'Unread')],
+            ['review', tr('تحتاج مراجعة', 'Needs review')]
+          ] as const).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              className={'wa-filter ' + (filter === key ? 'is-active' : '')}
+              aria-pressed={filter === key}
+              onClick={() => setFilter(key)}
+            >
+              {label}
+              {key === 'review' && pendingDraftChatIds.length > 0 && (
+                <span className="wa-filter-count">{new Set(pendingDraftChatIds).size}</span>
+              )}
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* List */}
-      <div className="flex-1 overflow-y-auto divide-y divide-[#1c2430]/60">
+      <div className="wa-chat-list">
         {filtered.length === 0 ? (
-          <div className="p-8 text-center text-slate-500 text-xs">
-            لا توجد محادثات مطابقة
+          <div className="wa-inbox-empty">
+            <MessageCircle size={30} strokeWidth={1.5} />
+            <strong>{search ? tr('مفيش نتائج للبحث', 'No matching chats') : filter === 'review' ? tr('كل الردود اتراجعت', 'All caught up') : tr('لسه مفيش محادثات', 'No chats yet')}</strong>
+            <p>{search ? tr('جرّب اسم أو كلمة تانية', 'Try a different name or keyword') : filter === 'review' ? tr('أي رد محتاج موافقتك هيظهر هنا', 'Drafts that need your approval appear here') : tr('اربط واتساب علشان تظهر محادثاتك هنا', 'Link WhatsApp to see your conversations')}</p>
           </div>
-        ) : (
-          filtered.map((chat) => {
-            const isSelected = chat.id === selectedChatId;
-            return (
-              <div
-                key={chat.id}
-                onClick={() => onSelectChat(chat.id)}
-                className={`flex items-start gap-3 p-3.5 cursor-pointer transition-colors ${
-                  isSelected
-                    ? 'bg-[#1c2430] border-r-2 border-emerald-400'
-                    : 'hover:bg-[#18202b]'
-                }`}
-              >
-                {/* Avatar */}
-                <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-emerald-700 to-teal-500 flex items-center justify-center text-white font-semibold text-sm shrink-0 shadow-md">
-                  {chat.name.slice(0, 1).toUpperCase()}
-                </div>
-
-                {/* Details */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs font-semibold text-slate-100 truncate">
-                      {chat.name}
-                    </span>
-                    <span className="text-[10px] text-slate-400 shrink-0">
-                      {formatTime(chat.lastTimestamp)}
-                    </span>
-                  </div>
-
-                  <p className="text-[11px] text-slate-400 truncate mb-1.5">
-                    {chat.lastMessage || 'لا توجد رسائل بعد'}
-                  </p>
-
-                  <div className="flex items-center justify-between">
-                    <div>{getModeBadge(chat.agentMode)}</div>
-                    {chat.unreadCount > 0 && (
-                      <span className="min-w-4.5 h-4.5 px-1 rounded-full bg-emerald-500 text-slate-950 font-bold text-[10px] flex items-center justify-center">
-                        {chat.unreadCount}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-            );
-          })
-        )}
+        ) : filtered.map((chat) => {
+          const selected = chat.id === selectedChatId;
+          const hasDraft = pendingDraftChatIds.includes(chat.id);
+          return (
+            <button
+              type="button"
+              key={chat.id}
+              className={'wa-chat-item ' + (selected ? 'is-selected' : '')}
+              onClick={() => onSelectChat(chat.id)}
+              aria-current={selected ? 'true' : undefined}
+            >
+              <span className="wa-avatar wa-avatar-chat">
+                {chat.avatarUrl ? <img src={chat.avatarUrl} alt="" loading="lazy" /> : chat.name.slice(0, 1)}
+              </span>
+              <span className="wa-chat-content">
+                <span className="wa-chat-primary">
+                  <strong title={chat.name}>{chat.name}</strong>
+                  <time dir="auto">{displayTime(chat.lastTimestamp, language)}</time>
+                </span>
+                <span className="wa-chat-preview" dir="auto">{chat.lastMessage || tr('لا توجد رسائل بعد', 'No messages yet')}</span>
+                <span className="wa-chat-bottom">
+                  <span className={'wa-mode-chip wa-mode-' + chat.agentMode}>{chat.agentMode === 'autopilot' ? tr('تلقائي', 'Auto-Pilot') : chat.agentMode === 'copilot' ? tr('بالموافقة', 'Co-Pilot') : tr('يدوي', 'Human')}</span>
+                  {hasDraft && <span className="wa-needs-review">{tr('بانتظار موافقة', 'Awaiting approval')}</span>}
+                  {chat.unreadCount > 0 && <span className="wa-count">{chat.unreadCount}</span>}
+                </span>
+              </span>
+            </button>
+          );
+        })}
       </div>
-    </div>
+    </section>
   );
 }
+

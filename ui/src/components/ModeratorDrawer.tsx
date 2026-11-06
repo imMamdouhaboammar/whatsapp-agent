@@ -1,36 +1,37 @@
-import { useState, useEffect } from 'react';
-import { Check, Edit2, Sparkles, Brain, Clock, ShieldCheck, Play, Mic, UserCheck, Bookmark, CheckCircle2, Plus } from 'lucide-react';
-import type { AgentDecision, AgentDraft, ModeratorPersona, ContactDossier } from '../api/types';
+import { useEffect, useState, type FormEvent } from 'react';
+import { BookOpenText, Bot, CalendarCheck, Check, CheckCircle2, ChevronLeft, Edit3, Lightbulb, Mic, Play, Plus, Settings2, Sparkles, X } from 'lucide-react';
+import type { AgentDecision, AgentDraft, AgentMode, ContactDossier, ModeratorPersona } from '../api/types';
 import { api } from '../api/client';
+import { useLocale } from '../locale-context';
 
 interface ModeratorDrawerProps {
+  view: 'assistant' | 'drafts' | 'memory';
   drafts: AgentDraft[];
-  latestThought?: {
-    chatId: string;
-    messageId: string;
-    decision: AgentDecision;
-  };
+  latestThought?: { chatId: string; messageId: string; decision: AgentDecision };
   persona?: ModeratorPersona;
   selectedChatId?: string;
+  selectedChatMode?: AgentMode;
+  onSelectChat: (chatId: string) => void;
   onApproveDraft: (draftId: string, editedText?: string, asVoice?: boolean) => Promise<void>;
   onRejectDraft: (draftId: string) => Promise<void>;
   onOpenSettings: () => void;
   onOpenSimulator: () => void;
 }
 
+function confidenceLabel(value: number): string {
+  return Math.round(Math.max(0, Math.min(1, value)) * 100).toString() + '%';
+}
+
 export function ModeratorDrawer({
-  drafts,
-  latestThought,
-  persona,
-  selectedChatId,
-  onApproveDraft,
-  onRejectDraft,
-  onOpenSettings,
-  onOpenSimulator
+  view, drafts, latestThought, persona, selectedChatId, selectedChatMode,
+  onSelectChat, onApproveDraft, onRejectDraft, onOpenSettings, onOpenSimulator
 }: ModeratorDrawerProps) {
+  const { tr } = useLocale();
+  const [dossier, setDossier] = useState<ContactDossier | null>(null);
   const [editingDraftId, setEditingDraftId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
-  const [dossier, setDossier] = useState<ContactDossier | null>(null);
+  const [workingDraftId, setWorkingDraftId] = useState<string | null>(null);
+  const [error, setError] = useState('');
   const [newFact, setNewFact] = useState('');
   const [newCommitment, setNewCommitment] = useState('');
   const [addingFact, setAddingFact] = useState(false);
@@ -38,361 +39,194 @@ export function ModeratorDrawer({
 
   useEffect(() => {
     if (!selectedChatId) {
-      setDossier(null);
       return;
     }
-
+    let active = true;
     api.getDossier(selectedChatId)
-      .then((res) => setDossier(res.dossier))
-      .catch(() => setDossier(null));
+      .then((response) => { if (active) setDossier(response.dossier); })
+      .catch(() => { if (active) setDossier(null); });
+    return () => { active = false; };
   }, [selectedChatId, latestThought]);
 
-  const handleAddFact = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedChatId || !newFact.trim()) return;
+  const addEntry = async (event: FormEvent, type: 'fact' | 'commitment') => {
+    event.preventDefault();
+    if (!selectedChatId) return;
+    const value = type === 'fact' ? newFact.trim() : newCommitment.trim();
+    if (!value) return;
+    setError('');
     try {
-      const res = await api.addFact(selectedChatId, newFact.trim());
-      setDossier(res.dossier);
-      setNewFact('');
-      setAddingFact(false);
-    } catch (err) {
-      console.error(err);
+      const response = type === 'fact'
+        ? await api.addFact(selectedChatId, value)
+        : await api.addCommitment(selectedChatId, value);
+      setDossier(response.dossier);
+      if (type === 'fact') { setNewFact(''); setAddingFact(false); }
+      else { setNewCommitment(''); setAddingCommitment(false); }
+    } catch {
+      setError(tr('تعذّر حفظ المعلومة، حاول مرة تانية', 'Could not save this information. Try again'));
     }
   };
 
-  const handleAddCommitment = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedChatId || !newCommitment.trim()) return;
+  const performDraftAction = async (draft: AgentDraft, action: 'approve' | 'voice' | 'reject') => {
+    if (workingDraftId) return;
+    setWorkingDraftId(draft.id);
+    setError('');
     try {
-      const res = await api.addCommitment(selectedChatId, newCommitment.trim());
-      setDossier(res.dossier);
-      setNewCommitment('');
-      setAddingCommitment(false);
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const startEdit = (draft: AgentDraft) => {
-    setEditingDraftId(draft.id);
-    setEditText(draft.proposedReply);
-  };
-
-  const handleApprove = async (draftId: string, asVoice = false) => {
-    if (editingDraftId === draftId) {
-      await onApproveDraft(draftId, editText, asVoice);
+      if (action === 'reject') await onRejectDraft(draft.id);
+      else await onApproveDraft(draft.id, editingDraftId === draft.id ? editText : undefined, action === 'voice');
       setEditingDraftId(null);
-    } else {
-      await onApproveDraft(draftId, undefined, asVoice);
+    } catch {
+      setError(tr('تعذّر تنفيذ الطلب، المسودة لسه موجودة', 'Action failed. Your draft is still here'));
+    } finally {
+      setWorkingDraftId(null);
     }
   };
 
-  const stageBadgeColors: Record<string, string> = {
-    vip: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
-    customer: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
-    negotiation: 'bg-purple-500/20 text-purple-300 border-purple-500/40',
-    qualified: 'bg-blue-500/20 text-blue-300 border-blue-500/40',
-    lead: 'bg-slate-700/50 text-slate-300 border-slate-600'
-  };
-
-  const stageNames: Record<string, string> = {
-    vip: 'عميل VIP متميز ⭐',
-    customer: 'عميل حالي 🤝',
-    negotiation: 'مرحلة تفاوض 💼',
-    qualified: 'مهتم مؤهل 🎯',
-    lead: 'جهة اتصال جديدة 🌱'
-  };
+  const visibleDrafts = view === 'drafts' ? drafts : drafts.filter((draft) => draft.chatId === selectedChatId);
+  const thought = latestThought?.chatId === selectedChatId ? latestThought?.decision : undefined;
+  const showMemory = view === 'assistant' || view === 'memory';
 
   return (
-    <div className="w-80 md:w-88 border-l border-[#263140] bg-[#131922] flex flex-col h-full shrink-0">
-      {/* Header */}
-      <div className="p-3.5 border-b border-[#263140] flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400">
-            <Brain className="w-4 h-4" />
-          </div>
+    <div className="wa-agent">
+      <header className="wa-agent-header">
+        <div className="wa-agent-heading">
+          <span className="wa-agent-symbol"><Sparkles size={21} fill="currentColor" /></span>
           <div>
-            <h3 className="text-xs font-semibold text-slate-100">تحليلات الموديرتور</h3>
-            <p className="text-[10px] text-emerald-400 font-medium">Gemini 4 Argon & 3.8 Voice</p>
+            <h2>{view === 'drafts' ? tr('المسودات المعلقة', 'Pending drafts') : view === 'memory' ? tr('ذاكرة المحادثة', 'Chat memory') : tr('المساعد الذكي', 'AI assistant')}</h2>
+            <p><span className="wa-live-dot" /> {selectedChatMode === 'autopilot' ? tr('Auto-Pilot مفعّل', 'Auto-Pilot active') : selectedChatMode === 'copilot' ? tr('Co-Pilot مفعّل', 'Co-Pilot active') : selectedChatMode === 'human' ? tr('الوضع اليدوي', 'Human mode') : tr('جاهز للمتابعة', 'Ready')}</p>
           </div>
         </div>
-
-        <div className="flex items-center gap-1">
-          <button
-            onClick={onOpenSimulator}
-            title="تجربة الردود (Simulator)"
-            className="p-1.5 rounded-lg bg-[#1c2430] hover:bg-emerald-500/20 text-slate-400 hover:text-emerald-400 text-xs transition-colors"
-          >
-            <Play className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={onOpenSettings}
-            title="إعدادات الشخصية والقواعد"
-            className="px-2.5 py-1 rounded-lg bg-[#1c2430] hover:bg-[#253245] text-slate-300 text-[11px] font-medium transition-colors"
-          >
-            تخصيص
-          </button>
+        <div className="wa-agent-header-actions">
+          <button type="button" className="wa-icon-button" onClick={onOpenSimulator} aria-label={tr('اختبار رد المساعد', 'Test assistant response')} title={tr('اختبار رد المساعد', 'Test assistant response')}><Play size={18} /></button>
+          <button type="button" className="wa-icon-button" onClick={onOpenSettings} aria-label={tr('تخصيص المساعد', 'Customize assistant')} title={tr('تخصيص المساعد', 'Customize assistant')}><Settings2 size={18} /></button>
         </div>
-      </div>
+      </header>
 
-      <div className="flex-1 overflow-y-auto p-3 space-y-4">
-        {/* Latest Agent Thought */}
-        {latestThought && (
-          <div className="p-3 bg-[#0b0f14] border border-emerald-500/30 rounded-xl space-y-2">
-            <div className="flex items-center justify-between text-[11px]">
-              <span className="font-semibold text-emerald-400 flex items-center gap-1">
-                <Sparkles className="w-3 h-3" />
-                آخر استنتاج لحظي (Argon Brain)
-              </span>
-              <span className="text-[10px] text-slate-400 font-mono">
-                ثقة: {Math.round(latestThought.decision.confidence * 100)}%
-              </span>
+      <div className="wa-agent-scroll">
+        {view !== 'memory' && (
+          <section className="wa-agent-section">
+            <div className="wa-agent-section-heading">
+              <h3>{view === 'drafts' ? tr('بانتظار موافقتك', 'Needs your approval') : tr('ردود بانتظار الموافقة', 'Replies awaiting approval')}</h3>
+              <span className="wa-count wa-count-subtle">{visibleDrafts.length}</span>
             </div>
 
-            <p className="text-xs text-slate-300 italic leading-relaxed">
-              "{latestThought.decision.reasoning}"
-            </p>
-
-            <div className="flex items-center justify-between text-[10px] text-slate-400 pt-1 border-t border-[#1c2430]">
-              <span>النية: <strong className="text-slate-200">{latestThought.decision.intent}</strong></span>
-              <span className="flex items-center gap-1 text-slate-400">
-                <Clock className="w-2.5 h-2.5" />
-                تأخير بشري: {latestThought.decision.simulatedDelayMs}ms
-              </span>
-            </div>
-          </div>
+            {visibleDrafts.length === 0 ? (
+              <div className="wa-agent-empty">
+                <span><CheckCircle2 size={23} /></span>
+                <strong>{tr('مافيش ردود محتاجة مراجعة', 'No replies need review')}</strong>
+                <p>{tr('أي مسودة جديدة هتظهر هنا قبل إرسالها', 'New drafts appear here before they are sent')}</p>
+              </div>
+            ) : visibleDrafts.map((draft) => (
+              <article className="wa-draft" key={draft.id}>
+                <div className="wa-draft-meta">
+                  <span className="wa-review-badge">{tr('مراجعة مطلوبة', 'Review required')}</span>
+                  <span className="wa-confidence"><CheckCircle2 size={14} /> {tr('الثقة', 'Confidence')} <b dir="ltr">{confidenceLabel(draft.confidence)}</b></span>
+                </div>
+                {view === 'drafts' && (
+                  <button type="button" className="wa-draft-contact" onClick={() => onSelectChat(draft.chatId)}>
+                    <span dir="ltr">{draft.chatId.split('@')[0]}</span><ChevronLeft size={14} />
+                  </button>
+                )}
+                <div className="wa-incoming-context">
+                  <span>{tr('الرسالة الواردة', 'Incoming message')}</span>
+                  <p dir="auto">{draft.incomingText}</p>
+                </div>
+                {editingDraftId === draft.id ? (
+                  <label className="wa-draft-edit">
+                    <span>{tr('عدّل الرد قبل الإرسال', 'Edit before sending')}</span>
+                    <textarea dir="auto" value={editText} onChange={(event) => setEditText(event.target.value)} rows={4} />
+                  </label>
+                ) : (
+                  <p className="wa-proposed-reply" dir="auto">{draft.proposedReply}</p>
+                )}
+                <div className="wa-draft-actions">
+                  <button type="button" className="wa-primary-button" disabled={Boolean(workingDraftId)} onClick={() => void performDraftAction(draft, 'approve')}>
+                    <Check size={17} /> {tr('اعتماد وإرسال', 'Approve & send')}
+                  </button>
+                  <button type="button" className="wa-secondary-button" disabled={Boolean(workingDraftId)} onClick={() => {
+                    if (editingDraftId === draft.id) setEditingDraftId(null);
+                    else { setEditingDraftId(draft.id); setEditText(draft.proposedReply); }
+                  }}>
+                    {editingDraftId === draft.id ? <X size={16} /> : <Edit3 size={16} />}
+                    {editingDraftId === draft.id ? tr('إلغاء', 'Cancel') : tr('تعديل', 'Edit')}
+                  </button>
+                </div>
+                <div className="wa-draft-more-actions">
+                  <button type="button" disabled={Boolean(workingDraftId)} onClick={() => void performDraftAction(draft, 'reject')}>{tr('رفض', 'Reject')}</button>
+                  <button type="button" disabled={Boolean(workingDraftId)} onClick={() => void performDraftAction(draft, 'voice')}><Mic size={16} /> {tr('إرسال صوتي', 'Send as voice')}</button>
+                </div>
+                {draft.reasoning && (
+                  <details className="wa-reason-details">
+                    <summary><Lightbulb size={15} /> {tr('سبب الاقتراح', 'Why this reply?')}</summary>
+                    <p dir="auto">{draft.reasoning}</p>
+                  </details>
+                )}
+              </article>
+            ))}
+          </section>
         )}
 
-        {/* Contact Dossier & Long-Term Memory */}
-        {dossier && (
-          <div className="p-3 bg-[#0b0f14] border border-[#263140] rounded-xl space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
-                <UserCheck className="w-3.5 h-3.5 text-cyan-400" />
-                ملف جهة الاتصال والذاكرة
-              </span>
-              <span className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${stageBadgeColors[dossier.stage || 'lead']}`}>
-                {stageNames[dossier.stage || 'lead'] || dossier.stage}
-              </span>
+        {thought && view === 'assistant' && (
+          <section className="wa-agent-section wa-thought-section">
+            <div className="wa-agent-section-heading"><h3><Lightbulb size={17} /> {tr('آخر قرار للمساعد', 'Latest AI decision')}</h3></div>
+            <p dir="auto">{thought.reasoning}</p>
+            <div className="wa-thought-footer">
+              <span>{thought.intent}</span>
+              <span>{tr('الثقة', 'Confidence')} <b dir="ltr">{confidenceLabel(thought.confidence)}</b></span>
             </div>
-
-            {/* Extracted Facts */}
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-[11px] text-slate-400">
-                <span className="flex items-center gap-1 font-medium text-slate-300">
-                  <Bookmark className="w-3 h-3 text-emerald-400" />
-                  الحقائق المستخلصة ({dossier.facts?.length || 0})
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setAddingFact(!addingFact)}
-                  className="text-[10px] text-emerald-400 hover:underline flex items-center gap-0.5"
-                >
-                  <Plus className="w-2.5 h-2.5" /> إضافة
-                </button>
-              </div>
-
-              {addingFact && (
-                <form onSubmit={handleAddFact} className="flex gap-1.5 mt-1">
-                  <input
-                    type="text"
-                    value={newFact}
-                    onChange={(e) => setNewFact(e.target.value)}
-                    placeholder="اكتب حقيقة جديدة عن العميل..."
-                    className="flex-1 px-2.5 py-1 bg-[#131922] border border-[#263140] rounded-lg text-[11px] text-slate-100 focus:outline-hidden focus:border-emerald-500"
-                  />
-                  <button type="submit" className="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[10px]">
-                    حفظ
-                  </button>
-                </form>
-              )}
-
-              {dossier.facts && dossier.facts.length > 0 ? (
-                <div className="space-y-1 max-h-28 overflow-y-auto pr-1">
-                  {dossier.facts.map((fact, idx) => (
-                    <div key={idx} className="p-1.5 rounded-lg bg-[#131922] border border-[#1e2735] text-[11px] text-slate-300 leading-snug">
-                      • {fact}
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-[10px] text-slate-500 italic">لا توجد حقائق مسجلة بعد.</p>
-              )}
-            </div>
-
-            {/* Commitments & Promises */}
-            <div className="space-y-1.5 pt-2 border-t border-[#1c2430]">
-              <div className="flex items-center justify-between text-[11px] text-slate-400">
-                <span className="flex items-center gap-1 font-medium text-slate-300">
-                  <CheckCircle2 className="w-3 h-3 text-cyan-400" />
-                  الوعود والالتزامات المعلقة ({dossier.commitments?.length || 0})
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setAddingCommitment(!addingCommitment)}
-                  className="text-[10px] text-cyan-400 hover:underline flex items-center gap-0.5"
-                >
-                  <Plus className="w-2.5 h-2.5" /> إضافة
-                </button>
-              </div>
-
-              {addingCommitment && (
-                <form onSubmit={handleAddCommitment} className="flex gap-1.5 mt-1">
-                  <input
-                    type="text"
-                    value={newCommitment}
-                    onChange={(e) => setNewCommitment(e.target.value)}
-                    placeholder="اكتب التزاماً أو وعداً قُطع للعميل..."
-                    className="flex-1 px-2.5 py-1 bg-[#131922] border border-[#263140] rounded-lg text-[11px] text-slate-100 focus:outline-hidden focus:border-cyan-500"
-                  />
-                  <button type="submit" className="px-2 py-1 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-[10px]">
-                    حفظ
-                  </button>
-                </form>
-              )}
-
-              {dossier.commitments && dossier.commitments.length > 0 ? (
-                <div className="space-y-1 max-h-28 overflow-y-auto pr-1">
-                  {dossier.commitments.map((comm, idx) => (
-                    <div key={idx} className="p-1.5 rounded-lg bg-[#131922] border border-cyan-900/30 text-[11px] text-cyan-200 leading-snug">
-                      ✓ {comm}
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-[10px] text-slate-500 italic">لا توجد وعود أو التزامات معلقة.</p>
-              )}
-            </div>
-          </div>
+          </section>
         )}
 
-        {/* Pending Drafts Queue */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
-              <span>مسودات بانتظار الموافقة</span>
-              <span className="w-4 h-4 rounded-full bg-amber-500/20 text-amber-400 font-bold text-[10px] flex items-center justify-center">
-                {drafts.length}
-              </span>
-            </span>
-          </div>
-
-          {drafts.length === 0 ? (
-            <div className="p-4 bg-[#0b0f14] border border-[#263140] rounded-xl text-center text-slate-500 text-[11px]">
-              لا توجد مسودات معلقة. الموديرتور يعمل بسلاسة.
-            </div>
-          ) : (
-            <div className="space-y-2.5">
-              {drafts.map((draft) => (
-                <div
-                  key={draft.id}
-                  className="p-3 bg-[#0b0f14] border border-amber-500/30 rounded-xl space-y-2 text-xs"
-                >
-                  <div className="text-[10px] text-slate-400 flex items-center justify-between">
-                    <span>محادثة: {draft.chatId.split('@')[0]}</span>
-                    <span className="text-amber-400 font-medium">بانتظار موافقتك</span>
+        {showMemory && (
+          <section className="wa-agent-section wa-memory-section">
+            <div className="wa-agent-section-heading"><h3><BookOpenText size={17} /> {tr('ذاكرة المحادثة', 'Chat memory')}</h3></div>
+            {!selectedChatId ? (
+              <p className="wa-agent-hint">{tr('اختار محادثة لعرض المعلومات المحفوظة', 'Select a chat to view saved details')}</p>
+            ) : (
+              <>
+                {dossier?.stage && <span className="wa-contact-stage">{dossier.stage === 'lead' ? tr('جهة اتصال جديدة', 'New contact') : dossier.stage === 'customer' ? tr('عميل حالي', 'Customer') : dossier.stage === 'qualified' ? tr('عميل محتمل', 'Qualified lead') : dossier.stage === 'negotiation' ? tr('مرحلة تفاوض', 'Negotiation') : dossier.stage === 'vip' ? 'VIP' : dossier.stage}</span>}
+                <div className="wa-memory-group">
+                  <div className="wa-memory-group-heading">
+                    <span><BookOpenText size={15} /> {tr('معلومات محفوظة', 'Saved facts')}</span>
+                    <button type="button" onClick={() => setAddingFact(!addingFact)} aria-label={tr('إضافة معلومة', 'Add fact')}><Plus size={16} /> {tr('إضافة', 'Add')}</button>
                   </div>
-
-                  <div className="p-2 bg-[#18202b] rounded-lg text-slate-400 text-[11px]">
-                    <strong>الرسالة الواردة:</strong> {draft.incomingText}
-                  </div>
-
-                  {editingDraftId === draft.id ? (
-                    <textarea
-                      value={editText}
-                      onChange={(e) => setEditText(e.target.value)}
-                      className="w-full p-2 bg-[#131922] border border-[#263140] rounded-lg text-xs text-slate-100 focus:outline-hidden focus:border-emerald-500"
-                      rows={3}
-                    />
-                  ) : (
-                    <div className="p-2.5 bg-emerald-950/40 border border-emerald-500/30 rounded-lg text-emerald-100 font-medium">
-                      "{draft.proposedReply}"
-                    </div>
+                  {dossier?.facts?.map((fact, index) => <p className="wa-memory-item" dir="auto" key={fact + index}>{fact}</p>)}
+                  {!dossier?.facts?.length && <p className="wa-agent-hint">{tr('مافيش معلومات محفوظة لسه', 'No saved facts yet')}</p>}
+                  {addingFact && (
+                    <form className="wa-memory-form" onSubmit={(event) => void addEntry(event, 'fact')}>
+                      <input value={newFact} onChange={(event) => setNewFact(event.target.value)} placeholder={tr('اكتب معلومة جديدة', 'Add a new fact')} aria-label={tr('معلومة جديدة', 'New fact')} />
+                      <button type="submit" className="wa-primary-button">{tr('حفظ', 'Save')}</button>
+                    </form>
                   )}
-
-                  <div className="text-[10px] text-slate-400 italic">
-                    السبب: {draft.reasoning}
-                  </div>
-
-                  {/* Actions */}
-                  <div className="flex items-center justify-end gap-1.5 pt-1">
-                    {editingDraftId === draft.id ? (
-                      <button
-                        onClick={() => setEditingDraftId(null)}
-                        className="px-2 py-1 rounded-lg text-slate-400 hover:text-slate-200 text-[11px]"
-                      >
-                        إلغاء التعديل
-                      </button>
-                    ) : (
-                      <button
-                        onClick={() => startEdit(draft)}
-                        className="p-1 rounded-lg text-slate-400 hover:text-slate-200"
-                        title="تعديل الرد"
-                      >
-                        <Edit2 className="w-3.5 h-3.5" />
-                      </button>
-                    )}
-
-                    <button
-                      onClick={() => onRejectDraft(draft.id)}
-                      className="px-2.5 py-1 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 text-[11px] font-medium transition-colors"
-                    >
-                      تجاهل
-                    </button>
-
-                    <button
-                      onClick={() => handleApprove(draft.id, true)}
-                      className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-400 border border-cyan-500/30 text-[11px] font-medium transition-colors"
-                      title="توليد فويس نوت عبر Gemini 3.8 Flash TTS"
-                    >
-                      <Mic className="w-3 h-3" />
-                      فويس
-                    </button>
-
-                    <button
-                      onClick={() => handleApprove(draft.id, false)}
-                      className="flex items-center gap-1 px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-medium transition-colors shadow-sm"
-                    >
-                      <Check className="w-3 h-3" />
-                      إرسال الرد
-                    </button>
-                  </div>
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Persona Overview & Active Stack Card */}
+                <div className="wa-memory-group">
+                  <div className="wa-memory-group-heading">
+                    <span><CalendarCheck size={15} /> {tr('الوعود والالتزامات', 'Commitments')}</span>
+                    <button type="button" onClick={() => setAddingCommitment(!addingCommitment)} aria-label={tr('إضافة التزام', 'Add commitment')}><Plus size={16} /> {tr('إضافة', 'Add')}</button>
+                  </div>
+                  {dossier?.commitments?.map((item, index) => <p className="wa-memory-item" dir="auto" key={item + index}><CheckCircle2 size={15} />{item}</p>)}
+                  {!dossier?.commitments?.length && <p className="wa-agent-hint">{tr('مافيش التزامات محفوظة لسه', 'No saved commitments yet')}</p>}
+                  {addingCommitment && (
+                    <form className="wa-memory-form" onSubmit={(event) => void addEntry(event, 'commitment')}>
+                      <input value={newCommitment} onChange={(event) => setNewCommitment(event.target.value)} placeholder={tr('اكتب التزام جديد', 'Add a commitment')} aria-label={tr('التزام جديد', 'New commitment')} />
+                      <button type="submit" className="wa-primary-button">{tr('حفظ', 'Save')}</button>
+                    </form>
+                  )}
+                </div>
+              </>
+            )}
+          </section>
+        )}
+        {error && <p className="wa-inline-error" role="alert">{error}</p>}
         {persona && (
-          <div className="p-3 bg-[#0b0f14] border border-[#263140] rounded-xl space-y-2.5">
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-semibold text-slate-200 flex items-center gap-1.5">
-                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                حزمة النماذج النشطة
-              </span>
-              <span className="text-[10px] text-emerald-400 font-mono bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
-                {persona.model}
-              </span>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2 text-[10px] text-slate-300">
-              <div className="p-2 rounded-lg bg-[#131922] border border-[#1e2735]">
-                <span className="text-slate-500 block mb-0.5">🧠 نموذج التفكير:</span>
-                <span className="font-mono text-emerald-300 font-semibold">{persona.model}</span>
-              </div>
-              <div className="p-2 rounded-lg bg-[#131922] border border-[#1e2735]">
-                <span className="text-slate-500 block mb-0.5">🎙️ محرك الصوت:</span>
-                <span className="font-mono text-cyan-300 font-semibold">{persona.voiceName || 'kore'}</span>
-              </div>
-            </div>
-
-            <p className="text-[11px] text-slate-400 leading-relaxed border-t border-[#1c2430] pt-2">
-              {persona.tone}
-            </p>
-          </div>
+          <footer className="wa-agent-footer">
+            <Bot size={16} />
+            <span dir="ltr">{persona.model}</span>
+            <span>·</span>
+            <span dir="ltr">{persona.voiceName || 'kore'}</span>
+          </footer>
         )}
       </div>
     </div>
   );
 }
+

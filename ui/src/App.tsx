@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Bot, QrCode, Sliders, Play, Smartphone, Wifi, WifiOff } from 'lucide-react';
+import { Bot, CheckCheck, ContactRound, MessageCircle, Play, Settings2, Smartphone, Wifi, WifiOff, X } from 'lucide-react';
 import { api } from './api/client';
 import type { AgentDecision, AgentDraft, AgentMode, ChatMessage, ChatSummary, ModeratorPersona, PolicyConfig, SystemStatus } from './api/types';
 import { ChatList } from './components/ChatList';
@@ -8,8 +8,10 @@ import { ModeratorDrawer } from './components/ModeratorDrawer';
 import { PairingModal } from './components/PairingModal';
 import { PersonaSettingsModal } from './components/PersonaSettingsModal';
 import { SimulatorModal } from './components/SimulatorModal';
+import { useLocale } from './locale-context';
 
 export function App() {
+  const { language, setLanguage, direction, tr } = useLocale();
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [selectedChatId, setSelectedChatId] = useState<string | undefined>();
@@ -29,6 +31,9 @@ export function App() {
   const [isPairingOpen, setIsPairingOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSimulatorOpen, setIsSimulatorOpen] = useState(false);
+  const [inspectorView, setInspectorView] = useState<'assistant' | 'drafts' | 'memory'>('assistant');
+  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [mobileView, setMobileView] = useState<'list' | 'chat'>('list');
 
   // Load initial data
   const loadInitialData = useCallback(async () => {
@@ -111,7 +116,7 @@ export function App() {
 
   // Setup Server-Sent Events (SSE) for live streaming (mounted once)
   useEffect(() => {
-    void loadInitialData();
+    const bootstrapTimer = window.setTimeout(() => void loadInitialData(), 0);
 
     const eventSource = new EventSource('/api/events');
 
@@ -176,6 +181,7 @@ export function App() {
     });
 
     return () => {
+      window.clearTimeout(bootstrapTimer);
       eventSource.close();
     };
   }, [loadInitialData]);
@@ -231,149 +237,78 @@ export function App() {
   };
 
   const selectedChat = chats.find((c) => c.id === selectedChatId);
+  const pendingDraftChatIds = drafts.filter((draft) => draft.status === 'pending').map((draft) => draft.chatId);
+
+  const selectChat = (chatId: string) => {
+    setSelectedChatId(chatId);
+    setMobileView('chat');
+    setInspectorView('assistant');
+  };
+
+  const openInspector = (view: 'assistant' | 'drafts' | 'memory') => {
+    setInspectorView(view);
+    setInspectorOpen(true);
+  };
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#0b0f14] text-slate-100" dir="rtl">
-      {/* Top Navbar */}
-      <header className="h-14 border-b border-[#263140] bg-[#131922] px-4 flex items-center justify-between shrink-0 z-20">
-        {/* Brand */}
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-600 to-teal-400 flex items-center justify-center text-white shadow-lg shadow-emerald-950/40">
-            <Bot className="w-5 h-5" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-sm font-bold text-slate-100 tracking-wide">Fable Agentic WhatsApp</h1>
-              <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded-md border border-emerald-500/20">
-                Argon & 3.8 Edition
-              </span>
-            </div>
-            <p className="text-[10px] text-emerald-400 font-medium">Gemini 4 Argon & 3.8 Flash-TTS Autonomous Control Plane</p>
-          </div>
+    <div className="wa-app" dir={direction}>
+      <header className="wa-header">
+        <div className="wa-brand" aria-label="WhatsApp Agent">
+          <span className="wa-brand-mark"><MessageCircle size={22} strokeWidth={2.5} /></span>
+          <strong dir="ltr">WhatsApp <span>Agent</span></strong>
         </div>
-
-        {/* Center / Status Pill */}
-        <div className="flex items-center gap-2">
-          {/* Active Models Pill */}
-          <div className="hidden lg:flex items-center gap-2 px-3 py-1 rounded-full bg-[#0b0f14] border border-[#263140] text-[11px]">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span className="text-slate-400">النموذج:</span>
-            <span className="font-mono text-emerald-400 font-semibold">{persona?.model || 'gemini-4-argon'}</span>
-            <span className="text-slate-600">|</span>
-            <span className="text-slate-400">الصوت:</span>
-            <span className="font-mono text-cyan-400 font-semibold">{persona?.voiceName || 'kore'}</span>
+        <div className="wa-header-actions">
+          <div className="wa-language-switch" role="group" aria-label={tr('لغة الواجهة', 'Interface language')}>
+            <button type="button" aria-pressed={language === 'ar'} className={language === 'ar' ? 'is-active' : ''} onClick={() => setLanguage('ar')}>عربي</button>
+            <button type="button" aria-pressed={language === 'en'} className={language === 'en' ? 'is-active' : ''} onClick={() => setLanguage('en')}>EN</button>
           </div>
-
-          {status?.state === 'connected' ? (
-            <div
-              onClick={() => setIsPairingOpen(true)}
-              className="cursor-pointer flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-medium"
-            >
-              <Wifi className="w-3.5 h-3.5 animate-pulse" />
-              <span>متصل: {status.connectedUser?.phone || status.connectedUser?.name || 'WhatsApp'}</span>
-            </div>
-          ) : status?.state === 'qr_ready' ? (
-            <div
-              onClick={() => setIsPairingOpen(true)}
-              className="cursor-pointer flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-medium animate-pulse"
-            >
-              <QrCode className="w-3.5 h-3.5" />
-              <span>رمز QR جاهز للمسح</span>
-            </div>
-          ) : (
-            <div
-              onClick={() => setIsPairingOpen(true)}
-              className="cursor-pointer flex items-center gap-2 px-3 py-1 rounded-full bg-red-500/10 border border-red-500/30 text-red-400 text-xs font-medium"
-            >
-              <WifiOff className="w-3.5 h-3.5" />
-              <span>غير متصل - اضغط للربط</span>
-            </div>
-          )}
-        </div>
-
-        {/* Action Controls */}
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setIsSimulatorOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#1c2430] hover:bg-emerald-500/20 text-slate-300 hover:text-emerald-400 border border-[#263140] text-xs font-medium transition-colors"
-          >
-            <Play className="w-3.5 h-3.5 text-emerald-400" />
-            <span className="hidden sm:inline">محاكي الردود</span>
+          <button type="button" className={'wa-connection ' + (status?.state === 'connected' ? 'is-connected' : 'is-disconnected')} onClick={() => setIsPairingOpen(true)} aria-label={tr('حالة ربط واتساب', 'WhatsApp connection status')}>
+            {status?.state === 'connected' ? <Wifi size={16} /> : <WifiOff size={16} />}
+            <span>{status?.state === 'connected' ? tr('متصل', 'Connected') : status?.state === 'connecting' ? tr('جارٍ الاتصال', 'Connecting') : tr('ربط واتساب', 'Link WhatsApp')}</span>
           </button>
-
-          <button
-            onClick={() => setIsSettingsOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#1c2430] hover:bg-[#253245] text-slate-300 border border-[#263140] text-xs font-medium transition-colors"
-          >
-            <Sliders className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">تخصيص الموديرتور</span>
-          </button>
-
-          <button
-            onClick={() => setIsPairingOpen(true)}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition-colors shadow-lg shadow-emerald-950/30"
-          >
-            <Smartphone className="w-3.5 h-3.5" />
-            <span>ربط جهاز</span>
+          <span className="wa-header-separator" aria-hidden="true" />
+          <button type="button" className="wa-icon-button" onClick={() => setIsSimulatorOpen(true)} aria-label={tr('اختبار رد المساعد', 'Test the assistant')} title={tr('اختبار رد المساعد', 'Test the assistant')}><Play size={19} /></button>
+          <button type="button" className="wa-icon-button" onClick={() => setIsSettingsOpen(true)} aria-label={tr('إعدادات المساعد', 'Assistant settings')} title={tr('إعدادات المساعد', 'Assistant settings')}><Settings2 size={20} /></button>
+          <button type="button" className="wa-header-agent-trigger" onClick={() => openInspector('assistant')}>
+            <Bot size={18} /><span>{tr('المساعد الذكي', 'AI assistant')}</span>
+            {drafts.length > 0 && <span className="wa-count wa-count-light">{drafts.length}</span>}
           </button>
         </div>
       </header>
-
-      {/* Main App Layout */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left: Chat List */}
-        <ChatList
-          chats={chats}
-          selectedChatId={selectedChatId}
-          onSelectChat={(id) => setSelectedChatId(id)}
-        />
-
-        {/* Center: Chat Thread */}
-        <ChatThread
-          chat={selectedChat}
-          messages={messages}
-          onSendMessage={handleSendMessage}
-          onSendReaction={handleSendReaction}
-          onChangeMode={handleChangeMode}
-        />
-
-        {/* Right: Moderator Agent Drawer */}
-        <ModeratorDrawer
-          drafts={drafts}
-          latestThought={latestThought}
-          persona={persona}
-          selectedChatId={selectedChatId}
-          onApproveDraft={handleApproveDraft}
-          onRejectDraft={handleRejectDraft}
-          onOpenSettings={() => setIsSettingsOpen(true)}
-          onOpenSimulator={() => setIsSimulatorOpen(true)}
-        />
+      <div className={'wa-workspace ' + (mobileView === 'list' ? 'is-list-view' : 'is-chat-view')}>
+        <nav className="wa-nav" aria-label={tr('القائمة الرئيسية', 'Main navigation')}>
+          <div className="wa-nav-main">
+            <button type="button" className={'wa-nav-button ' + (inspectorView === 'assistant' ? 'is-active' : '')} aria-label={tr('الدردشات', 'Chats')} title={tr('الدردشات', 'Chats')} onClick={() => { setInspectorView('assistant'); setInspectorOpen(false); setMobileView('list'); }}>
+              <MessageCircle size={23} /><span>{tr('الدردشات', 'Chats')}</span>
+            </button>
+            <button type="button" className={'wa-nav-button ' + (inspectorView === 'drafts' ? 'is-active' : '')} aria-label={tr('المسودات المعلقة', 'Pending drafts')} title={tr('المسودات المعلقة', 'Pending drafts')} onClick={() => openInspector('drafts')}>
+              <CheckCheck size={23} />{drafts.length > 0 && <span className="wa-nav-dot" aria-hidden="true" />}<span>{tr('المسودات', 'Drafts')}</span>
+            </button>
+            <button type="button" className={'wa-nav-button ' + (inspectorView === 'memory' ? 'is-active' : '')} aria-label={tr('ذاكرة جهة الاتصال', 'Contact memory')} title={tr('ذاكرة جهة الاتصال', 'Contact memory')} onClick={() => openInspector('memory')}>
+              <ContactRound size={23} /><span>{tr('الذاكرة', 'Memory')}</span>
+            </button>
+            <button type="button" className="wa-nav-button" aria-label={tr('إعدادات المساعد', 'Assistant settings')} title={tr('إعدادات المساعد', 'Assistant settings')} onClick={() => setIsSettingsOpen(true)}>
+              <Settings2 size={23} /><span>{tr('الإعدادات', 'Settings')}</span>
+            </button>
+          </div>
+          <button type="button" className="wa-nav-device" onClick={() => setIsPairingOpen(true)} aria-label={tr('إدارة الجهاز المرتبط', 'Linked device')} title={tr('إدارة الجهاز المرتبط', 'Linked device')}>
+            <Smartphone size={21} /><span className={'wa-presence-dot ' + (status?.state === 'connected' ? 'is-online' : '')} />
+          </button>
+        </nav>
+        <ChatList chats={chats} selectedChatId={selectedChatId} pendingDraftChatIds={pendingDraftChatIds} onSelectChat={selectChat} />
+        <ChatThread key={selectedChatId || 'empty'} chat={selectedChat} messages={messages} onSendMessage={handleSendMessage} onSendReaction={handleSendReaction} onChangeMode={handleChangeMode} onBack={() => setMobileView('list')} onOpenInspector={() => openInspector('assistant')} />
+        <aside className={'wa-agent-shell ' + (inspectorOpen ? 'is-open' : '')} aria-label={tr('لوحة المساعد الذكي', 'AI assistant panel')}>
+          <button type="button" className="wa-inspector-close wa-icon-button" onClick={() => setInspectorOpen(false)} aria-label={tr('إغلاق لوحة المساعد', 'Close assistant panel')}><X size={20} /></button>
+          <ModeratorDrawer key={(selectedChatId || 'none') + inspectorView} view={inspectorView} drafts={drafts} latestThought={latestThought} persona={persona} selectedChatId={selectedChatId} selectedChatMode={selectedChat?.agentMode} onSelectChat={selectChat} onApproveDraft={handleApproveDraft} onRejectDraft={handleRejectDraft} onOpenSettings={() => setIsSettingsOpen(true)} onOpenSimulator={() => setIsSimulatorOpen(true)} />
+        </aside>
+        {inspectorOpen && <button type="button" className="wa-scrim" onClick={() => setInspectorOpen(false)} aria-label={tr('إغلاق لوحة المساعد', 'Close assistant panel')} />}
       </div>
-
-      {/* Modals */}
-      <PairingModal
-        isOpen={isPairingOpen}
-        status={status}
-        onClose={() => setIsPairingOpen(false)}
-        onConnect={handleConnect}
-        onDisconnect={handleDisconnect}
-      />
-
-      <PersonaSettingsModal
-        isOpen={isSettingsOpen}
-        initialPersona={persona}
-        initialPolicy={policy}
-        onClose={() => setIsSettingsOpen(false)}
-        onSave={handleSavePersona}
-      />
-
-      <SimulatorModal
-        isOpen={isSimulatorOpen}
-        onClose={() => setIsSimulatorOpen(false)}
-        onSimulate={handleSimulate}
-      />
+      <PairingModal isOpen={isPairingOpen} status={status} onClose={() => setIsPairingOpen(false)} onConnect={handleConnect} onDisconnect={handleDisconnect} />
+      <PersonaSettingsModal isOpen={isSettingsOpen} initialPersona={persona} initialPolicy={policy} onClose={() => setIsSettingsOpen(false)} onSave={handleSavePersona} />
+      <SimulatorModal isOpen={isSimulatorOpen} onClose={() => setIsSimulatorOpen(false)} onSimulate={handleSimulate} />
     </div>
   );
 }
 
 export default App;
+
