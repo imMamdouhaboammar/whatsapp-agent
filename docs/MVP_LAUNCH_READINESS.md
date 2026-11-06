@@ -16,6 +16,7 @@ This document distinguishes implemented features, verified tests, and work still
 | Network exposure | Loopback works without a token, non-loopback bind rejects weak/missing owner token | Implemented, HTTPS reverse proxy still needs live deployment validation |
 | Assistant preview | Random isolated simulator identity, dry-run on contact facts, commitments, style and drafts; no message send or event broadcast | Implemented in unit/integration tests, requires real configured-model check |
 | Owner UX | Arabic/English login, responsive settings shell, bilingual preview, explicit sign-out | SSR, build, and browser smoke verified |
+| Live dashboard events | SSE heartbeat every 5 seconds; functional stream test and 19-second browser observation without reconnect | Verified locally; confirm through the production reverse proxy |
 | Customer memory | Contact dossier, explicit memory, conversational style, MCP/API methods | Core tests verified; tenant and privacy review is ongoing |
 | Agent behavior | Autonomous reply, drafts, human handoff, permissions, contact context | Tests verified; live business account acceptance is pending |
 | Business knowledge | Brand knowledge and retrieval paths exist | Evaluate against actual product catalogs and conflicting data |

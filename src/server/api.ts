@@ -16,6 +16,9 @@ import type { ConversationStyle } from '../ai/adaptive-style';
 const allowedOrigins = new Set(['http://localhost:3000','http://127.0.0.1:3000','http://localhost:5173','http://127.0.0.1:5173',...((process.env.AGENT_ALLOWED_ORIGINS??'').split(',').map(v=>v.trim()).filter(Boolean))]);
 const trustedOrigin=(origin:string)=>allowedOrigins.has(origin);
 
+// A short heartbeat survives reverse proxies that drop idle HTTP streams after 10 seconds.
+export const SSE_KEEP_ALIVE_MS = 5000;
+
 export function createApiServer(deps: {
   memoryStore: MemoryStore;
   whatsappClient: WhatsAppSocketClient;
@@ -25,6 +28,7 @@ export function createApiServer(deps: {
   voiceSynthesizer?: VoiceSynthesizer;
   funnelEngine?: FableFunnelEngine;
   dashboardToken?: string;
+  sseHeartbeatMs?: number;
 }): Hono {
   const app = new Hono();
   const funnelEngine = deps.funnelEngine ?? new FableFunnelEngine({
@@ -392,8 +396,11 @@ export function createApiServer(deps: {
 
       // Keep alive interval
       const pingInterval = setInterval(() => {
-        void stream.writeSSE({ event: 'ping', data: '{}' });
-      }, 15000);
+        void stream.writeSSE({ event: 'ping', data: '{}' }).catch(() => {
+          clearInterval(pingInterval);
+          unsubscribe();
+        });
+      }, deps.sseHeartbeatMs ?? SSE_KEEP_ALIVE_MS);
 
       stream.onAbort(() => {
         clearInterval(pingInterval);
