@@ -10,6 +10,8 @@ import type { WhatsAppSocketClient } from '../transport/whatsapp-socket';
 import type { SSEBroadcaster } from './sse';
 import { FableFunnelEngine, FunnelRegistry } from '../funnel';
 import { registerDashboardAuth } from './dashboard-auth';
+import { UserMemoryManager } from '../domain/user-memory';
+import type { ConversationStyle } from '../ai/adaptive-style';
 
 const allowedOrigins = new Set(['http://localhost:3000','http://127.0.0.1:3000','http://localhost:5173','http://127.0.0.1:5173',...((process.env.AGENT_ALLOWED_ORIGINS??'').split(',').map(v=>v.trim()).filter(Boolean))]);
 const trustedOrigin=(origin:string)=>allowedOrigins.has(origin);
@@ -461,6 +463,49 @@ export function createApiServer(deps: {
     }
     const reset = funnelEngine.resetCircuitBreaker(body.targetId);
     return c.json({ success: reset, targetId: body.targetId });
+  });
+
+  // Contact Memory Routes
+  app.get('/api/contacts/:jid/memories', (c) => {
+    const jid = c.req.param('jid');
+    const memories = deps.memoryStore.getContactMemories('default', jid);
+    return c.json({ memories });
+  });
+
+  app.post('/api/contacts/:jid/memories', async (c) => {
+    const jid = c.req.param('jid');
+    const body = await c.req.json().catch(() => ({}));
+    const manager = new UserMemoryManager(deps.memoryStore.getSqliteStore());
+
+    const commandText = body.command || `Remember that ${body.content || ''}`;
+    const result = await manager.handleCommand('default', jid, commandText);
+
+    if (result.status === 'rejected_credential') {
+      return c.json(result, 422);
+    }
+    return c.json(result);
+  });
+
+  app.delete('/api/contacts/:jid/memories/:id', (c) => {
+    const jid = c.req.param('jid');
+    const memoryId = c.req.param('id');
+    const success = deps.memoryStore.deleteContactMemory('default', jid, memoryId);
+    return c.json({ success });
+  });
+
+  // Adaptive Conversation Style Routes
+  app.get('/api/chats/:jid/style', (c) => {
+    const jid = c.req.param('jid');
+    const style = deps.memoryStore.getChatStyle(jid) || 'casual';
+    return c.json({ style });
+  });
+
+  app.post('/api/chats/:jid/style', async (c) => {
+    const jid = c.req.param('jid');
+    const body = await c.req.json().catch(() => ({}));
+    const style = (body.style as ConversationStyle) || 'casual';
+    deps.memoryStore.setChatStyle(jid, style);
+    return c.json({ success: true, style });
   });
 
   return app;

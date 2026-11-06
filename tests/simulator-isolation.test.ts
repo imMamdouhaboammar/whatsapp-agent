@@ -26,6 +26,24 @@ test('preview returns a draft without persisting customer facts, commitments or 
   } finally { memory.close(); }
 });
 
+test('preview style requests never persist a temporary contact dossier', async () => {
+  const memory = new MemoryStore({ dataDir: ':memory:' });
+  try {
+    const moderator = new ModeratorAgent({
+      generateContent: async () => ({ text: JSON.stringify({
+        action: 'reply', intent: 'general_faq', replyText: 'Understood', confidence: 0.98
+      }) })
+    } as any, memory);
+    const chatId = 'preview-style@simulator.invalid';
+    await moderator.processInboundMessage({
+      id: 'style-1', chatId, sender: 'tester',
+      text: 'Please be professional', timestamp: Date.now(), type: 'text', isFromMe: false
+    }, { dryRun: true });
+    expect(memory.getChatStyle(chatId)).toBeUndefined();
+    expect(memory.getDossier(chatId)).toBeUndefined();
+  } finally { memory.close(); }
+});
+
 test('preview HTTP request cannot write live chat, broadcast or send messages', async () => {
   let writes = 0, events = 0, sends = 0;
   let seen: any;

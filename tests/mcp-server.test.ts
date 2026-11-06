@@ -34,6 +34,8 @@ describe('WhatsApp MCP Server', () => {
     expect(toolNames).toContain('whatsapp_get_status');
     expect(toolNames).toContain('whatsapp_set_chat_mode');
     expect(toolNames).toContain('whatsapp_approve_draft');
+    expect(toolNames).toContain('whatsapp_manage_memory');
+    expect(toolNames).toContain('whatsapp_set_chat_style');
   });
 
   it('handles whatsapp_get_status tool call', async () => {
@@ -69,5 +71,57 @@ describe('WhatsApp MCP Server', () => {
     const parsed = JSON.parse(response.content[0].text);
     expect(parsed.connectionState).toBe('connected');
     expect(parsed.connectedUser.phone).toBe('201012345678');
+  });
+
+  it('handles whatsapp_set_chat_style and whatsapp_manage_memory via MCP', async () => {
+    const memory = new MemoryStore({ dataDir: ':memory:' });
+    const mockGemini: any = { generateContent: async () => ({ text: '{}' }) };
+    const agent = new ModeratorAgent(mockGemini, memory);
+    const mockClient: any = {
+      getState: () => ({ state: 'connected' })
+    };
+
+    const server = createWhatsAppMcpServer({
+      memoryStore: memory,
+      whatsappClient: mockClient,
+      moderatorAgent: agent
+    });
+
+    const callHandler = (server as any)._requestHandlers.get(CallToolRequestSchema.shape.method.value);
+
+    // 1. Set style
+    const styleRes = await callHandler(
+      {
+        method: 'tools/call',
+        params: {
+          name: 'whatsapp_set_chat_style',
+          arguments: {
+            chatId: 'user123@s.whatsapp.net',
+            style: 'playful'
+          }
+        }
+      },
+      {}
+    );
+    expect(styleRes.content[0].text).toContain('updated to playful');
+    expect(memory.getChatStyle('user123@s.whatsapp.net')).toBe('playful');
+
+    // 2. Save memory
+    const memRes = await callHandler(
+      {
+        method: 'tools/call',
+        params: {
+          name: 'whatsapp_manage_memory',
+          arguments: {
+            chatId: 'user123@s.whatsapp.net',
+            action: 'save',
+            content: 'Client prefers fast shipping'
+          }
+        }
+      },
+      {}
+    );
+    const parsedMem = JSON.parse(memRes.content[0].text);
+    expect(parsedMem.status).toBe('saved');
   });
 });
