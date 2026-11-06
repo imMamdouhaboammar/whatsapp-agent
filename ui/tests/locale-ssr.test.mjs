@@ -153,6 +153,30 @@ test('Assistant settings provides a bilingual, accessible multi-section layout',
   assert.doesNotMatch(en, /role="dialog"/);
 });
 
+test('Models & providers is directly accessible with existing controls', () => {
+  const persona = {
+    name: 'Mamdouh', language: 'ar-EG', tone: 'Natural', systemPrompt: 'Help',
+    rules: [], model: 'gemini-2.5-pro', temperature: 0.5, minConfidence: 0.85,
+    simulateTypingDelay: false, minTypingDelayMs: 200, maxTypingDelayMs: 600,
+    voiceName: 'kore'
+  };
+  const previousWindow = globalThis.window;
+  globalThis.window = { location: { pathname: '/settings/models' } };
+  try {
+    const html = render('en', React.createElement(PersonaSettingsPage, {
+      initialPersona: persona, onClose: () => {}, onSave: noop
+    }));
+    assert.match(html, /Primary AI model/);
+    assert.match(html, /Voice notes/);
+    assert.match(html, /Minimum confidence/);
+    assert.match(html, /Natural typing delay/);
+    assert.match(html, /85%/);
+    assert.match(html, /gemini-2.5-pro/);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
 test('Only one assistant settings entry and collapsible inspector exist in the workspace', () => {
   const html = render('en', React.createElement(App));
   assert.equal((html.match(/aria-label="Assistant settings"/g) || []).length, 1);
