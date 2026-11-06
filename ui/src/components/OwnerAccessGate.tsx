@@ -1,14 +1,11 @@
-import { createContext, useCallback, useContext, useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { ArrowRight, LockKeyhole, LogOut, MessageCircle, RefreshCw, ShieldCheck } from 'lucide-react';
 import { api } from '../api/client';
 import { useLocale } from '../locale-context';
+import { OwnerAccessContext } from './owner-access-context';
 import './owner-access.css';
 
 type AccessState = 'checking' | 'ready' | 'locked' | 'error';
-
-type OwnerAccess = { required: boolean; signOut: () => Promise<void> };
-const OwnerAccessContext = createContext<OwnerAccess>({ required: false, signOut: async () => {} });
-export const useOwnerAccess = () => useContext(OwnerAccessContext);
 
 export function OwnerSignOutButton({ onSignOut, pending }: { onSignOut: () => Promise<void>; pending: boolean }) {
   const { tr } = useLocale();

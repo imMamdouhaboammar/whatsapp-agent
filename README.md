@@ -107,7 +107,7 @@ whatsapp-agent/
 │   └── server/
 │       ├── api.ts             # REST API
 │       └── sse.ts             # Real-time event streaming
-├── tests/                     # Comprehensive Bun test suite (13 tests)
+├── tests/                     # Bun tests for core behavior and APIs
 └── ui/                        # Vite + React + Tailwind UI
 ```
 
@@ -118,5 +118,7 @@ whatsapp-agent/
 The project-authored source code in this repository is licensed under the [Mozilla Public License 2.0](LICENSE) (`MPL-2.0`).
 
 The core is free to use, modify, and self-host, including for commercial purposes. When distributing modifications to MPL-covered files, the MPL source-availability and notice requirements apply. Separately developed extensions, plugins, and skills may have their own licenses, including commercial licenses.
+
+See [MVP launch readiness](docs/MVP_LAUNCH_READINESS.md) for verified capabilities, platform limits and the remaining pilot acceptance checks.
 
 See [Licensing and Extensions](docs/LICENSING.md) for the intended free-core and optional paid-add-on model. Third-party dependencies retain their respective licenses, and this license does not grant rights to WhatsApp or Meta trademarks.

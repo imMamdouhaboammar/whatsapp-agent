@@ -10,7 +10,8 @@ import { ModeratorDrawer } from './components/ModeratorDrawer';
 import { PairingModal } from './components/PairingModal';
 import { PersonaSettingsPage } from './components/PersonaSettingsPage';
 import { SimulatorModal } from './components/SimulatorModal';
-import { OwnerSignOutButton, useOwnerAccess } from './components/OwnerAccessGate';
+import { OwnerSignOutButton } from './components/OwnerAccessGate';
+import { useOwnerAccess } from './components/owner-access-context';
 import { useLocale } from './locale-context';
 
 export function App() {
