@@ -1,6 +1,7 @@
-import { useState, useRef, useEffect, type FormEvent } from 'react';
-import { Send, Sparkles, CheckCheck, Mic, Reply, X } from 'lucide-react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { ArrowRight, Bot, Check, CheckCheck, Clock3, FileText, MessageCircle, Mic, Reply, Send, X } from 'lucide-react';
 import type { AgentMode, ChatMessage, ChatSummary } from '../api/types';
+import { useLocale, type Language } from '../locale-context';
 
 interface ChatThreadProps {
   chat?: ChatSummary;
@@ -8,316 +9,200 @@ interface ChatThreadProps {
   onSendMessage: (text: string, replyToMessageId?: string) => Promise<void>;
   onSendReaction: (messageId: string, emoji: string) => Promise<void>;
   onChangeMode: (mode: AgentMode) => Promise<void>;
+  onBack: () => void;
+  onOpenInspector: () => void;
 }
 
-export function ChatThread({
-  chat,
-  messages,
-  onSendMessage,
-  onSendReaction,
-  onChangeMode
-}: ChatThreadProps) {
+const modeOptions: Array<{ value: AgentMode; label: string }> = [
+  { value: 'autopilot', label: 'تلقائي' },
+  { value: 'copilot', label: 'بالموافقة' },
+  { value: 'human', label: 'يدوي' }
+];
+
+function messageTime(timestamp: number, language: Language): string {
+  return new Date(timestamp).toLocaleTimeString(language === 'ar' ? 'ar-EG' : 'en-US', { hour: 'numeric', minute: '2-digit' });
+}
+
+export function ChatThread({ chat, messages, onSendMessage, onSendReaction, onChangeMode, onBack, onOpenInspector }: ChatThreadProps) {
+  const { language, tr } = useLocale();
   const [inputText, setInputText] = useState('');
   const [sending, setSending] = useState(false);
-  const [replyingToMessage, setReplyingToMessage] = useState<ChatMessage | null>(null);
-  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+  const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
+  const [error, setError] = useState('');
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    messagesEndRef.current?.scrollIntoView({ block: 'end', behavior: 'auto' });
+  }, [messages, chat?.id]);
 
-  const handleSend = async (e: FormEvent) => {
-    e.preventDefault();
+  const handleSend = async (event: FormEvent) => {
+    event.preventDefault();
     if (!inputText.trim() || sending) return;
     setSending(true);
+    setError('');
     try {
-      await onSendMessage(inputText.trim(), replyingToMessage?.id);
+      await onSendMessage(inputText.trim(), replyingTo?.id);
       setInputText('');
-      setReplyingToMessage(null);
+      setReplyingTo(null);
+    } catch {
+      setError(tr('تعذّر إرسال الرسالة. حاول مرة تانية', 'Could not send the message. Try again'));
     } finally {
       setSending(false);
     }
   };
 
-  const scrollToMessage = (messageId?: string) => {
-    if (!messageId) return;
-    const el = document.getElementById(`msg-${messageId}`);
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      setHighlightedMessageId(messageId);
-      setTimeout(() => setHighlightedMessageId(null), 2500);
+  const changeMode = async (mode: AgentMode) => {
+    if (!chat || chat.agentMode === mode) return;
+    try {
+      await onChangeMode(mode);
+      setError('');
+    } catch {
+      setError(tr('تعذّر تغيير وضع المحادثة', 'Could not change the chat mode'));
     }
+  };
+
+  const scrollToMessage = (messageId: string) => {
+    const element = document.getElementById('msg-' + messageId);
+    if (!element) return;
+    element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setHighlightedId(messageId);
+    window.setTimeout(() => setHighlightedId(null), 1800);
   };
 
   if (!chat) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center bg-[#0b0f14] text-slate-500 p-6 text-center">
-        <div className="w-16 h-16 rounded-2xl bg-[#131922] border border-[#263140] flex items-center justify-center text-slate-400 mb-3 shadow-lg">
-          <Sparkles className="w-8 h-8 text-emerald-400" />
-        </div>
-        <h3 className="text-base font-semibold text-slate-200">اختر محادثة لبدء المتابعة</h3>
-        <p className="text-xs text-slate-400 mt-1 max-w-sm">
-          يمكنك مراقبة ردود الموديرتور الذكي، التحكم في وضع العمل، أو الرد مباشرة بشكل يدوي.
-        </p>
-      </div>
+      <main className="wa-thread wa-thread-empty">
+        <div className="wa-welcome-icon"><MessageCircle size={34} /></div>
+        <h2>{tr('اختار محادثة علشان تبدأ', 'Select a conversation')}</h2>
+        <p>{tr('تابع الرسائل، راجع ردود المساعد، أو رد بنفسك في أي وقت', 'Read messages, review AI drafts, or reply yourself at any time')}</p>
+      </main>
     );
   }
 
-  const formatMessageTime = (ts: number) => {
-    return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  };
+  const visibleMessages = messages.filter((message) =>
+    (Boolean(message.text?.trim()) && message.text !== '[رسالة]') ||
+    ['audio', 'image', 'video', 'document'].includes(message.type)
+  );
 
   return (
-    <div className="flex-1 flex flex-col bg-[#0b0f14] h-full overflow-hidden">
-      {/* Thread Header */}
-      <div className="px-5 py-3 border-b border-[#263140] bg-[#131922] flex items-center justify-between shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-emerald-600 to-teal-400 flex items-center justify-center text-white font-semibold text-sm shadow-md">
-            {chat.name.slice(0, 1).toUpperCase()}
-          </div>
-          <div>
-            <h2 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
-              {chat.name}
-              {chat.isGroup && (
-                <span className="text-[10px] text-slate-400 bg-[#1c2430] px-1.5 py-0.5 rounded-md">
-                  مجموعة
-                </span>
-              )}
-            </h2>
-            <p className="text-[11px] text-slate-400 font-mono" dir="ltr">
-              {chat.phoneNumber || chat.id}
-            </p>
-          </div>
+    <main className="wa-thread" aria-label={tr('محادثة ', 'Conversation with ') + chat.name}>
+      <header className="wa-thread-header">
+        <button type="button" className="wa-thread-back wa-icon-button" onClick={onBack} aria-label={tr('العودة للمحادثات', 'Back to chats')}><ArrowRight size={21} /></button>
+        <span className="wa-avatar wa-avatar-thread">
+          {chat.avatarUrl ? <img src={chat.avatarUrl} alt="" /> : chat.name.slice(0, 1)}
+        </span>
+        <div className="wa-thread-contact">
+          <h2>{chat.name} {chat.isGroup && <span className="wa-group-label">{tr('مجموعة', 'Group')}</span>}</h2>
+          <p dir="auto">{chat.phoneNumber || tr('محادثة واتساب', 'WhatsApp conversation')}</p>
         </div>
+        <button type="button" className="wa-thread-agent wa-icon-button" onClick={onOpenInspector} aria-label={tr('عرض المساعد الذكي', 'Show AI assistant')} title={tr('عرض المساعد الذكي', 'Show AI assistant')}><Bot size={21} /></button>
+      </header>
 
-        {/* Mode Selector */}
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-slate-400 hidden sm:inline">وضع المحادثة:</span>
-          <select
-            value={chat.agentMode}
-            onChange={(e) => onChangeMode(e.target.value as AgentMode)}
-            className="px-3 py-1.5 bg-[#0b0f14] border border-[#263140] rounded-xl text-xs text-slate-200 font-medium focus:outline-hidden focus:border-emerald-500 cursor-pointer"
-          >
-            <option value="autopilot">⚡ تلقائي (Auto-Pilot)</option>
-            <option value="copilot">📝 مسودات (Co-Pilot)</option>
-            <option value="human">👤 يدوي (Human Only)</option>
-          </select>
-        </div>
-      </div>
-
-      {/* Messages Scroll Area */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-3">
-        {messages.length === 0 ? (
-          <div className="text-center py-12 text-slate-500 text-xs">
-            لا توجد رسائل مسجلة في هذه المحادثة حتى الآن.
-          </div>
-        ) : (
-          messages
-            .filter((m) => m.text !== '[رسالة]' && (m.text?.trim() || m.type === 'audio'))
-            .map((msg) => {
-            const isMe = msg.isFromMe;
-            const isHighlighted = highlightedMessageId === msg.id;
-
-            // Resolve quoted message from either direct property or replyToId
-            const quotedFallback = msg.replyToId ? messages.find((m) => m.id === msg.replyToId) : undefined;
-            const quotedInfo = msg.quotedMessage || (quotedFallback ? {
-              id: quotedFallback.id,
-              sender: quotedFallback.sender,
-              senderName: quotedFallback.isFromMe ? 'أنت' : (quotedFallback.senderName || 'المتصل'),
-              text: quotedFallback.text || (quotedFallback.transcription ? `🎵 ${quotedFallback.transcription}` : `[${quotedFallback.type}]`),
-              type: quotedFallback.type
-            } : undefined);
-
-            return (
-              <div
-                key={msg.id}
-                id={`msg-${msg.id}`}
-                className={`flex flex-col group transition-all duration-300 ${isMe ? 'items-end' : 'items-start'}`}
-              >
-                <div
-                  className={`max-w-[78%] rounded-2xl px-4 py-2.5 text-xs shadow-md relative transition-all duration-300 ${
-                    isHighlighted ? 'ring-2 ring-emerald-400 ring-offset-2 ring-offset-[#0b0f14]' : ''
-                  } ${
-                    isMe
-                      ? 'bg-emerald-950/80 border border-emerald-500/30 text-emerald-100 rounded-br-xs'
-                      : 'bg-[#18202c] border border-[#263140] text-slate-100 rounded-bl-xs'
-                  }`}
-                >
-                  {/* Sender Name if not me */}
-                  {!isMe && msg.senderName && (
-                    <div className="text-[10px] font-semibold text-emerald-400 mb-1">
-                      {msg.senderName}
-                    </div>
-                  )}
-
-                  {/* Quoted / Swiped Message Preview (WhatsApp Native Card) */}
-                  {quotedInfo && (
-                    <div
-                      onClick={() => scrollToMessage(quotedInfo.id)}
-                      title="اضغط للذهاب إلى الرسالة المقتبسة"
-                      className={`mb-2 p-2 rounded-xl text-[11px] border-r-4 transition-all duration-200 cursor-pointer select-none ${
-                        isMe
-                          ? 'bg-emerald-900/50 border-emerald-400 hover:bg-emerald-900/70 text-emerald-100'
-                          : 'bg-[#0f141c]/90 border-emerald-500 hover:bg-[#151c27] text-slate-200'
-                      }`}
-                    >
-                      <div className="flex items-center gap-1.5 font-bold text-[10px] text-emerald-400 mb-0.5">
-                        <Reply className="w-3 h-3 rotate-180 shrink-0" />
-                        <span>{quotedInfo.senderName || 'رد على رسالة'}</span>
-                      </div>
-                      <p className="text-slate-300 line-clamp-2 text-xs leading-relaxed italic">
-                        {quotedInfo.text}
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Audio Voice Note Player & Transcription */}
-                  {msg.type === 'audio' && (
-                    <div className="mb-2 p-2.5 bg-[#0b0f14]/90 border border-emerald-500/30 rounded-xl space-y-2">
-                      <div className="flex items-center justify-between text-[10px]">
-                        <span className="font-bold text-emerald-400 flex items-center gap-1.5">
-                          <Mic className="w-3.5 h-3.5 text-emerald-400" />
-                          {isMe ? 'فويس نوت صادر (Gemini 3.8 Flash TTS)' : 'فويس نوت وارد (تفريغ Gemini 3.5 Transcribe)'}
-                        </span>
-                        <span className="text-[9px] text-emerald-400/80 font-mono bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
-                          PTT High Fidelity
-                        </span>
-                      </div>
-
-                      {/* WhatsApp Audio Waveform Bar */}
-                      <div className="flex items-center gap-2 py-1.5 px-2.5 rounded-lg bg-[#141b24] text-emerald-400 border border-[#1e2735]">
-                        <div className="w-6 h-6 rounded-full bg-emerald-500/20 flex items-center justify-center shrink-0">
-                          <Mic className="w-3 h-3 text-emerald-400" />
-                        </div>
-                        <div className="flex-1 flex items-center gap-0.5 h-5 px-1">
-                          {[4, 8, 12, 6, 10, 16, 14, 9, 5, 11, 18, 13, 7, 10, 6, 12, 8, 5, 11, 15, 9].map((h, i) => (
-                            <div
-                              key={i}
-                              style={{ height: `${h}px` }}
-                              className="flex-1 bg-emerald-400/70 rounded-full"
-                            />
-                          ))}
-                        </div>
-                      </div>
-
-                      <p className="text-xs text-slate-200 leading-relaxed italic pr-1">
-                        "{msg.text?.replace(/^🎵 \[رسالة صوتية صادرة:\s*/, '').replace(/\]$/, '') || msg.transcription || 'رسالة صوتية'}"
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Message Text for regular text messages */}
-                  {msg.type !== 'audio' && (
-                    <p className="whitespace-pre-wrap leading-relaxed text-slate-100">
-                      {msg.text}
-                    </p>
-                  )}
-
-                  {/* Metadata: Time and Status */}
-                  <div className="flex items-center justify-end gap-1.5 mt-1 text-[10px] text-slate-400">
-                    {isMe && (
-                      <span className="flex items-center gap-0.5 text-emerald-400/80">
-                        <Sparkles className="w-2.5 h-2.5" />
-                        <span>رد موديرتور</span>
-                      </span>
-                    )}
-                    <span>{formatMessageTime(msg.timestamp)}</span>
-                    {isMe && <CheckCheck className="w-3 h-3 text-emerald-400" />}
-                  </div>
-
-                  {/* Reactions Badge */}
-                  {msg.reactions && msg.reactions.length > 0 && (
-                    <div className="flex items-center gap-1 mt-1.5 -mb-0.5">
-                      {msg.reactions.map((emoji, idx) => (
-                        <span
-                          key={idx}
-                          className="inline-flex items-center text-xs bg-[#0b0f14]/80 border border-[#263140] rounded-full px-2 py-0.5 shadow-xs"
-                        >
-                          {emoji}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Quick Action Bar on Hover (Reactions + WhatsApp-style Reply button) */}
-                  <div className="absolute -top-3.5 left-2 hidden group-hover:flex items-center gap-1.5 bg-[#131922] border border-[#263140] rounded-full px-2 py-0.5 shadow-xl z-10">
-                    {['👍', '❤️', '🙏', '😂', '🔥'].map((emoji) => (
-                      <button
-                        key={emoji}
-                        type="button"
-                        onClick={() => onSendReaction(msg.id, emoji)}
-                        className="hover:scale-125 transition-transform text-xs"
-                      >
-                        {emoji}
-                      </button>
-                    ))}
-                    <div className="w-px h-3 bg-[#263140] mx-0.5" />
-                    <button
-                      type="button"
-                      onClick={() => setReplyingToMessage(msg)}
-                      className="flex items-center gap-1 hover:text-emerald-400 text-slate-300 text-[10px] font-medium px-1.5 py-0.5 hover:bg-slate-800 rounded-md transition-colors"
-                      title="رد على هذه الرسالة بالسحب"
-                    >
-                      <Reply className="w-3 h-3 rotate-180" />
-                      <span>رد</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            );
-          })
-        )}
-        <div ref={messagesEndRef} />
-      </div>
-
-      {/* Input Form with Active Reply Bar */}
-      <form onSubmit={handleSend} className="p-3 border-t border-[#263140] bg-[#131922] flex flex-col gap-2 shrink-0">
-        {/* WhatsApp-style Active Swiped Reply Bar */}
-        {replyingToMessage && (
-          <div className="px-3.5 py-2 bg-[#0b0f14] border border-[#263140] rounded-xl flex items-center justify-between gap-3 text-xs">
-            <div className="flex items-center gap-2.5 min-w-0">
-              <div className="w-1 h-8 bg-emerald-500 rounded-full shrink-0" />
-              <div className="min-w-0">
-                <div className="text-[11px] font-bold text-emerald-400 flex items-center gap-1">
-                  <Reply className="w-3 h-3 rotate-180" />
-                  <span>الرد على: {replyingToMessage.isFromMe ? 'أنت' : (replyingToMessage.senderName || 'المتصل')}</span>
-                </div>
-                <p className="text-[11px] text-slate-300 truncate italic">
-                  {replyingToMessage.text || (replyingToMessage.transcription ? `🎵 ${replyingToMessage.transcription}` : `[${replyingToMessage.type}]`)}
-                </p>
-              </div>
-            </div>
+      <div className="wa-chat-mode-bar">
+        <span className="wa-mode-title">{tr('وضع المحادثة', 'Chat mode')}</span>
+        <div className="wa-segmented" role="group" aria-label={tr('وضع المحادثة', 'Chat mode')}>
+          {modeOptions.map((mode) => (
             <button
               type="button"
-              onClick={() => setReplyingToMessage(null)}
-              className="p-1 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-[#1a2332] transition-colors"
-              title="إلغاء الرد"
-            >
-              <X className="w-4 h-4" />
-            </button>
+              key={mode.value}
+              className={chat.agentMode === mode.value ? 'is-active' : ''}
+              aria-pressed={chat.agentMode === mode.value}
+              onClick={() => void changeMode(mode.value)}
+            >{mode.value === 'autopilot' ? tr('تلقائي', 'Auto-Pilot') : mode.value === 'copilot' ? tr('بالموافقة', 'Co-Pilot') : tr('يدوي', 'Human')}</button>
+          ))}
+        </div>
+      </div>
+
+      <div className="wa-message-canvas">
+        <div className="wa-message-stream">
+          {visibleMessages.length === 0 ? (
+            <p className="wa-thread-empty-message">{tr('لسه مفيش رسائل في المحادثة دي', 'No messages in this conversation yet')}</p>
+          ) : visibleMessages.map((message) => {
+            const quotedFallback = message.replyToId ? messages.find((item) => item.id === message.replyToId) : undefined;
+            const quoted = message.quotedMessage || (quotedFallback ? {
+              id: quotedFallback.id,
+              sender: quotedFallback.sender,
+              senderName: quotedFallback.isFromMe ? tr('أنت', 'You') : (quotedFallback.senderName || tr('جهة الاتصال', 'Contact')),
+              text: quotedFallback.text || quotedFallback.transcription || '[' + quotedFallback.type + ']'
+            } : undefined);
+            const isOutbound = message.isFromMe;
+            return (
+              <article key={message.id} id={'msg-' + message.id} className={'wa-message ' + (isOutbound ? 'is-outbound' : 'is-inbound')}>
+                <div className={'wa-bubble ' + (highlightedId === message.id ? 'is-highlighted' : '')}>
+                  {quoted && (
+                    <button type="button" className="wa-quoted-message" onClick={() => scrollToMessage(quoted.id)} title={tr('الانتقال للرسالة الأصلية', 'Jump to quoted message')}>
+                      <strong>{quoted.senderName || tr('رسالة سابقة', 'Earlier message')}</strong>
+                      <span>{quoted.text}</span>
+                    </button>
+                  )}
+                  {message.type === 'audio' && (
+                    <div className="wa-audio-note">
+                      <span className="wa-audio-icon"><Mic size={17} /></span>
+                      <div>
+                        <strong>{tr('رسالة صوتية', 'Voice message')}</strong>
+                        <span dir="auto">{message.transcription || message.text || tr('رسالة صوتية', 'Voice message')}</span>
+                      </div>
+                    </div>
+                  )}
+                  {message.type === 'image' && message.mediaUrl && <img className="wa-media-image" src={message.mediaUrl} alt={tr('صورة مرفقة', 'Attached image')} loading="lazy" />}
+                  {message.type === 'video' && message.mediaUrl && <video className="wa-media-image" src={message.mediaUrl} controls preload="metadata" />}
+                  {message.type === 'document' && <div className="wa-document-note"><FileText size={20} /><span>{tr('مستند مرفق', 'Attached document')}</span></div>}
+                  {message.type !== 'audio' && message.text && message.text !== '[رسالة]' && <p className="wa-message-text" dir="auto">{message.text}</p>}
+                  <div className="wa-message-meta">
+                    <time dir="auto">{messageTime(message.timestamp, language)}</time>
+                    {isOutbound && (message.status === 'pending'
+                      ? <Clock3 size={13} aria-label={tr('قيد الإرسال', 'Pending')} />
+                      : message.status === 'sent'
+                        ? <Check size={14} aria-label={tr('تم الإرسال', 'Sent')} />
+                        : <CheckCheck size={15} className={message.status === 'read' ? 'is-read' : ''} aria-label={message.status === 'read' ? tr('مقروءة', 'Read') : tr('تم التسليم', 'Delivered')} />)}
+                  </div>
+                  {Boolean(message.reactions?.length) && (
+                    <div className="wa-message-reactions">
+                      {message.reactions?.map((emoji, index) => <span key={emoji + index}>{emoji}</span>)}
+                    </div>
+                  )}
+                </div>
+                <div className="wa-message-actions" aria-label={tr('إجراءات الرسالة', 'Message actions')}>
+                  {['👍', '❤️', '🙏'].map((emoji) => (
+                    <button key={emoji} type="button" onClick={() => void onSendReaction(message.id, emoji).catch(() => setError(tr('تعذّر إرسال التفاعل', 'Could not send reaction')))} aria-label={tr('التفاعل ', 'React ') + emoji}>{emoji}</button>
+                  ))}
+                  <button type="button" onClick={() => setReplyingTo(message)} aria-label={tr('الرد على الرسالة', 'Reply to message')} title={tr('الرد', 'Reply')}><Reply size={15} /></button>
+                </div>
+              </article>
+            );
+          })}
+          <div ref={messagesEndRef} />
+        </div>
+      </div>
+
+      <form className="wa-composer" onSubmit={handleSend}>
+        {replyingTo && (
+          <div className="wa-replying-to">
+            <div>
+              <strong><Reply size={14} /> {tr('الرد على', 'Reply to')} {replyingTo.isFromMe ? tr('نفسك', 'yourself') : (replyingTo.senderName || chat.name)}</strong>
+              <p dir="auto">{replyingTo.text || replyingTo.transcription || tr('رسالة مرفقة', 'Attachment')}</p>
+            </div>
+            <button type="button" className="wa-icon-button" onClick={() => setReplyingTo(null)} aria-label={tr('إلغاء الرد', 'Cancel reply')}><X size={16} /></button>
           </div>
         )}
-
-        <div className="flex items-center gap-2">
+        {error && <p className="wa-inline-error" role="alert">{error}</p>}
+        <div className="wa-composer-row">
           <input
             type="text"
-            placeholder={replyingToMessage ? `اكتب رداً على ${replyingToMessage.isFromMe ? 'أنت' : (replyingToMessage.senderName || 'المتصل')}...` : 'اكتب رسالة للرد المباشر يدوياً...'}
             value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
+            onChange={(event) => setInputText(event.target.value)}
+            placeholder={tr('اكتب رسالة...', 'Type a message...')}
             disabled={sending}
-            className="flex-1 px-4 py-2.5 bg-[#0b0f14] border border-[#263140] rounded-xl text-xs text-slate-100 placeholder:text-slate-500 focus:outline-hidden focus:border-emerald-500"
+            aria-label={tr('نص الرسالة', 'Message text')}
+            dir="auto"
           />
-          <button
-            type="submit"
-            disabled={!inputText.trim() || sending}
-            className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-lg shadow-emerald-900/20"
-          >
-            <Send className="w-3.5 h-3.5" />
-            <span>إرسال</span>
+          <button type="submit" className="wa-send-button" disabled={sending || !inputText.trim()} aria-label={tr('إرسال الرسالة', 'Send message')} title={tr('إرسال الرسالة', 'Send message')}>
+            <Send size={19} />
           </button>
         </div>
       </form>
-    </div>
+    </main>
   );
 }
+

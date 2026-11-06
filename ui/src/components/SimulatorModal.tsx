@@ -1,138 +1,91 @@
-import { useState } from 'react';
-import { X, Sparkles, CheckCircle2, Clock } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { CheckCircle2, Clock3, Play, Sparkles, X } from 'lucide-react';
+import type { AgentDecision } from '../api/types';
+import { useLocale } from '../locale-context';
+
+interface SimulationResult {
+  decision?: AgentDecision;
+}
 
 interface SimulatorModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSimulate: (text: string, senderName?: string) => Promise<any>;
+  onSimulate: (text: string, senderName?: string) => Promise<SimulationResult>;
 }
 
 export function SimulatorModal({ isOpen, onClose, onSimulate }: SimulatorModalProps) {
-  const [testText, setTestText] = useState('السلام عليكم، هو الكورس متاح حالياً وبكام؟');
-  const [senderName, setSenderName] = useState('عميل تجريبي');
+  const { language, tr } = useLocale();
+  const [testText, setTestText] = useState('');
+  const [senderName, setSenderName] = useState('');
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<any>(null);
+  const [result, setResult] = useState<SimulationResult | null>(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onEscape);
+    return () => window.removeEventListener('keydown', onEscape);
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
   const handleRun = async () => {
     if (!testText.trim() || loading) return;
     setLoading(true);
+    setError('');
+    setResult(null);
     try {
-      const data = await onSimulate(testText, senderName);
-      setResult(data);
+      setResult(await onSimulate(testText.trim(), senderName.trim() || undefined));
+    } catch {
+      setError(tr('تعذّر اختبار الرد. حاول مرة تانية', 'Could not test the response. Try again'));
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xs p-4">
-      <div className="w-full max-w-xl bg-[#131922] border border-[#263140] rounded-2xl shadow-2xl overflow-hidden flex flex-col">
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-[#263140] bg-[#0b0f14]/50">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400">
-              <Sparkles className="w-4 h-4" />
-            </div>
+    <div className="wa-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="wa-modal wa-modal-medium" role="dialog" aria-modal="true" aria-labelledby="sim-title">
+        <header className="wa-modal-header">
+          <div className="wa-modal-heading">
+            <span className="wa-modal-icon"><Sparkles size={20} /></span>
             <div>
-              <h2 className="text-base font-semibold text-slate-100">محاكي اختبار الموديرتور</h2>
-              <p className="text-xs text-slate-400">Test Gemini Moderator Responses</p>
+              <h2 id="sim-title">{tr('اختبار رد المساعد', 'Test assistant response')}</h2>
+              <p>{tr('جرّب رسالة وشوف قرار المساعد', 'Preview how the assistant handles a message')}</p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-[#1c2430] transition-colors"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        {/* Content */}
-        <div className="p-6 space-y-4 text-right">
-          <div>
-            <label className="text-xs font-semibold text-slate-300 block mb-1.5">اسم الشخص التجريبي:</label>
-            <input
-              type="text"
-              value={senderName}
-              onChange={(e) => setSenderName(e.target.value)}
-              className="w-full px-3 py-2 bg-[#0b0f14] border border-[#263140] rounded-xl text-xs text-slate-100 focus:outline-hidden focus:border-emerald-500"
-            />
-          </div>
-
-          <div>
-            <label className="text-xs font-semibold text-slate-300 block mb-1.5">نص الرسالة الافتراضية:</label>
-            <textarea
-              rows={3}
-              value={testText}
-              onChange={(e) => setTestText(e.target.value)}
-              className="w-full p-3 bg-[#0b0f14] border border-[#263140] rounded-xl text-xs text-slate-100 focus:outline-hidden focus:border-emerald-500"
-            />
-          </div>
-
-          <div className="flex justify-end">
-            <button
-              onClick={handleRun}
-              disabled={loading || !testText.trim()}
-              className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-semibold transition-colors shadow-lg shadow-emerald-900/20"
-            >
-              {loading ? (
-                <>
-                  <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  <span>جاري التحليل والرد...</span>
-                </>
-              ) : (
-                <>
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>اختبار الرد الآن</span>
-                </>
-              )}
-            </button>
-          </div>
-
-          {/* Result Card */}
+          <button type="button" className="wa-icon-button" onClick={onClose} aria-label={tr('إغلاق', 'Close')}><X size={20} /></button>
+        </header>
+        <div className="wa-modal-content wa-sim-content">
+          <label className="wa-field">
+            <span>{tr('اسم الشخص التجريبي', 'Test sender name')}</span>
+            <input dir="auto" value={senderName} onChange={(event) => setSenderName(event.target.value)} placeholder={language === 'ar' ? 'عميل تجريبي' : 'Example contact'} />
+          </label>
+          <label className="wa-field">
+            <span>{tr('الرسالة التجريبية', 'Test message')}</span>
+            <textarea dir="auto" rows={4} value={testText} onChange={(event) => setTestText(event.target.value)} placeholder={tr('مثال: هل نقدر نحدد موعد بكرة؟', 'Example: Can we schedule a call tomorrow?')} />
+          </label>
+          <button type="button" className="wa-primary-button wa-full-button" onClick={() => void handleRun()} disabled={loading || !testText.trim()}><Play size={17} />{loading ? tr('جارٍ اختبار الرد', 'Testing response') : tr('اختبار الرد الآن', 'Run test')}</button>
+          {error && <p className="wa-inline-error" role="alert">{error}</p>}
           {result && (
-            <div className="mt-4 p-4 bg-[#0b0f14] border border-emerald-500/30 rounded-xl space-y-3">
-              <div className="flex items-center justify-between text-xs pb-2 border-b border-[#1c2430]">
-                <span className="font-semibold text-emerald-400 flex items-center gap-1.5">
-                  <CheckCircle2 className="w-4 h-4" />
-                  قرار الموديرتور: {result.decision?.action?.toUpperCase()}
-                </span>
-                <span className="text-[11px] text-slate-400 font-mono">
-                  ثقة: {Math.round((result.decision?.confidence ?? 0) * 100)}%
-                </span>
+            <section className="wa-sim-result" aria-live="polite">
+              <div className="wa-sim-result-heading">
+                <span><CheckCircle2 size={18} /> {tr('قرار المساعد', 'AI decision')}</span>
+                <strong dir="ltr">{result.decision?.action || 'N/A'}</strong>
               </div>
-
-              <div className="text-xs text-slate-300">
-                <span className="text-slate-400">النية المكتشفة: </span>
-                <strong className="text-emerald-300">{result.decision?.intent}</strong>
+              <div className="wa-sim-facts">
+                <p><span>{tr('الثقة', 'Confidence')}</span><b dir="ltr">{Math.round((result.decision?.confidence || 0) * 100)}%</b></p>
+                <p><span>{tr('النية', 'Intent')}</span><b dir="auto">{result.decision?.intent || tr('غير محددة', 'Unknown')}</b></p>
+                <p><span>{tr('سبب القرار', 'Reasoning')}</span><span dir="auto">{result.decision?.reasoning || tr('لا توجد تفاصيل', 'No details')}</span></p>
               </div>
-
-              <div className="text-xs text-slate-300">
-                <span className="text-slate-400">التفسير المنطقي: </span>
-                <span className="italic">{result.decision?.reasoning}</span>
-              </div>
-
-              {result.decision?.replyText && (
-                <div className="p-3 bg-emerald-950/60 border border-emerald-500/40 rounded-xl text-emerald-100 font-medium text-xs leading-relaxed">
-                  <span className="block text-[10px] text-emerald-400/80 mb-1 font-bold">الرد البشري المقترح:</span>
-                  "{result.decision.replyText}"
-                </div>
-              )}
-
-              <div className="flex items-center justify-between text-[10px] text-slate-400 pt-1">
-                <span className="flex items-center gap-1">
-                  <Clock className="w-3 h-3" />
-                  محاكاة وقت الكتابة: {result.decision?.simulatedDelayMs}ms
-                </span>
-                {result.decision?.suggestedReaction && (
-                  <span>إيموجي مقترح: {result.decision.suggestedReaction}</span>
-                )}
-              </div>
-            </div>
+              {result.decision?.replyText && <div className="wa-sim-reply"><span>{tr('الرد المقترح', 'Suggested reply')}</span><p dir="auto">{result.decision.replyText}</p></div>}
+              <div className="wa-sim-latency"><Clock3 size={14} /> {tr('تأخير الكتابة المتوقع', 'Expected typing delay')}: <span dir="ltr">{result.decision?.simulatedDelayMs || 0} ms</span></div>
+            </section>
           )}
         </div>
-      </div>
+      </section>
     </div>
   );
 }
+
