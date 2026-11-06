@@ -105,6 +105,7 @@
 }
 .wa-ps-header-copy { min-width: 0; }
 .wa-ps-breadcrumb { display: flex; align-items: center; gap: 10px; color: #697771; font-size: 11px; margin-bottom: 23px; }
+.wa-ps-mobile-back { display: none; align-items: center; gap: 6px; margin: 0 0 10px; border: 0; background: none; color: var(--ps-green); font-size: 11px; font-weight: 750; padding: 0; }
 .wa-ps-breadcrumb strong { color: #263530; font-weight: 700; }
 .wa-ps-page-header h1 { margin: 0 0 7px; font-size: clamp(23px, 2.1vw, 32px); line-height: 1.23; font-weight: 790; letter-spacing: -.9px; }
 .wa-ps-page-header p { margin: 0; color: var(--ps-muted); font-size: 12px; line-height: 1.65; }
@@ -247,6 +248,7 @@
   .wa-ps-nav-link:not(.is-selected) { background: #f7f9f7; border-color: #eff1ef; }
   .wa-ps-main { flex: 1; }
   .wa-ps-page-header { padding: 18px 15px 16px; }
+  .wa-ps-mobile-back { display: inline-flex; }
   .wa-ps-scroll-area { padding-inline: 15px; }
   .wa-ps-page-header h1 { font-size: 23px; }
   .wa-ps-header-actions { flex-wrap: wrap; }
