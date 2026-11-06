@@ -26,11 +26,11 @@ const sectionFromPath = (): SettingsSection =>
   typeof window !== 'undefined' && window.location.pathname === '/settings/models' ? 'models' : 'assistant';
 
 export function PersonaSettingsPage(props: PersonaSettingsPageProps) {
-  const { tr } = useLocale();
+  const { tr, direction } = useLocale();
 
   if (!props.initialPersona) {
     return (
-      <main className="wa-premium-settings wa-premium-settings-loading" aria-busy={!props.error}>
+      <main className="wa-premium-settings wa-premium-settings-loading" dir={direction} aria-busy={!props.error}>
         <section className="wa-ps-loading-panel" role={props.error ? 'alert' : 'status'}>
           <Settings2 size={26} />
           <h1>{tr('إعدادات المساعد', 'Assistant settings')}</h1>
@@ -46,7 +46,7 @@ export function PersonaSettingsPage(props: PersonaSettingsPageProps) {
 }
 
 function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulator, connectionState, onSave }: PersonaSettingsPageProps & { initialPersona: ModeratorPersona }) {
-  const { language, tr } = useLocale();
+  const { language, tr, direction } = useLocale();
   const [active, setActive] = useState<SettingsSection>(sectionFromPath);
   const [savedPersona, setSavedPersona] = useState<ModeratorPersona>(() => ({ ...initialPersona, rules: [...initialPersona.rules] }));
   const [persona, setPersona] = useState<ModeratorPersona>(() => ({ ...initialPersona, rules: [...initialPersona.rules] }));
@@ -117,7 +117,7 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
     : tr('اختر النموذج والصوت وطريقة الاستجابة للمحادثات', 'Choose the model, voice and response controls your agent uses');
 
   return (
-    <main className="wa-premium-settings" aria-label={tr('الإعدادات', 'Settings')}>
+    <main className="wa-premium-settings" dir={direction} aria-label={tr('الإعدادات', 'Settings')}>
       <nav className="wa-ps-rail" aria-label={tr('التنقل الرئيسي', 'Primary navigation')}>
         <button type="button" className="wa-ps-rail-button" onClick={() => leave(onClose)} title={tr('المحادثات', 'Chats')} aria-label={tr('المحادثات', 'Chats')}><MessageCircle size={21} /><span>{tr('محادثات', 'Chats')}</span></button>
         <span className="wa-ps-rail-button is-disabled" aria-disabled="true" title={tr('قريبًا', 'Coming soon')}><Activity size={21} /><span>{tr('نشاط', 'Activity')}</span></span>
@@ -154,6 +154,7 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
       <section className="wa-ps-main" aria-labelledby="wa-ps-title">
         <header className="wa-ps-page-header">
           <div className="wa-ps-header-copy">
+            <button type="button" className="wa-ps-mobile-back" onClick={() => leave(onClose)}>{language === 'ar' ? <ArrowRight size={16} /> : <ArrowLeft size={16} />}{tr('المحادثات', 'Back to chats')}</button>
             <div className="wa-ps-breadcrumb"><span>{tr('الإعدادات', 'Settings')}</span><span aria-hidden="true">/</span><strong>{pageTitle}</strong></div>
             <h1 id="wa-ps-title">{pageTitle}</h1>
             <p>{pageIntro}</p>
