@@ -1,0 +1,23 @@
+import test,{after} from 'node:test';
+import assert from 'node:assert/strict';
+import {fileURLToPath} from 'node:url';
+import React from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
+import {createServer} from 'vite';
+const root=fileURLToPath(new URL('..',import.meta.url));
+const vite=await createServer({root,configFile:false,server:{middlewareMode:true},appType:'custom'});
+after(async()=>{await vite.close()});
+const {LocaleProvider}=await vite.ssrLoadModule('/src/i18n.tsx');
+const {BrandBrainPage}=await vite.ssrLoadModule('/src/components/BrandBrainPage.tsx');
+test('Brand Brain supports accessible Arabic RTL and English controls',()=>{
+ const render=lang=>renderToStaticMarkup(React.createElement(LocaleProvider,{initial:lang},React.createElement(BrandBrainPage,{onClose:()=>{}})));
+ const ar=render('ar'),en=render('en');
+ assert.match(ar,/dir="rtl"/);
+ assert.match(ar,/مصادر المعرفة/);
+ assert.match(ar,/رمز وصول المالك/);
+ assert.match(en,/dir="ltr"/);
+ assert.match(en,/Knowledge sources/);
+ assert.match(en,/Owner access token/);
+ assert.match(ar,/Google Sheets/);
+ assert.match(en,/Google Sheets/);
+});

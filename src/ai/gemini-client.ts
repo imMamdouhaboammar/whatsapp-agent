@@ -1,4 +1,6 @@
 export interface GeminiGenerateOptions {
+  googleSearch?: boolean;
+  functionDeclarations?: Array<{name:string;description:string;parameters?:unknown}>;
   model?: string;
   systemInstruction?: string;
   temperature?: number;
@@ -9,6 +11,8 @@ export interface GeminiGenerateOptions {
 
 export interface ContentPart {
   text?: string;
+  functionCall?: {name:string;args?:Record<string,unknown>};
+  functionResponse?: {name:string;response:unknown};
   inlineData?: {
     mimeType: string;
     data: string; // Base64
@@ -75,6 +79,8 @@ export class GeminiClient {
    */
   async generateContent(contents: ChatContent[], options: GeminiGenerateOptions = {}): Promise<{
     text: string;
+    groundingMetadata?: { groundingChunks?: Array<{ web?: { uri?: string; title?: string } }> };
+    functionCalls?: Array<{name:string;args:Record<string,unknown>}>;
     usage?: { promptTokens?: number; candidatesTokens?: number };
   }> {
     const auth = await this.ensureAuth();
@@ -91,6 +97,12 @@ export class GeminiClient {
         parts: c.parts
       }))
     };
+
+    if (options.googleSearch) body.tools = [{ googleSearch: {} }];
+    if (options.functionDeclarations?.length) {
+      if (options.googleSearch) throw new Error('Function calling and Search grounding cannot share one tool request');
+      body.tools = [{ functionDeclarations: options.functionDeclarations }];
+    }
 
     if (options.systemInstruction) {
       body.systemInstruction = {
@@ -141,7 +153,8 @@ export class GeminiClient {
     }
 
     const candidate = data.candidates?.[0];
-    const textPart = candidate?.content?.parts?.[0]?.text ?? '';
+    const textPart = (candidate?.content?.parts ?? []).map((part:any) => part.text ?? '').join('');
+    const functionCalls = (candidate?.content?.parts ?? []).filter((part:any) => part.functionCall).map((part:any) => ({name:part.functionCall.name,args:part.functionCall.args ?? {}}));
     const usage = data.usageMetadata
       ? {
           promptTokens: data.usageMetadata.promptTokenCount,
@@ -149,6 +162,6 @@ export class GeminiClient {
         }
       : undefined;
 
-    return { text: textPart, usage };
+    return { text: textPart, usage, groundingMetadata: candidate?.groundingMetadata, functionCalls };
   }
 }

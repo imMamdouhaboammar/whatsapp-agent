@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/whatsapp-agent/contracts/agentic-events-v1.json",
+  "title": "WhatsApp Agent capability event v1 (proposed)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_id", "event_type", "version", "brand_id", "occurred_at", "payload"],
+  "properties": {
+    "event_id": {"type": "string", "minLength": 1},
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "brand.source.ingested",
+        "brand.source.updated",
+        "agent.goal.started",
+        "agent.tool.completed",
+        "agent.goal.completed",
+        "agent.goal.blocked",
+        "customer.case.updated",
+        "engagement.trigger.ready",
+        "engagement.sent",
+        "engagement.skipped",
+        "knowledge.gap.detected"
+      ]
+    },
+    "version": {"const": 1},
+    "brand_id": {"type": "string", "minLength": 1},
+    "contact_id": {"type": ["string", "null"]},
+    "conversation_id": {"type": ["string", "null"]},
+    "workflow_id": {"type": ["string", "null"]},
+    "correlation_id": {"type": ["string", "null"]},
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "payload": {"type": "object"}
+  }
+}

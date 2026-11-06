@@ -5,6 +5,10 @@ data/
 ui/dist
 ui/node_modules
 *.log
+.venv/
+__pycache__/
+.pytest_cache/
 .env
 .env.*
 !.env.example
+.agentic-tdd-work-order.md

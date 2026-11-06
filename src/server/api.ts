@@ -9,6 +9,9 @@ import type { ChatMessage } from '../domain/types';
 import type { WhatsAppSocketClient } from '../transport/whatsapp-socket';
 import type { SSEBroadcaster } from './sse';
 
+const allowedOrigins = new Set(['http://localhost:3000','http://127.0.0.1:3000','http://localhost:5173','http://127.0.0.1:5173',...((process.env.AGENT_ALLOWED_ORIGINS??'').split(',').map(v=>v.trim()).filter(Boolean))]);
+const trustedOrigin=(origin:string)=>allowedOrigins.has(origin);
+
 export function createApiServer(deps: {
   memoryStore: MemoryStore;
   whatsappClient: WhatsAppSocketClient;
@@ -19,8 +22,14 @@ export function createApiServer(deps: {
 }): Hono {
   const app = new Hono();
 
-  // Enable CORS for local Vite dev and web clients
-  app.use('*', cors());
+  // Only configured origins may issue browser mutations or read cross-origin API responses.
+  // CLI/service callers without a browser Origin remain supported; bind the server to loopback by default.
+  app.use('*',async(c,next)=>{
+    const origin=c.req.header('origin');
+    if(origin && !trustedOrigin(origin) && !['GET','HEAD','OPTIONS'].includes(c.req.method))return c.json({error:'Cross-origin request forbidden'},403);
+    await next();
+  });
+  app.use('*', cors({origin:(origin)=>trustedOrigin(origin)?origin:''}));
 
   // Status & Connection
   app.get('/api/status', (c) => {

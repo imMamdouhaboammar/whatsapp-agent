@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Bot, CheckCheck, ContactRound, MessageCircle, Play, Settings2, Smartphone, Wifi, WifiOff, X } from 'lucide-react';
+import { BookOpen, Bot, CheckCheck, ContactRound, MessageCircle, Play, Settings2, Smartphone, Wifi, WifiOff, X } from 'lucide-react';
 import { api } from './api/client';
 import type { AgentDecision, AgentDraft, AgentMode, ChatMessage, ChatSummary, ModeratorPersona, PolicyConfig, SystemStatus } from './api/types';
 import { ChatList } from './components/ChatList';
+import { BrandBrainPage } from './components/BrandBrainPage';
 import { ChatThread } from './components/ChatThread';
 import { ModeratorDrawer } from './components/ModeratorDrawer';
 import { PairingModal } from './components/PairingModal';
@@ -30,8 +31,9 @@ export function App() {
 
   // Modals state
   const [isPairingOpen, setIsPairingOpen] = useState(false);
-  const [page, setPage] = useState<'chats' | 'settings'>(() =>
-    typeof window !== 'undefined' && window.location.pathname === '/settings/assistant' ? 'settings' : 'chats'
+  const [page, setPage] = useState<'chats' | 'settings' | 'brain'>(() =>
+    typeof window !== 'undefined' && window.location.pathname === '/settings/assistant' ? 'settings' :
+    typeof window !== 'undefined' && window.location.pathname === '/brand-brain' ? 'brain' : 'chats'
   );
   const [isSimulatorOpen, setIsSimulatorOpen] = useState(false);
   const [inspectorView, setInspectorView] = useState<'assistant' | 'drafts' | 'memory'>('assistant');
@@ -42,7 +44,7 @@ export function App() {
   );
 
   useEffect(() => {
-    const onPopState = () => setPage(window.location.pathname === '/settings/assistant' ? 'settings' : 'chats');
+    const onPopState = () => setPage(window.location.pathname === '/settings/assistant' ? 'settings' : window.location.pathname === '/brand-brain' ? 'brain' : 'chats');
     window.addEventListener('popstate', onPopState);
     const query = window.matchMedia('(max-width: 1160px)');
     const onViewportChange = (event: MediaQueryListEvent) => {
@@ -306,6 +308,16 @@ export function App() {
     setPage('settings');
     setInspectorOpen(false);
   };
+  const openBrain = () => {
+    if (page === 'brain') return;
+    window.history.pushState({ waBrain: true }, '', '/brand-brain');
+    setPage('brain');
+    setInspectorOpen(false);
+  };
+  const closeBrain = () => {
+    if (window.history.state?.waBrain) window.history.back();
+    else { window.history.replaceState(null, '', '/'); setPage('chats'); }
+  };
   const closeSettings = () => {
     if (window.history.state?.waSettings) window.history.back();
     else {
@@ -332,6 +344,7 @@ export function App() {
           </button>
           <span className="wa-header-separator" aria-hidden="true" />
           <button type="button" className="wa-icon-button wa-simulator-trigger" onClick={() => setIsSimulatorOpen(true)} aria-label={tr('اختبار رد المساعد', 'Test the assistant')} title={tr('اختبار رد المساعد', 'Test the assistant')}><Play size={19} /></button>
+          <button type="button" className={'wa-icon-button ' + (page === 'brain' ? 'is-active' : '')} onClick={openBrain} aria-label={tr('ذاكرة البراند', 'Brand Brain')} title={tr('ذاكرة البراند', 'Brand Brain')}><BookOpen size={19} /></button>
           <button type="button" className={'wa-icon-button ' + (page === 'settings' ? 'is-active' : '')} onClick={openSettings} aria-label={tr('إعدادات المساعد', 'Assistant settings')} title={tr('إعدادات المساعد', 'Assistant settings')}><Settings2 size={19} /></button>
           {page === 'chats' && <button type="button" className="wa-header-agent-trigger" onClick={toggleInspector} aria-controls="wa-agent-panel" aria-expanded={inspectorVisible} aria-label={inspectorVisible ? tr('طي لوحة المساعد', 'Collapse AI assistant') : tr('فتح لوحة المساعد', 'Expand AI assistant')}>
             <Bot size={18} /><span>{tr('المساعد الذكي', 'AI assistant')}</span>
@@ -341,6 +354,8 @@ export function App() {
       </header>
       {page === 'settings' ? (
         <PersonaSettingsPage initialPersona={persona} error={personaLoadFailed} onRetry={() => { setPersonaLoadFailed(false); void loadInitialData(); }} onClose={closeSettings} onSave={handleSavePersona} />
+      ) : page === 'brain' ? (
+        <BrandBrainPage onClose={closeBrain} />
       ) : (
       <div className={'wa-workspace ' + (mobileView === 'list' ? 'is-list-view' : 'is-chat-view') + (!inspectorExpanded ? ' is-inspector-collapsed' : '')}>
         <nav className="wa-nav" aria-label={tr('القائمة الرئيسية', 'Main navigation')}>

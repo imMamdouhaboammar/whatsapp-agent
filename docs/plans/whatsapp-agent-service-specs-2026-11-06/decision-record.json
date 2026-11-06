@@ -1,0 +1,140 @@
+{
+  "kind": "architecture",
+  "goal": "Enable a fully autonomous WhatsApp brand representative that resolves customer needs, uses live business tools, searches external knowledge, understands diverse media and initiates eligible follow-ups with minimal owner intervention",
+  "proposal": "Build a capability-first Bun agent orchestrator with brand knowledge, hybrid retrieval, multimodal processing, a dynamic business tool registry, durable workflows and proactive engagement; selectively extract Python and Go workers",
+  "evidence": [
+    {
+      "source": "imMamdouhaboammar/whatsapp-agent main e6be0b2e787d7219265dd4c21188b0638dea00d5",
+      "finding": "Existing repository already has Bun, Gemini, Baileys transport, conversation memory and an RTL/LTR interface",
+      "level": "observed"
+    },
+    {
+      "source": "docs/plans/2026-11-06-whatsapp-context-fold.md in the repository",
+      "finding": "Hierarchical context folding with message lineage is planned, so new Customer 360 should integrate instead of duplicate it",
+      "level": "observed"
+    },
+    {
+      "source": "https://ai.google.dev/gemini-api/docs/function-calling",
+      "finding": "Gemini supports app-executed custom function calls for chained external tool use",
+      "level": "observed"
+    },
+    {
+      "source": "https://ai.google.dev/gemini-api/docs/google-search",
+      "finding": "Grounded search can provide recent externally sourced facts",
+      "level": "observed"
+    },
+    {
+      "source": "https://docling-project.github.io/docling/",
+      "finding": "Docling provides structured parsing across several document and media formats",
+      "level": "observed"
+    },
+    {
+      "source": "https://business.whatsapp.com/policy?lang=en_US",
+      "finding": "WhatsApp Business Platform supports automated replies and proactive business templates within consent and messaging rules",
+      "level": "observed"
+    },
+    {
+      "source": "Architecture evaluation of existing Bun app and Python document processing needs",
+      "finding": "Capability modules can be integrated early without immediately requiring independent Go and Rust services",
+      "level": "inferred"
+    }
+  ],
+  "direct_check": {
+    "status": "found",
+    "source": "Repository structure and documented context-fold plan",
+    "finding": "The current code can host agent planning and typed tool calls, while long-term folding is proposed and must not be counted as implemented"
+  },
+  "assumptions": [
+    {
+      "claim": "Owners want Auto-Pilot as the default interaction model",
+      "state": "verified",
+      "basis": "Explicit owner product correction in this conversation"
+    },
+    {
+      "claim": "The first revenue segment will be retail brands",
+      "state": "unverified",
+      "basis": "Illustrative use cases; actual merchant cohort must decide connector priority"
+    },
+    {
+      "claim": "Hybrid FTS5 plus embeddings can handle initial brand corpora",
+      "state": "unverified",
+      "basis": "Quality and latency require benchmark on realistic Arabic/English catalog queries"
+    },
+    {
+      "claim": "A separate Go scheduled-task service will outperform Bun for target load",
+      "state": "unverified",
+      "basis": "No scheduling or restart load benchmark exists"
+    }
+  ],
+  "decision_axes": [
+    {
+      "name": "autonomy model",
+      "considered": ["per-message approval workflow", "autonomous agent operating within brand-configured scope"],
+      "selected": "autonomous agent operating within brand-configured scope"
+    },
+    {
+      "name": "knowledge",
+      "considered": ["prompt-only static FAQ", "versioned Brand Brain with hybrid retrieval and live business connectors"],
+      "selected": "versioned Brand Brain with hybrid retrieval and live business connectors"
+    },
+    {
+      "name": "orchestration runtime",
+      "considered": ["existing Bun app with modular tools", "immediate distributed Go/Rust/Python services"],
+      "selected": "existing Bun app with modular tools"
+    },
+    {
+      "name": "media extraction",
+      "considered": ["all parsing in Bun", "isolated Python document and media worker"],
+      "selected": "isolated Python document and media worker"
+    },
+    {
+      "name": "proactive work",
+      "considered": ["draft-only follow-up with owner review", "automatic event-led follow-up under brand autonomy profile and channel rules"],
+      "selected": "automatic event-led follow-up under brand autonomy profile and channel rules"
+    },
+    {
+      "name": "conversation memory",
+      "considered": ["separate new summary database", "integrate with existing store and proposed WCF"],
+      "selected": "integrate with existing store and proposed WCF"
+    }
+  ],
+  "alternatives": [
+    {
+      "name": "Approval-led moderation dashboard",
+      "benefit": "Maximum manual oversight",
+      "risk": "Fails the owner's fully autonomous brand management goal",
+      "reversal": "Retain only as optional Co-Pilot mode"
+    },
+    {
+      "name": "Bun core with typed tools and Python media worker",
+      "benefit": "Direct use of existing app state, rapid integrated agent capabilities and isolated parsing",
+      "risk": "Requires deliberate workflow journal and testing across tool failures",
+      "reversal": "Disable a skill or connector and fall back to chat behavior"
+    },
+    {
+      "name": "Immediate polyglot independent services",
+      "benefit": "Language-specific deployment and scaling",
+      "risk": "Adds operational boundaries and coordination before customer value is demonstrated",
+      "reversal": "Collapse boundaries back into Bun modules"
+    }
+  ],
+  "horizons": [
+    {
+      "stage": "now",
+      "scenario": "Single brand pilot with product or service data and one live connector",
+      "consequence": "Deliver Brand Brain, hybrid RAG, planner and a complete tool-backed customer goal"
+    },
+    {
+      "stage": "later",
+      "scenario": "Several brands with high attachment throughput and frequent proactive scheduled actions",
+      "consequence": "Measure Python worker concurrency, retrieval store needs, official Cloud API adapter coverage and conditional Go scheduling"
+    }
+  ],
+  "decision": {
+    "action": "proceed",
+    "choice": "Default Auto-Pilot with a Bun-owned conversation planner, brand knowledge, evidence retrieval, live connectors, multimodal worker and autonomous eligible follow-ups; keep policy checks automatic and supporting",
+    "reason": "The customer value is independently completing business conversations, not accumulating moderation controls. Existing app components and official APIs permit a capability-first extension.",
+    "invalidated_by": "Direct evidence that target merchants require a different product mode, a failed tool accuracy benchmark, missing WhatsApp provider support for intended workflows or non-viable data isolation",
+    "direct_path_handling": "use"
+  }
+}

@@ -95,7 +95,7 @@ export class BurstAccumulator {
     for (let i = messages.length - 1; i >= 0; i--) {
       if (messages[i].quotedMessage) {
         quotedMessage = messages[i].quotedMessage;
-        replyToId = messages[i].replyToId || quotedMessage.id;
+        replyToId = messages[i].replyToId || quotedMessage?.id;
         break;
       } else if (messages[i].replyToId) {
         replyToId = messages[i].replyToId;
