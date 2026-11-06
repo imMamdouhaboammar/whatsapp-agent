@@ -339,50 +339,27 @@ export function createApiServer(deps: {
     return c.json({ success: true, dossier: updated });
   });
 
-  // Simulator endpoint
+  // Keep preview requests outside live conversations and customer history.
   app.post('/api/simulate', async (c) => {
-    const body = await c.req.json();
+    const body = await c.req.json().catch(() => null);
+    if (!body || typeof body.text !== 'string' || !body.text.trim() || body.text.length > 4000 ||
+        (body.senderName !== undefined && (typeof body.senderName !== 'string' || body.senderName.length > 120))) {
+      return c.json({ error: 'Enter a test message of up to 4,000 characters' }, 400);
+    }
+
     const simulatedMsg: ChatMessage = {
-      id: `sim_${Date.now()}`,
-      chatId: body.chatId || 'simulation@s.whatsapp.net',
-      sender: body.sender || 'simulator_user',
-      senderName: body.senderName || 'مستخدم تجريبي',
-      text: String(body.text ?? 'أهلاً بك'),
+      id: crypto.randomUUID(),
+      chatId: `sim_${crypto.randomUUID()}@simulator.invalid`,
+      sender: 'simulator_user',
+      senderName: body.senderName?.trim() || 'عميل تجريبي',
+      text: body.text.trim(),
       timestamp: Date.now(),
       isFromMe: false,
       type: 'text'
     };
 
-    deps.memoryStore.addMessage(simulatedMsg);
-    deps.sse.broadcast('new_message', simulatedMsg);
-
-    const result = await deps.moderatorAgent.processInboundMessage(simulatedMsg);
-    deps.sse.broadcast('agent_thought', {
-      chatId: simulatedMsg.chatId,
-      messageId: simulatedMsg.id,
-      decision: result.decision
-    });
-
-    if (result.draftCreated) {
-      deps.sse.broadcast('new_draft', result.draftCreated);
-    }
-
-    if (result.shouldSendImmediately && result.decision.replyText) {
-      const outbound: ChatMessage = {
-        id: `sim_out_${Date.now()}`,
-        chatId: simulatedMsg.chatId,
-        sender: 'me',
-        text: result.decision.replyText,
-        timestamp: Date.now(),
-        isFromMe: true,
-        type: 'text',
-        replyToId: simulatedMsg.id,
-        status: 'sent'
-      };
-      deps.memoryStore.addMessage(outbound);
-      deps.sse.broadcast('new_message', outbound);
-    }
-
+    const result = await deps.moderatorAgent.processInboundMessage(simulatedMsg, { dryRun: true });
+    c.header('Cache-Control', 'no-store');
     return c.json({
       success: true,
       simulatedMessage: simulatedMsg,

@@ -88,7 +88,7 @@ export class ModeratorAgent {
   /**
    * Processes an incoming message and determines the agent's decision and reply
    */
-  async processInboundMessage(message: ChatMessage): Promise<{
+  async processInboundMessage(message: ChatMessage, options: { dryRun?: boolean } = {}): Promise<{
     decision: AgentDecision;
     draftCreated?: AgentDraft;
     shouldSendImmediately: boolean;
@@ -210,7 +210,7 @@ ${dossierPrompt}
       };
 
       // Persist newly discovered facts into the Contact Dossier
-      if (Array.isArray(json.extractedFacts)) {
+      if (!options.dryRun && Array.isArray(json.extractedFacts)) {
         for (const fact of json.extractedFacts) {
           if (typeof fact === 'string' && fact.trim()) {
             this.memoryStore.addFactToDossier(message.chatId, fact.trim());
@@ -219,7 +219,7 @@ ${dossierPrompt}
       }
 
       // Persist newly extracted commitments into the Contact Dossier
-      if (Array.isArray(json.extractedCommitments)) {
+      if (!options.dryRun && Array.isArray(json.extractedCommitments)) {
         for (const comm of json.extractedCommitments) {
           if (typeof comm === 'string' && comm.trim()) {
             this.memoryStore.addCommitmentToDossier(message.chatId, comm.trim());
@@ -228,7 +228,7 @@ ${dossierPrompt}
       }
 
       // Update stage if recognized
-      if (json.contactStage) {
+      if (!options.dryRun && json.contactStage) {
         const existingDossier = this.memoryStore.getDossier(message.chatId);
         if (existingDossier) {
           existingDossier.stage = json.contactStage;
@@ -276,7 +276,7 @@ ${dossierPrompt}
         status: 'pending',
         createdAt: Date.now()
       };
-      this.memoryStore.saveDraft(draftCreated);
+      if (!options.dryRun) this.memoryStore.saveDraft(draftCreated);
       shouldSendImmediately = false;
     } else if (agentMode === 'autopilot' && finalAction === 'reply' && parsedDecision.replyText) {
       shouldSendImmediately = true;
