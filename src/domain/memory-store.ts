@@ -110,6 +110,49 @@ export class MemoryStore {
     this.sqlite.addCommitmentToDossier(chatId, commitment);
   }
 
+  // --- Contact Memory & Preferences ---
+  saveContactMemory(brandId: string, jid: string, content: string) {
+    return this.sqlite.saveContactMemory(brandId, jid, content);
+  }
+
+  getContactMemories(brandId: string, jid: string) {
+    return this.sqlite.getContactMemories(brandId, jid);
+  }
+
+  deleteContactMemory(brandId: string, jid: string, memoryId: string) {
+    return this.sqlite.deleteContactMemory(brandId, jid, memoryId);
+  }
+
+  clearContactMemories(brandId: string, jid: string) {
+    return this.sqlite.clearContactMemories(brandId, jid);
+  }
+
+  setChatStyle(chatId: string, style: string) {
+    const existing = this.sqlite.getDossier(chatId);
+    if (existing) {
+      existing.preferredTone = style;
+      this.sqlite.saveDossier(existing);
+    } else {
+      this.sqlite.saveDossier({
+        chatId,
+        name: chatId,
+        preferredTone: style,
+        stage: 'lead',
+        facts: [],
+        commitments: [],
+        updatedAt: Date.now()
+      });
+    }
+  }
+
+  getChatStyle(chatId: string): string | undefined {
+    return this.sqlite.getDossier(chatId)?.preferredTone;
+  }
+
+  getSqliteStore(): SqliteStore {
+    return this.sqlite;
+  }
+
   close() {
     this.sqlite.close();
   }
