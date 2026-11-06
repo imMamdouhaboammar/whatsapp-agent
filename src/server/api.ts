@@ -9,6 +9,7 @@ import type { ChatMessage } from '../domain/types';
 import type { WhatsAppSocketClient } from '../transport/whatsapp-socket';
 import type { SSEBroadcaster } from './sse';
 import { FableFunnelEngine, FunnelRegistry } from '../funnel';
+import { registerDashboardAuth } from './dashboard-auth';
 
 const allowedOrigins = new Set(['http://localhost:3000','http://127.0.0.1:3000','http://localhost:5173','http://127.0.0.1:5173',...((process.env.AGENT_ALLOWED_ORIGINS??'').split(',').map(v=>v.trim()).filter(Boolean))]);
 const trustedOrigin=(origin:string)=>allowedOrigins.has(origin);
@@ -21,6 +22,7 @@ export function createApiServer(deps: {
   audioTranscriber?: AudioTranscriber;
   voiceSynthesizer?: VoiceSynthesizer;
   funnelEngine?: FableFunnelEngine;
+  dashboardToken?: string;
 }): Hono {
   const app = new Hono();
   const funnelEngine = deps.funnelEngine ?? new FableFunnelEngine({
@@ -54,6 +56,7 @@ export function createApiServer(deps: {
     await next();
   });
   app.use('*', cors({origin:(origin)=>trustedOrigin(origin)?origin:''}));
+  registerDashboardAuth(app, deps.dashboardToken ?? '');
 
   // Status & Connection
   app.get('/api/status', (c) => {

@@ -12,6 +12,7 @@ import { HumanRateLimiter } from './domain/rate-limiter';
 import type { ChatMessage } from './domain/types';
 import { createApiServer } from './server/api';
 import { SSEBroadcaster } from './server/sse';
+import { assertSafeDashboardBind } from './server/dashboard-auth';
 import { WhatsAppSocketClient } from './transport/whatsapp-socket';
 import { FableFunnelEngine, FunnelRegistry } from './funnel';
 
@@ -20,6 +21,7 @@ export async function createFableWhatsAppAgent(options: {
   dataDir?: string;
   autoConnect?: boolean;
   capabilityToken?: string;
+  dashboardToken?: string;
   capabilityAutopilotBrandId?: string;
   capabilityModel?: Pick<GeminiClient,'generateContent'>;
 } = {}) {
@@ -252,7 +254,8 @@ export async function createFableWhatsAppAgent(options: {
     sse,
     audioTranscriber,
     voiceSynthesizer,
-    funnelEngine
+    funnelEngine,
+    dashboardToken: options.dashboardToken ?? process.env.AGENT_DASHBOARD_TOKEN ?? ''
   });
 
   registerCapabilityRoutes(app, capabilities, options.capabilityToken ?? process.env.AGENT_CAPABILITIES_OWNER_TOKEN ?? '');
@@ -280,11 +283,13 @@ export async function createFableWhatsAppAgent(options: {
 }
 
 if (import.meta.main) {
+  const host = process.env.HOST || '127.0.0.1';
+  assertSafeDashboardBind(host, process.env.AGENT_DASHBOARD_TOKEN ?? '');
   const agent = await createFableWhatsAppAgent({ autoConnect: true });
   console.log(`✨ [Fable Agentic WhatsApp] Live at http://localhost:${agent.port}`);
   Bun.serve({
     fetch: agent.app.fetch,
     port: agent.port,
-    hostname: process.env.HOST || '127.0.0.1'
+    hostname: host
   });
 }
