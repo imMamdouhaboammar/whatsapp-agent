@@ -50,6 +50,10 @@ The web app listens on `127.0.0.1` by default. To make it reachable from another
 
 Brand Brain has a separate `AGENT_CAPABILITIES_OWNER_TOKEN` for its owner APIs. Set it before connecting private knowledge sources. See [`.env.example`](.env.example) for these settings.
 
+### PostgreSQL / Supabase data migration (offline preview)
+
+The app currently runs on SQLite. A read-only inventory tool, private PostgreSQL schema, and verified offline import path are available for preparing a future cutover. Follow [the migration procedure](docs/POSTGRES_MIGRATION.md) and [the implementation plan](docs/plans/2026-11-06-postgresql-supabase-migration.md). Do not switch a live business to PostgreSQL until runtime adapters and a live database test have passed.
+
 ### 4. Test Gemini Moderator from Terminal
 ```bash
 bun run cli simulate "السلام عليكم، هو الكورس متاح حالياً وبكام؟"
