@@ -13,6 +13,8 @@
     "db:postgres": "bun run src/persistence/postgres/cli.ts",
     "ui:dev": "bun --cwd ui dev",
     "ui:build": "bun --cwd ui build",
+    "ui:astryx": "bun --cwd ui astryx",
+    "astryx": "bun --cwd ui astryx",
     "build": "bun --cwd ui build",
     "qlty": "qlty check",
     "qlty:fmt": "qlty fmt"

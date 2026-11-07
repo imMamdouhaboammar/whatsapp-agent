@@ -1,7 +1,9 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { BookOpenText, CalendarCheck, Check, CheckCircle2, ChevronLeft, Edit3, Lightbulb, Mic, Plus, SlidersHorizontal, Trash2, X, ShieldAlert } from 'lucide-react';
 import { Gemini, ModelIcon } from '@lobehub/icons';
-import { AgentAvatar, Tag } from '@lobehub/ui';
+import { AgentAvatar } from '@lobehub/ui';
+import { Button } from '@astryxdesign/core/Button';
+import { Badge } from '@astryxdesign/core/Badge';
 import type { AgentDecision, AgentDraft, AgentMode, ContactDossier, ModeratorPersona } from '../api/types';
 import { api } from '../api/client';
 import { useLocale } from '../locale-context';
@@ -189,8 +191,8 @@ export function ModeratorDrawer({
             ) : visibleDrafts.map((draft) => (
               <article className="wa-draft" key={draft.id}>
                 <div className="wa-draft-meta">
-                  <Tag color="orange" variant="filled" className="wa-review-badge">{tr('مراجعة مطلوبة', 'Review required')}</Tag>
-                  <Tag color="green" variant="outlined" className="wa-confidence"><CheckCircle2 size={14} /> {tr('الثقة', 'Confidence')} <b dir="ltr">{confidenceLabel(draft.confidence)}</b></Tag>
+                  <Badge variant="warning" label={tr('مراجعة مطلوبة', 'Review required')} />
+                  <Badge variant="success" icon={<CheckCircle2 size={13} />} label={<>{tr('الثقة', 'Confidence')} <b dir="ltr">{confidenceLabel(draft.confidence)}</b></>} />
                 </div>
                 {view === 'drafts' && (
                   <button type="button" className="wa-draft-contact" onClick={() => onSelectChat(draft.chatId)}>
@@ -210,20 +212,40 @@ export function ModeratorDrawer({
                   <p className="wa-proposed-reply" dir="auto">{draft.proposedReply}</p>
                 )}
                 <div className="wa-draft-actions">
-                  <button type="button" className="wa-primary-button" disabled={Boolean(workingDraftId)} onClick={() => void performDraftAction(draft, 'approve')}>
-                    <Check size={17} /> {tr('اعتماد وإرسال', 'Approve & send')}
-                  </button>
-                  <button type="button" className="wa-secondary-button" disabled={Boolean(workingDraftId)} onClick={() => {
-                    if (editingDraftId === draft.id) setEditingDraftId(null);
-                    else { setEditingDraftId(draft.id); setEditText(draft.proposedReply); }
-                  }}>
-                    {editingDraftId === draft.id ? <X size={16} /> : <Edit3 size={16} />}
-                    {editingDraftId === draft.id ? tr('إلغاء', 'Cancel') : tr('تعديل', 'Edit')}
-                  </button>
+                  <Button
+                    variant="primary"
+                    label={tr('اعتماد وإرسال', 'Approve & send')}
+                    icon={<Check size={16} />}
+                    isDisabled={Boolean(workingDraftId)}
+                    onClick={() => void performDraftAction(draft, 'approve')}
+                  />
+                  <Button
+                    variant="secondary"
+                    label={editingDraftId === draft.id ? tr('إلغاء', 'Cancel') : tr('تعديل', 'Edit')}
+                    icon={editingDraftId === draft.id ? <X size={15} /> : <Edit3 size={15} />}
+                    isDisabled={Boolean(workingDraftId)}
+                    onClick={() => {
+                      if (editingDraftId === draft.id) setEditingDraftId(null);
+                      else { setEditingDraftId(draft.id); setEditText(draft.proposedReply); }
+                    }}
+                  />
                 </div>
                 <div className="wa-draft-more-actions">
-                  <button type="button" disabled={Boolean(workingDraftId)} onClick={() => void performDraftAction(draft, 'reject')}>{tr('رفض', 'Reject')}</button>
-                  <button type="button" disabled={Boolean(workingDraftId)} onClick={() => void performDraftAction(draft, 'voice')}><Mic size={16} /> {tr('إرسال صوتي', 'Send as voice')}</button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    label={tr('رفض', 'Reject')}
+                    isDisabled={Boolean(workingDraftId)}
+                    onClick={() => void performDraftAction(draft, 'reject')}
+                  />
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    label={tr('إرسال صوتي', 'Send as voice')}
+                    icon={<Mic size={14} />}
+                    isDisabled={Boolean(workingDraftId)}
+                    onClick={() => void performDraftAction(draft, 'voice')}
+                  />
                 </div>
                 {draft.reasoning && (
                   <details className="wa-reason-details">

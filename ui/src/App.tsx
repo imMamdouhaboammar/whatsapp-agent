@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { BookOpen, CheckCheck, ContactRound, MessageCircle, Network, Play, Settings2, Smartphone, Smile, Wifi, WifiOff, X } from 'lucide-react';
 import { Gemini } from '@lobehub/icons';
 import { WhatsApp } from '@lobehub/ui/icons';
-import { Badge } from '@lobehub/ui';
+import { Badge as AstryxBadge } from '@astryxdesign/core/Badge';
+import { StatusDot } from '@astryxdesign/core/StatusDot';
 import { api } from './api/client';
 import type { AgentDecision, AgentDraft, AgentMode, ChatMessage, ChatSummary, ModeratorPersona, PolicyConfig, SystemStatus } from './api/types';
 import { ChatList } from './components/ChatList';
@@ -415,7 +416,7 @@ export function App() {
           </>}
           {page === 'chats' && <button type="button" className="wa-header-agent-trigger" onClick={toggleInspector} aria-controls="wa-agent-panel" aria-expanded={inspectorVisible} aria-label={inspectorVisible ? tr('طي لوحة المساعد', 'Collapse AI assistant') : tr('فتح لوحة المساعد', 'Expand AI assistant')}>
             <Gemini.Color size={18} /><span>{tr('المساعد الذكي', 'AI assistant')}</span>
-            {drafts.length > 0 && <span className="wa-count wa-count-light"><Badge count={drafts.length} size="small" /></span>}
+            {drafts.length > 0 && <span className="wa-count wa-count-light"><AstryxBadge variant="blue" label={drafts.length} /></span>}
           </button>}
         </div>
       </header>
@@ -440,7 +441,7 @@ export function App() {
             </button>
           </div>
           <button type="button" className="wa-nav-device" onClick={() => setIsPairingOpen(true)} aria-label={tr('إدارة الجهاز المرتبط', 'Linked device')} title={tr('إدارة الجهاز المرتبط', 'Linked device')}>
-            <Smartphone size={21} /><span className={'wa-presence-dot ' + (status?.state === 'connected' ? 'is-online' : '')} />
+            <Smartphone size={21} /><StatusDot variant={status?.state === 'connected' ? 'success' : 'neutral'} label={status?.state === 'connected' ? tr('متصل', 'Connected') : tr('غير متصل', 'Disconnected')} isPulsing={status?.state === 'connecting'} />
           </button>
         </nav>
         <ChatList chats={chats} selectedChatId={selectedChatId} pendingDraftChatIds={pendingDraftChatIds} onSelectChat={selectChat} />
