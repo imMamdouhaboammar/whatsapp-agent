@@ -441,7 +441,22 @@ export function App() {
             </button>
           </div>
           <button type="button" className="wa-nav-device" onClick={() => setIsPairingOpen(true)} aria-label={tr('إدارة الجهاز المرتبط', 'Linked device')} title={tr('إدارة الجهاز المرتبط', 'Linked device')}>
-            <Smartphone size={21} /><StatusDot variant={status?.state === 'connected' ? 'success' : 'neutral'} label={status?.state === 'connected' ? tr('متصل', 'Connected') : tr('غير متصل', 'Disconnected')} isPulsing={status?.state === 'connecting'} />
+            <Smartphone size={21} />
+            <StatusDot
+              variant={status?.state === 'connected' ? 'success' : 'neutral'}
+              label={
+                status?.state === 'connected'
+                  ? tr('متصل', 'Connected')
+                  : status?.state === 'connecting'
+                  ? tr('جارٍ الاتصال...', 'Connecting...')
+                  : status?.state === 'qr_ready' || status?.state === 'pairing_code_ready'
+                  ? tr('بانتظار مسح الرمز أو الربط', 'Awaiting pairing')
+                  : status?.state === 'failed'
+                  ? tr('فشل الاتصال', 'Connection failed')
+                  : tr('غير متصل', 'Disconnected')
+              }
+              isPulsing={status?.state === 'connecting'}
+            />
           </button>
         </nav>
         <ChatList chats={chats} selectedChatId={selectedChatId} pendingDraftChatIds={pendingDraftChatIds} onSelectChat={selectChat} />

@@ -15,6 +15,10 @@ import { SSEBroadcaster } from './server/sse';
 import { assertSafeDashboardBind } from './server/dashboard-auth';
 import { WhatsAppSocketClient } from './transport/whatsapp-socket';
 import { FableFunnelEngine, FunnelRegistry } from './funnel';
+import { DualMemoryManager } from './domain/learning-memory';
+import { ReflectionEngine } from './ai/reflection-engine';
+import { ReflectionWorker } from './agent/reflection-worker';
+import { join } from 'node:path';
 
 export async function createFableWhatsAppAgent(options: {
   port?: number;
@@ -43,8 +47,25 @@ export async function createFableWhatsAppAgent(options: {
 
   const messageSplitter = new MessageSplitter();
 
+  const dualMemoryManager = new DualMemoryManager({
+    storageDir: dataDir === ':memory:' ? './data/learning' : join(dataDir, 'learning'),
+    sqliteStore: memoryStore.getSqliteStore(),
+    persistSqlite: true
+  });
+
+  const reflectionEngine = new ReflectionEngine(geminiClient, dualMemoryManager);
+
+  const reflectionWorker = new ReflectionWorker({
+    memoryStore,
+    memoryManager: dualMemoryManager,
+    reflectionEngine,
+    idleThresholdMs: 15 * 60 * 1000 // 15 mins cold thread threshold
+  });
+  reflectionWorker.startPeriodicSweep(60_000);
+
   const moderatorAgent = new ModeratorAgent(geminiClient, memoryStore, {
-    rateLimiter
+    rateLimiter,
+    dualMemoryManager
   });
 
   const coordinator = new AgentTurnCoordinator({
@@ -76,6 +97,8 @@ export async function createFableWhatsAppAgent(options: {
       };
 
       console.log(`💬 [Burst Fused] From: ${fusedMsg.senderName || fusedMsg.sender} | Messages: ${fusedMsg.text.replace(/\n/g, ' ↵ ')}`);
+
+      reflectionWorker.recordActivity(fusedMsg.chatId, fusedMsg.timestamp);
 
       try {
         const result = await coordinator.processInboundMessage(fusedMsg);
@@ -255,7 +278,10 @@ export async function createFableWhatsAppAgent(options: {
     audioTranscriber,
     voiceSynthesizer,
     funnelEngine,
-    dashboardToken: options.dashboardToken ?? process.env.AGENT_DASHBOARD_TOKEN ?? ''
+    dashboardToken: options.dashboardToken ?? process.env.AGENT_DASHBOARD_TOKEN ?? '',
+    dualMemoryManager,
+    reflectionWorker,
+    reflectionEngine
   });
 
   registerCapabilityRoutes(app, capabilities, options.capabilityToken ?? process.env.AGENT_CAPABILITIES_OWNER_TOKEN ?? '');
@@ -278,7 +304,10 @@ export async function createFableWhatsAppAgent(options: {
     burstAccumulator,
     sse,
     capabilities,
-    funnelEngine
+    funnelEngine,
+    dualMemoryManager,
+    reflectionWorker,
+    reflectionEngine
   };
 }
 

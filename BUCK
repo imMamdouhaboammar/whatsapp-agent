@@ -46,6 +46,7 @@ genrule(
     name = "ui_build",
     srcs = glob([
         "ui/src/**/*",
+        "ui/public/**/*",
         "ui/index.html",
         "ui/package.json",
         "ui/vite.config.ts",
@@ -88,6 +89,6 @@ genrule(
     cmd = """
         TARGET_OUT="$PWD/$OUT"
         ROOT="${PWD%%/buck-out/*}"
-        (cd "$ROOT/ui" && bun test:ui > "$TARGET_OUT" 2>&1)
+        (cd "$ROOT/ui" && bun run test:ui > "$TARGET_OUT" 2>&1)
     """,
 )

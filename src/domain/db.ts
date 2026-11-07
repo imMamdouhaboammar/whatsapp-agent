@@ -125,6 +125,34 @@ export class SqliteStore {
       );
     `);
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_contact_memories_jid ON contact_memories(brand_id, jid);`);
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS learning_states (
+        id TEXT PRIMARY KEY,
+        brand_id TEXT NOT NULL,
+        state_type TEXT NOT NULL,
+        content TEXT NOT NULL,
+        version INTEGER DEFAULT 1,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_learning_states_brand ON learning_states(brand_id, state_type);`);
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS learning_reflections (
+        id TEXT PRIMARY KEY,
+        brand_id TEXT NOT NULL,
+        chat_id TEXT NOT NULL,
+        trigger_reason TEXT NOT NULL,
+        input_message_count INTEGER NOT NULL,
+        self_corrections_count INTEGER DEFAULT 0,
+        rules_added INTEGER DEFAULT 0,
+        facts_added INTEGER DEFAULT 0,
+        summary TEXT,
+        created_at INTEGER NOT NULL
+      );
+    `);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_learning_reflections_chat ON learning_reflections(chat_id, created_at);`);
   }
 
   /**
@@ -570,6 +598,94 @@ export class SqliteStore {
       [brandId, jid]
     );
     return res.changes;
+  }
+
+  // --- Learning States & Reflections ---
+
+  saveLearningState(brandId: string, stateType: 'workbook' | 'notebook', content: string): void {
+    const id = `${brandId}:${stateType}`;
+    const now = Date.now();
+    const existing = this.db.query('SELECT version FROM learning_states WHERE id = ?').get(id) as any;
+    const version = existing ? Number(existing.version) + 1 : 1;
+
+    this.db.prepare(`
+      INSERT INTO learning_states (id, brand_id, state_type, content, version, updated_at)
+      VALUES ($id, $brand_id, $state_type, $content, $version, $updated_at)
+      ON CONFLICT(id) DO UPDATE SET
+        content = excluded.content,
+        version = excluded.version,
+        updated_at = excluded.updated_at;
+    `).run({
+      $id: id,
+      $brand_id: brandId,
+      $state_type: stateType,
+      $content: content,
+      $version: version,
+      $updated_at: now
+    });
+  }
+
+  getLearningState(brandId: string, stateType: 'workbook' | 'notebook'): { content: string; version: number; updatedAt: number } | undefined {
+    const id = `${brandId}:${stateType}`;
+    const row = this.db.query('SELECT content, version, updated_at FROM learning_states WHERE id = ?').get(id) as any;
+    if (!row) return undefined;
+    return {
+      content: row.content,
+      version: row.version,
+      updatedAt: row.updated_at
+    };
+  }
+
+  saveReflectionRun(record: {
+    id?: string;
+    brandId?: string;
+    chatId: string;
+    triggerReason: string;
+    inputMessageCount: number;
+    selfCorrectionsCount?: number;
+    rulesAdded?: number;
+    factsAdded?: number;
+    summary?: string;
+  }): void {
+    const id = record.id || `refl_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    this.db.prepare(`
+      INSERT INTO learning_reflections (
+        id, brand_id, chat_id, trigger_reason, input_message_count,
+        self_corrections_count, rules_added, facts_added, summary, created_at
+      ) VALUES (
+        $id, $brand_id, $chat_id, $trigger_reason, $input_message_count,
+        $self_corrections_count, $rules_added, $facts_added, $summary, $created_at
+      )
+    `).run({
+      $id: id,
+      $brand_id: record.brandId || 'default',
+      $chat_id: record.chatId,
+      $trigger_reason: record.triggerReason,
+      $input_message_count: record.inputMessageCount,
+      $self_corrections_count: record.selfCorrectionsCount || 0,
+      $rules_added: record.rulesAdded || 0,
+      $facts_added: record.factsAdded || 0,
+      $summary: record.summary || null,
+      $created_at: Date.now()
+    });
+  }
+
+  getReflectionRuns(chatId?: string, limit = 20): Array<{
+    id: string;
+    brand_id: string;
+    chat_id: string;
+    trigger_reason: string;
+    input_message_count: number;
+    self_corrections_count: number;
+    rules_added: number;
+    facts_added: number;
+    summary: string | null;
+    created_at: number;
+  }> {
+    if (chatId) {
+      return this.db.query('SELECT * FROM learning_reflections WHERE chat_id = ? ORDER BY created_at DESC LIMIT ?;').all(chatId, limit) as any[];
+    }
+    return this.db.query('SELECT * FROM learning_reflections ORDER BY created_at DESC LIMIT ?;').all(limit) as any[];
   }
 
   close() {

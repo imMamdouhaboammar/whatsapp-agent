@@ -214,6 +214,7 @@ export function ModeratorDrawer({
                 <div className="wa-draft-actions">
                   <Button
                     variant="primary"
+                    className="wa-primary-button"
                     label={tr('اعتماد وإرسال', 'Approve & send')}
                     icon={<Check size={16} />}
                     isDisabled={Boolean(workingDraftId)}
