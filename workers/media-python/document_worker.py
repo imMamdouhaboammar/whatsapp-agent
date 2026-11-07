@@ -23,8 +23,9 @@ class ExtractionError(ValueError):
     pass
 
 class TextParser(HTMLParser):
-    def __init__(self):
+    def __init__(self, max_depth: int = 100):
         super().__init__(convert_charrefs=True)
+        self.max_depth = max_depth
         self.ignored=0
         self.parts=[]
     def handle_starttag(self,tag,attrs):
@@ -118,7 +119,7 @@ def extract_document(data,mime_type,max_bytes=LIMIT,max_uncompressed=30*1024*102
     if not sections:raise ExtractionError('No extractable text')
     return {'mimeType':mime_type,'sections':sections,'truncated':len(sections)>=10000}
 
-def main():
+def main(max_depth: int = 1):
     try:
         payload=json.load(sys.stdin)
         blob=base64.b64decode(payload['base64'],validate=True)

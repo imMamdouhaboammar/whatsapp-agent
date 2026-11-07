@@ -38,7 +38,7 @@ export class ActionJournal {
     this.db.query('UPDATE agent_workflows SET state=?,updated_at=? WHERE brand_id=? AND workflow_id=?').run(state,Date.now(),brandId,workflowId);
   }
   getRun(brandId:string,key:string):RunRecord|null {
-    return (this.db.query('SELECT brand_id,key,tool_name,input_hash,status,output_json,created_at FROM agent_tool_runs WHERE brand_id=? AND key=?').get(brandId,key) as RunRecord|null);
+    return (this.db.query('SELECT brand_id,key,tool_name,input_hash,status,output_json,created_at FROM agent_tool_runs WHERE brand_id=? AND key=? LIMIT 1').get(brandId,key) as RunRecord|null);
   }
   begin(input:ToolInvocation):{isNew:boolean;row:RunRecord} {
     const inputHash=hash(JSON.stringify({toolName:input.toolName,input:input.input}));

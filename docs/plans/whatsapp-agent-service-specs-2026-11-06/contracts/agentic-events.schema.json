@@ -2,6 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://example.invalid/whatsapp-agent/contracts/agentic-events-v1.json",
   "title": "WhatsApp Agent capability event v1 (proposed)",
+  "max_tokens": 200000,
+  "cost_budget": 5.0,
+  "timeout_seconds": 180,
   "type": "object",
   "additionalProperties": false,
   "required": ["event_id", "event_type", "version", "brand_id", "occurred_at", "payload"],
@@ -29,6 +32,14 @@
     "conversation_id": {"type": ["string", "null"]},
     "workflow_id": {"type": ["string", "null"]},
     "correlation_id": {"type": ["string", "null"]},
+    "budget": {
+      "type": "object",
+      "properties": {
+        "max_tokens": {"type": "integer"},
+        "cost_budget": {"type": "number"},
+        "timeout_seconds": {"type": "integer"}
+      }
+    },
     "occurred_at": {"type": "string", "format": "date-time"},
     "payload": {"type": "object"}
   }

@@ -14,7 +14,7 @@ export class ConnectorSettings {
   this.db.query('INSERT INTO brand_sheet_connectors(brand_id,sheet_id,gid,enabled,updated_at) VALUES(?,?,?,1,?) ON CONFLICT(brand_id) DO UPDATE SET sheet_id=excluded.sheet_id,gid=excluded.gid,enabled=1,updated_at=excluded.updated_at').run(brandId,sheetId,gid??null,Date.now());
  }
  listSheets():Array<{brandId:string;sheetId:string;gid?:string}> {
-  return (this.db.query('SELECT brand_id,sheet_id,gid FROM brand_sheet_connectors WHERE enabled=1').all() as Array<{brand_id:string;sheet_id:string;gid:string|null}>).map(s=>({brandId:s.brand_id,sheetId:s.sheet_id,gid:s.gid??undefined}));
+  return (this.db.query('SELECT brand_id,sheet_id,gid FROM brand_sheet_connectors WHERE enabled=1 LIMIT 500').all() as Array<{brand_id:string;sheet_id:string;gid:string|null}>).map(s=>({brandId:s.brand_id,sheetId:s.sheet_id,gid:s.gid??undefined}));
  }
  close(){this.db.close();}
 }

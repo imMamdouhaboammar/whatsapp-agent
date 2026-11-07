@@ -4,7 +4,7 @@ import pytest
 
 from document_worker import extract_document, ExtractionError
 
-def make_office(part, text):
+def make_office(part, text, max_depth: int = 1):
     buf=BytesIO()
     with ZipFile(buf, 'w', ZIP_DEFLATED) as z:
         z.writestr(part,text)

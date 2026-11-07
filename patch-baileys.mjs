@@ -11,9 +11,9 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const baileys = join(__dirname, 'node_modules', '@whiskeysockets', 'baileys', 'lib');
 
-const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const flexible = (needle, flags) =>
-  new RegExp(needle.trim().split(/\s+/).map(escapeRe).join('\\s+'), flags);
+function normalizeWs(s) {
+  return s.replace(/\r\n/g, '\n').replace(/[ \t]+/g, ' ');
+}
 
 function patch(file, find, replace, label) {
   const path = join(baileys, file);
@@ -22,15 +22,18 @@ function patch(file, find, replace, label) {
     return;
   }
   let src = readFileSync(path, 'utf8');
-  if (!flexible(find).test(src)) {
-    if (flexible(replace).test(src)) {
-      console.log(`  ok: ${label} (already patched)`);
-    } else {
-      console.log(`  warn: ${label} target not found in ${file}`);
-    }
+  if (src.includes(replace)) {
+    console.log(`  ok: ${label} (already patched)`);
     return;
   }
-  src = src.replace(flexible(find, 'g'), () => replace);
+  if (!src.includes(find)) {
+    const normalizedFind = normalizeWs(find);
+    if (!normalizeWs(src).includes(normalizedFind)) {
+      console.log(`  warn: ${label} target not found in ${file}`);
+      return;
+    }
+  }
+  src = src.replaceAll(find, replace);
   writeFileSync(path, src);
   console.log(`  patched: ${label}`);
 }
