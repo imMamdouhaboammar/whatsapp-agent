@@ -1,13 +1,13 @@
 {
   "schemaVersion": 3,
-  "stateRevision": 53,
+  "stateRevision": 55,
   "workspaceId": "e6e371de2623bf032ba0feec",
   "phase": "complete",
   "currentSkill": null,
   "failureStreak": 0,
   "substantial": true,
-  "mutationGeneration": 16,
-  "verifiedGeneration": 16,
+  "mutationGeneration": 17,
+  "verifiedGeneration": 17,
   "activeCard": "Replace gemini-3.8-pro with gemini-3.1-pro across codebase, ui, and docs",
   "lastDecision": null,
   "evidence": [
@@ -166,7 +166,19 @@
       "generation": 16,
       "timestamp": "2026-11-07T22:48:25.592Z",
       "workspaceId": "e6e371de2623bf032ba0feec"
+    },
+    {
+      "kind": "test",
+      "source": "bun test",
+      "result": "pass",
+      "detail": "174 tests, 13 UI SSR tests, security audit, and Buck2 build passing",
+      "repositoryRevision": "9de8e9165f4fc8e5c73ce34863744cb70295ee62",
+      "commandCategory": "test",
+      "scope": "Replace gemini-3.8-pro with gemini-3.1-pro across codebase, ui, and docs",
+      "generation": 17,
+      "timestamp": "2026-11-07T22:49:24.776Z",
+      "workspaceId": "e6e371de2623bf032ba0feec"
     }
   ],
-  "updatedAt": "2026-11-07T22:48:25.592Z"
+  "updatedAt": "2026-11-07T22:49:24.776Z"
 }
