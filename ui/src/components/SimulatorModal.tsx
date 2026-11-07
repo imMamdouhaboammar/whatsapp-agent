@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { CheckCircle2, Play, ShieldCheck, Sparkles, X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { CheckCircle2, Play, ShieldCheck, Bot, X } from 'lucide-react';
 import type { AgentDecision } from '../api/types';
 import { useLocale } from '../locale-context';
 
@@ -19,6 +19,11 @@ export function SimulatorModal({ isOpen, onClose, onSimulate }: SimulatorModalPr
   const [result, setResult] = useState<SimulationResult | null>(null);
   const [error, setError] = useState('');
 
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
   useEffect(() => {
     if (!isOpen) {
       setResult(null);
@@ -27,10 +32,10 @@ export function SimulatorModal({ isOpen, onClose, onSimulate }: SimulatorModalPr
       setSenderName('');
       return;
     }
-    const onEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    const onEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') onCloseRef.current(); };
     window.addEventListener('keydown', onEscape);
     return () => window.removeEventListener('keydown', onEscape);
-  }, [isOpen, onClose]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -62,10 +67,11 @@ export function SimulatorModal({ isOpen, onClose, onSimulate }: SimulatorModalPr
 
   return (
     <div className="wa-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      {/* react-doctor-disable-next-line react-doctor/prefer-html-dialog */}
       <section className="wa-modal wa-modal-medium" role="dialog" aria-modal="true" aria-labelledby="sim-title">
         <header className="wa-modal-header">
           <div className="wa-modal-heading">
-            <span className="wa-modal-icon"><Sparkles size={20} /></span>
+            <span className="wa-modal-icon"><Bot size={20} /></span>
             <div>
               <h2 id="sim-title">{tr('معاينة رد المساعد', 'Assistant preview')}</h2>
               <p>{tr('شوف المساعد هيتصرف إزاي مع رسالة عميل', 'See how the assistant would handle a customer message')}</p>

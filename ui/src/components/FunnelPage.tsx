@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Activity, ArrowRight, CheckCircle2, ChevronRight, Play, RefreshCw, ShieldAlert, Zap } from 'lucide-react';
 import { api } from '../api/client';
 import { useLocale } from '../locale-context';
@@ -13,7 +13,7 @@ export function FunnelPage({ onClose }: { onClose: () => void }) {
   const [lastReceipt, setLastReceipt] = useState<any | null>(null);
   const [dispatching, setDispatching] = useState(false);
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     try {
       setLoading(true);
       const [mRes, sRes] = await Promise.all([
@@ -22,17 +22,15 @@ export function FunnelPage({ onClose }: { onClose: () => void }) {
       ]);
       setMethods(mRes.methods || []);
       setStats(sRes.circuitBreakers || []);
-      if (mRes.methods?.length > 0 && !selectedMethod) {
-        setSelectedMethod(mRes.methods[0].method);
-      }
+      setSelectedMethod((prev) => (mRes.methods?.length > 0 && !prev ? mRes.methods[0].method : prev));
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     void loadData();
-  }, []);
+  }, [loadData]);
 
   const handleDispatch = async () => {
     if (!selectedMethod) return;
@@ -171,10 +169,11 @@ export function FunnelPage({ onClose }: { onClose: () => void }) {
           </h2>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '0.75rem' }}>
             <div>
-              <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>
+              <label htmlFor="funnel-method-select" style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>
                 {tr('اختر المسار:', 'Select Method:')}
               </label>
               <select
+                id="funnel-method-select"
                 value={selectedMethod}
                 onChange={(e) => setSelectedMethod(e.target.value)}
                 style={{ padding: '6px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', width: '100%', maxWidth: '320px' }}
@@ -186,10 +185,11 @@ export function FunnelPage({ onClose }: { onClose: () => void }) {
             </div>
 
             <div>
-              <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>
+              <label htmlFor="funnel-payload-input" style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>
                 {tr('حمولة الـ JSON (Payload):', 'JSON Payload:')}
               </label>
               <textarea
+                id="funnel-payload-input"
                 rows={4}
                 value={dispatchPayload}
                 onChange={(e) => setDispatchPayload(e.target.value)}

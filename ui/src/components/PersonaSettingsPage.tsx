@@ -3,9 +3,11 @@ import {
   Activity, ArrowLeft, ArrowRight, BookOpen, Bot, ChevronDown,
   CircleHelp, Database, Headphones, LockKeyhole, MessageCircle,
   Mic2, Puzzle, RotateCcw, Save, Send, Settings2, ShieldCheck,
-  SlidersHorizontal, Sparkles, Users, WandSparkles, Wifi, Zap
+  SlidersHorizontal, Users, Wifi, Zap
 } from 'lucide-react';
 import type { ModeratorPersona, PolicyConfig, SystemStatus } from '../api/types';
+import { Gemini, Google, ModelIcon } from '@lobehub/icons';
+import { AgentAvatar } from '@lobehub/ui';
 import { useLocale } from '../locale-context';
 import './persona-settings.css';
 
@@ -138,7 +140,7 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
           <span className="wa-ps-nav-link is-future"><Users size={17} />{tr('الفريق والصلاحيات', 'Team & access')}</span>
           <span className="wa-ps-nav-link is-future"><Wifi size={17} />{tr('القنوات', 'Channels')}</span>
           <p className="wa-ps-nav-label">{tr('المساعد', 'AGENT')}</p>
-          <button type="button" className={`wa-ps-nav-link ${assistantPage ? 'is-selected' : ''}`} onClick={() => navigate('assistant')} aria-current={assistantPage ? 'page' : undefined}><Sparkles size={18} />{tr('المساعد الذكي', 'AI assistant')}</button>
+          <button type="button" className={`wa-ps-nav-link ${assistantPage ? 'is-selected' : ''}`} onClick={() => navigate('assistant')} aria-current={assistantPage ? 'page' : undefined}><Bot size={18} />{tr('المساعد الذكي', 'AI assistant')}</button>
           <button type="button" className={`wa-ps-nav-link ${!assistantPage ? 'is-selected' : ''}`} onClick={() => navigate('models')} aria-current={!assistantPage ? 'page' : undefined}><Bot size={18} />{tr('النماذج ومزودو الخدمة', 'Models & providers')}</button>
           <span className="wa-ps-nav-link is-future"><Mic2 size={17} />{tr('صوت العلامة', 'Brand voice')}</span>
           <span className="wa-ps-nav-link is-future"><Zap size={17} />{tr('الأتمتة', 'Automations')}</span>
@@ -172,7 +174,14 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
               {assistantPage ? (
                 <>
                   <section className="wa-ps-card">
-                    <div className="wa-ps-card-head"><div><h2>{tr('الهوية والشخصية', 'Identity & persona')}</h2><p>{tr('الاسم واللغة والأسلوب الذي يتحدث به المساعد', 'Define the agent’s identity, language and tone')}</p></div><button type="button" className="wa-ps-text-action" onClick={() => setShowPresets((show) => !show)} aria-expanded={showPresets}><WandSparkles size={16} />{tr('قوالب جاهزة', 'Quick presets')}<ChevronDown size={14} /></button></div>
+                    <div className="wa-ps-card-head"><div><h2>{tr('الهوية والشخصية', 'Identity & persona')}</h2><p>{tr('الاسم واللغة والأسلوب الذي يتحدث به المساعد', 'Define the agent’s identity, language and tone')}</p></div><button type="button" className="wa-ps-text-action" onClick={() => setShowPresets((show) => !show)} aria-expanded={showPresets}><SlidersHorizontal size={16} />{tr('قوالب جاهزة', 'Quick presets')}<ChevronDown size={14} /></button></div>
+                    <div className="flex items-center gap-3.5 mb-4 p-3 bg-slate-900/40 rounded-xl border border-slate-800/80">
+                      <AgentAvatar seed={persona.name || 'Assistant'} size={48} shape="capsule" color="geekblue" />
+                      <div>
+                        <strong className="block text-sm text-slate-200">{persona.name || tr('مساعد واتساب', 'WhatsApp Assistant')}</strong>
+                        <span className="text-xs text-slate-400">{persona.tone || tr('نبرة متوازنة وطبيعية', 'Balanced, natural tone')}</span>
+                      </div>
+                    </div>
                     {showPresets && <div className="wa-ps-presets"><button type="button" onClick={() => applyPreset('طبيعي وبشوش باللهجة المصرية', ['أنت مسؤول عن مساعدة صاحب الحساب في الرد على رسائل واتساب', 'استخدم عامية مصرية طبيعية، وراعِ سياق كل محادثة', 'لا تختلق معلومات أو مواعيد أو وعودًا غير موجودة في سياق المحادثة'].join('\n'))}><strong>{tr('مصري ودود', 'Friendly Egyptian')}</strong><span>{tr('أسلوب قريب وطبيعي', 'Warm, natural tone')}</span></button><button type="button" onClick={() => applyPreset('مهني وواضح باللغة العربية الفصحى المعاصرة', ['أنت مساعد خدمة عملاء على واتساب', 'قدّم إجابات واضحة ومختصرة بلغة عربية فصحى معاصرة', 'التزم بالمعلومات المتاحة واطلب توضيحًا عند الحاجة'].join('\n'))}><strong>{tr('خدمة العملاء', 'Customer support')}</strong><span>{tr('لغة مهنية واضحة', 'Clear, professional tone')}</span></button></div>}
                     <div className="wa-ps-field-grid">
                       <label className="wa-ps-field"><span>{tr('اسم المساعد', 'Assistant name')}</span><input dir="auto" value={persona.name} onChange={(event) => setField('name', event.target.value)} /></label>
@@ -189,9 +198,9 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
               ) : (
                 <>
                   <section className="wa-ps-card">
-                    <div className="wa-ps-card-head"><div><h2>{tr('النموذج الأساسي', 'Primary AI model')}</h2><p>{tr('النموذج المستخدم لفهم الرسائل واتخاذ قرار الرد', 'Select the Gemini model used for conversation decisions')}</p></div></div>
+                    <div className="wa-ps-card-head"><div><h2 className="flex items-center gap-2"><Gemini.Color size={22} /> {tr('النموذج الأساسي', 'Primary AI model')}</h2><p>{tr('النموذج المستخدم لفهم الرسائل واتخاذ قرار الرد', 'Select the Gemini model used for conversation decisions')}</p></div></div>
                     <label className="wa-ps-field"><span>{tr('نموذج Gemini', 'Gemini model')}</span><select dir="ltr" value={persona.model} onChange={(event) => setField('model', event.target.value)}><option value="gemini-4-argon">gemini-4-argon</option><option value="gemini-3.8-flash">gemini-3.8-flash</option><option value="gemini-2.5-flash">gemini-2.5-flash</option><option value="gemini-2.5-pro">gemini-2.5-pro</option>{!['gemini-4-argon', 'gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.5-pro'].includes(persona.model) && <option value={persona.model}>{persona.model}</option>}</select></label>
-                    <div className="wa-ps-detail-row"><span>{tr('مزود الخدمة', 'API provider')}</span><strong>Google Gemini</strong></div>
+                    <div className="wa-ps-detail-row"><span>{tr('مزود الخدمة', 'API provider')}</span><strong className="flex items-center gap-1.5"><Google.Color size={16} /><ModelIcon model={persona.model} size={16} /> Google Gemini</strong></div>
                   </section>
                   <section className="wa-ps-card">
                     <div className="wa-ps-card-head"><div><h2>{tr('الرسائل الصوتية', 'Voice notes')}</h2><p>{tr('اختار الصوت المستخدم في ردود المساعد الصوتية', 'Choose the voice used in audio replies')}</p></div><Headphones size={22} className="wa-ps-muted-icon" /></div>

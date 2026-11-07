@@ -1,5 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { BookOpenText, Bot, CalendarCheck, Check, CheckCircle2, ChevronLeft, Edit3, Lightbulb, Mic, Plus, Sparkles, X } from 'lucide-react';
+import { BookOpenText, CalendarCheck, Check, CheckCircle2, ChevronLeft, Edit3, Lightbulb, Mic, Plus, SlidersHorizontal, Trash2, X, ShieldAlert } from 'lucide-react';
+import { Gemini, ModelIcon } from '@lobehub/icons';
+import { AgentAvatar, Tag } from '@lobehub/ui';
 import type { AgentDecision, AgentDraft, AgentMode, ContactDossier, ModeratorPersona } from '../api/types';
 import { api } from '../api/client';
 import { useLocale } from '../locale-context';
@@ -35,6 +37,12 @@ export function ModeratorDrawer({
   const [addingFact, setAddingFact] = useState(false);
   const [addingCommitment, setAddingCommitment] = useState(false);
 
+  // Matured Contact Memories & Adaptive Style
+  const [memories, setMemories] = useState<Array<{ id: string; content: string; created_at: number }>>([]);
+  const [newMemory, setNewMemory] = useState('');
+  const [addingMemory, setAddingMemory] = useState(false);
+  const [chatStyle, setChatStyle] = useState<string>('casual');
+
   useEffect(() => {
     if (!selectedChatId) {
       return;
@@ -42,9 +50,72 @@ export function ModeratorDrawer({
     let active = true;
     api.getDossier(selectedChatId)
       .then((response) => { if (active) setDossier(response.dossier); })
-      .catch(() => { if (active) setDossier(null); });
+      .catch((err) => {
+        if (active) {
+          setDossier(null);
+          console.warn('Failed to fetch contact dossier:', err);
+        }
+      });
+
+    api.getMemories(selectedChatId)
+      .then((res) => { if (active) setMemories(res.memories || []); })
+      .catch((err) => {
+        if (active) {
+          setMemories([]);
+          console.warn('Failed to fetch contact memories:', err);
+        }
+      });
+
+    api.getChatStyle(selectedChatId)
+      .then((res) => { if (active) setChatStyle(res.style || 'casual'); })
+      .catch((err) => {
+        if (active) {
+          setChatStyle('casual');
+          console.warn('Failed to fetch chat style:', err);
+        }
+      });
+
     return () => { active = false; };
   }, [selectedChatId, latestThought]);
+
+  const addMemoryEntry = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!selectedChatId || !newMemory.trim()) return;
+    setError('');
+    try {
+      const res = await api.addMemory(selectedChatId, newMemory.trim());
+      if (res.status === 'rejected_credential') {
+        setError(tr('تم رفض الحفظ: لا يمكن تخزين كلمات المرور أو البيانات السرية', 'Security block: Passwords or secrets cannot be stored'));
+      } else {
+        setNewMemory('');
+        setAddingMemory(false);
+        const updated = await api.getMemories(selectedChatId);
+        setMemories(updated.memories || []);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save memory');
+    }
+  };
+
+  const deleteMemoryEntry = async (id: string) => {
+    if (!selectedChatId) return;
+    try {
+      await api.deleteMemory(selectedChatId, id);
+      setMemories(memories.filter((m) => m.id !== id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete memory');
+    }
+  };
+
+  const handleStyleChange = async (newStyle: string) => {
+    if (!selectedChatId) return;
+    setChatStyle(newStyle);
+    try {
+      await api.setChatStyle(selectedChatId, newStyle);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update style');
+    }
+  };
 
   const addEntry = async (event: FormEvent, type: 'fact' | 'commitment') => {
     event.preventDefault();
@@ -87,7 +158,13 @@ export function ModeratorDrawer({
     <div className="wa-agent">
       <header className="wa-agent-header">
         <div className="wa-agent-heading">
-          <span className="wa-agent-symbol"><Sparkles size={21} fill="currentColor" /></span>
+          <AgentAvatar
+            seed={persona?.name || 'Moderator'}
+            size={36}
+            shape="hex"
+            color="geekblue"
+            state={visibleDrafts.length > 0 ? 'waiting' : 'idle'}
+          />
           <div>
             <h2>{view === 'drafts' ? tr('المسودات المعلقة', 'Pending drafts') : view === 'memory' ? tr('ذاكرة المحادثة', 'Chat memory') : tr('المساعد الذكي', 'AI assistant')}</h2>
             <p><span className="wa-live-dot" /> {selectedChatMode === 'autopilot' ? tr('Auto-Pilot مفعّل', 'Auto-Pilot active') : selectedChatMode === 'copilot' ? tr('Co-Pilot مفعّل', 'Co-Pilot active') : selectedChatMode === 'human' ? tr('الوضع اليدوي', 'Human mode') : tr('جاهز للمتابعة', 'Ready')}</p>
@@ -112,8 +189,8 @@ export function ModeratorDrawer({
             ) : visibleDrafts.map((draft) => (
               <article className="wa-draft" key={draft.id}>
                 <div className="wa-draft-meta">
-                  <span className="wa-review-badge">{tr('مراجعة مطلوبة', 'Review required')}</span>
-                  <span className="wa-confidence"><CheckCircle2 size={14} /> {tr('الثقة', 'Confidence')} <b dir="ltr">{confidenceLabel(draft.confidence)}</b></span>
+                  <Tag color="orange" variant="filled" className="wa-review-badge">{tr('مراجعة مطلوبة', 'Review required')}</Tag>
+                  <Tag color="green" variant="outlined" className="wa-confidence"><CheckCircle2 size={14} /> {tr('الثقة', 'Confidence')} <b dir="ltr">{confidenceLabel(draft.confidence)}</b></Tag>
                 </div>
                 {view === 'drafts' && (
                   <button type="button" className="wa-draft-contact" onClick={() => onSelectChat(draft.chatId)}>
@@ -177,6 +254,69 @@ export function ModeratorDrawer({
               <p className="wa-agent-hint">{tr('اختار محادثة لعرض المعلومات المحفوظة', 'Select a chat to view saved details')}</p>
             ) : (
               <>
+                {/* Adaptive Conversation Style */}
+                <div className="wa-memory-group">
+                  <div className="wa-memory-group-heading">
+                    <span><SlidersHorizontal size={15} /> {tr('نبرة وأسلوب المحادثة', 'Conversation style')}</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 p-2 bg-slate-900/60 rounded-lg border border-slate-800">
+                    {(['casual', 'professional', 'playful', 'assertive', 'empathetic'] as const).map((st) => (
+                      <button
+                        key={st}
+                        type="button"
+                        onClick={() => void handleStyleChange(st)}
+                        className={`px-2.5 py-1 text-xs rounded-md transition font-medium ${
+                          chatStyle === st
+                            ? 'bg-emerald-600 text-white'
+                            : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                        }`}
+                      >
+                        {st === 'casual' ? tr('عادي / ودود', 'Casual') :
+                         st === 'professional' ? tr('رسمي / مهني', 'Professional') :
+                         st === 'playful' ? tr('مرح / فكاهي', 'Playful') :
+                         st === 'assertive' ? tr('حاسم / مباشر', 'Assertive') :
+                         tr('داعم / متعاطف', 'Empathetic')}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Explicit Contact Memories (Privacy Protected) */}
+                <div className="wa-memory-group">
+                  <div className="wa-memory-group-heading">
+                    <span title={tr('ذاكرة مؤمنة لا تقبل كلمات المرور أو الأسرار', 'Secured memory rejecting credentials')}>
+                      <ShieldAlert size={15} className="text-emerald-400" /> {tr('ذكريات مفضلة (مؤمنة)', 'Explicit memories')}
+                    </span>
+                    <button type="button" onClick={() => setAddingMemory(!addingMemory)} aria-label={tr('إضافة تفضيل', 'Add memory')}>
+                      <Plus size={16} /> {tr('إضافة', 'Add')}
+                    </button>
+                  </div>
+                  {memories.map((m) => (
+                    <div key={m.id} className="wa-memory-item flex items-center justify-between group" dir="auto">
+                      <span>{m.content}</span>
+                      <button
+                        type="button"
+                        onClick={() => void deleteMemoryEntry(m.id)}
+                        className="opacity-60 hover:opacity-100 p-1 text-red-400 hover:text-red-300 transition"
+                        title={tr('حذف', 'Delete')}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  ))}
+                  {!memories.length && <p className="wa-agent-hint">{tr('لا توجد تفضيلات مخصصة مسجلة', 'No custom preferences recorded')}</p>}
+                  {addingMemory && (
+                    <form className="wa-memory-form" onSubmit={(e) => void addMemoryEntry(e)}>
+                      <input
+                        value={newMemory}
+                        onChange={(e) => setNewMemory(e.target.value)}
+                        placeholder={tr('اكتب تفضيل جديد (مثلاً: يفضل الشحن الصباحي)', 'e.g. Prefers morning delivery')}
+                      />
+                      <button type="submit" className="wa-primary-button">{tr('حفظ', 'Save')}</button>
+                    </form>
+                  )}
+                </div>
+
                 {dossier?.stage && <span className="wa-contact-stage">{dossier.stage === 'lead' ? tr('جهة اتصال جديدة', 'New contact') : dossier.stage === 'customer' ? tr('عميل حالي', 'Customer') : dossier.stage === 'qualified' ? tr('عميل محتمل', 'Qualified lead') : dossier.stage === 'negotiation' ? tr('مرحلة تفاوض', 'Negotiation') : dossier.stage === 'vip' ? 'VIP' : dossier.stage}</span>}
                 <div className="wa-memory-group">
                   <div className="wa-memory-group-heading">
@@ -213,7 +353,8 @@ export function ModeratorDrawer({
         {error && <p className="wa-inline-error" role="alert">{error}</p>}
         {persona && (
           <footer className="wa-agent-footer">
-            <Bot size={16} />
+            <ModelIcon model={persona.model} size={17} />
+            <Gemini.Color size={17} />
             <span dir="ltr">{persona.model}</span>
             <span>·</span>
             <span dir="ltr">{persona.voiceName || 'kore'}</span>

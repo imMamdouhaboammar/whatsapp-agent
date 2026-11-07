@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowRight, Bot, Check, CheckCheck, Clock3, FileText, MessageCircle, Mic, Reply, Send, X } from 'lucide-react';
+import { ArrowRight, Check, CheckCheck, Clock3, FileText, MessageCircle, Mic, Reply, Send, X } from 'lucide-react';
+import { Gemini } from '@lobehub/icons';
+import { Avatar } from '@lobehub/ui';
 import type { AgentMode, ChatMessage, ChatSummary } from '../api/types';
 import { useLocale, type Language } from '../locale-context';
 
@@ -90,13 +92,13 @@ export function ChatThread({ chat, messages, onSendMessage, onSendReaction, onCh
       <header className="wa-thread-header">
         <button type="button" className="wa-thread-back wa-icon-button" onClick={onBack} aria-label={tr('العودة للمحادثات', 'Back to chats')}><ArrowRight size={21} /></button>
         <span className="wa-avatar wa-avatar-thread">
-          {chat.avatarUrl ? <img src={chat.avatarUrl} alt="" /> : chat.name.slice(0, 1)}
+          {chat.avatarUrl ? <Avatar avatar={chat.avatarUrl} alt={chat.name} size={36} shape="circle" /> : chat.name.slice(0, 1)}
         </span>
         <div className="wa-thread-contact">
           <h2>{chat.name} {chat.isGroup && <span className="wa-group-label">{tr('مجموعة', 'Group')}</span>}</h2>
           <p dir="auto">{chat.phoneNumber || tr('محادثة واتساب', 'WhatsApp conversation')}</p>
         </div>
-        <button type="button" className="wa-thread-agent wa-icon-button" onClick={onOpenInspector} aria-label={tr('عرض المساعد الذكي', 'Show AI assistant')} title={tr('عرض المساعد الذكي', 'Show AI assistant')}><Bot size={21} /></button>
+        <button type="button" className="wa-thread-agent wa-icon-button" onClick={onOpenInspector} aria-label={tr('عرض المساعد الذكي', 'Show AI assistant')} title={tr('عرض المساعد الذكي', 'Show AI assistant')}><Gemini.Color size={21} /></button>
       </header>
 
       <div className="wa-chat-mode-bar">

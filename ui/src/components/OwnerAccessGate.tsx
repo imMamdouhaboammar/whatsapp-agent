@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
 import { ArrowRight, LockKeyhole, LogOut, MessageCircle, RefreshCw, ShieldCheck } from 'lucide-react';
 import { api } from '../api/client';
 import { useLocale } from '../locale-context';
@@ -37,12 +37,14 @@ export function OwnerAccessGate({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('focus', checkAccess);
   }, [checkAccess]);
 
-  const signOut = async () => {
+  const signOut = useCallback(async () => {
     await api.endDashboardSession();
     setAccess('locked');
-  };
+  }, []);
 
-  if (access === 'ready') return <OwnerAccessContext.Provider value={{ required, signOut }}>{children}</OwnerAccessContext.Provider>;
+  const contextValue = useMemo(() => ({ required, signOut }), [required, signOut]);
+
+  if (access === 'ready') return <OwnerAccessContext.Provider value={contextValue}>{children}</OwnerAccessContext.Provider>;
   if (access === 'checking') {
     return <main className="wa-owner-access-screen" dir={direction} role="status">
       <div className="wa-owner-loading"><LockKeyhole size={22} /><p>{tr('جارٍ فتح مساحة العمل', 'Opening your workspace')}</p></div>

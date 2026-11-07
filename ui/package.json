@@ -11,8 +11,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@lobehub/fluent-emoji": "^5.0.1",
+    "@lobehub/icons": "^6.15.0",
+    "@lobehub/ui": "^6.15.2",
+    "@supabase/supabase-js": "^2.119.0",
     "@tailwindcss/vite": "^4.3.4",
     "lucide-react": "^1.69.0",
+    "motion": "^14.10.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "tailwindcss": "^4.3.4"
@@ -27,4 +32,3 @@
     "vite": "^8.3.6"
   }
 }
-

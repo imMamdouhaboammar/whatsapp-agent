@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AlertCircle, CheckCircle2, LogOut, Phone, QrCode, RefreshCw, X } from 'lucide-react';
 import type { SystemStatus } from '../api/types';
 import { useLocale } from '../locale-context';
@@ -16,17 +16,23 @@ export function PairingModal({ status, isOpen, onClose, onConnect, onDisconnect 
   const [tab, setTab] = useState<'qr' | 'phone'>('qr');
   const [phoneNumber, setPhoneNumber] = useState('');
 
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
   useEffect(() => {
     if (!isOpen) return;
-    const onEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    const onEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') onCloseRef.current(); };
     window.addEventListener('keydown', onEscape);
     return () => window.removeEventListener('keydown', onEscape);
-  }, [isOpen, onClose]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
   return (
     <div className="wa-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      {/* react-doctor-disable-next-line react-doctor/prefer-html-dialog */}
       <section className="wa-modal" role="dialog" aria-modal="true" aria-labelledby="pairing-title">
         <header className="wa-modal-header">
           <div className="wa-modal-heading">
