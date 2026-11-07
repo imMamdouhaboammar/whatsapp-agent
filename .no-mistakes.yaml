@@ -1,0 +1,69 @@
+# .no-mistakes.yaml - Repository-level validation and quality gate configuration
+# https://github.com/kunchenguid/no-mistakes
+
+agent: auto
+allow_repo_commands: true
+
+pr:
+  base_branch: main
+
+commands:
+  prepare: bun install && cd ui && bun install
+  test: bun test
+  lint: qlty check --no-formatters
+  format: bun run qlty:fmt
+
+ignore_patterns:
+  - node_modules/**
+  - ui/node_modules/**
+  - buck-out/**
+  - coverage/**
+  - dist/**
+  - ui/dist/**
+  - .fable/**
+  - .agents/**
+  - .claude/**
+  - .local/**
+  - data/**
+
+protected_paths:
+  - bun.lock
+  - .env*
+  - package-lock.json
+
+auto_fix:
+  rebase: 3
+  review: 0
+  test: 3
+  document: 3
+  lint: 3
+  ci: 3
+
+document:
+  instructions: |
+    Maintain documentation integrity and verify updates against actual code behavior.
+    Adhere to the Zero-Obviousness & Anti-Truism Doctrine, Domain-Positive Governance, and Anti-Slop Interface Standards.
+    Keep README.md and documentation grounded in verified local reality.
+
+review:
+  conversation: true
+  path_instructions:
+    - path: src/security/**
+      instructions: |
+        Enforce fail-closed authentication and Unicode-aware regex screening for credentials.
+        Ensure no secret keys, API tokens, or session IDs are logged or exposed.
+    - path: ui/**
+      instructions: |
+        Enforce React 19 single-instance discipline and Astryx/StyleX CSS layer priority.
+        Ensure accessible RTL/LTR layout handling and motion provider context boundaries.
+        Enforce zero-unused-locals (TS6133) and verify builds with 'cd ui && bun run build'.
+    - path: src/domain/**
+      instructions: |
+        Maintain clean domain boundaries, immutable message transformations, and strict WhatsApp payload byte constraints (e.g., 100 KB stickers).
+
+ci:
+  revalidate_repairs: false
+  review_bot_comments: on_failure
+  instructions: |
+    Always use Bun for JS/TS dependencies and test execution (never npm or yarn).
+    Full test verification requires 'bun test' and 'cd ui && bun test:ui && bun run build'.

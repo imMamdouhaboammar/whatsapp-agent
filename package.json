@@ -18,7 +18,11 @@
     "build": "bun --cwd ui build",
     "qlty": "qlty check",
     "qlty:fmt": "qlty fmt",
-    "security:audit": "bun run scripts/security-audit.ts"
+    "security:audit": "bun run scripts/security-audit.ts",
+    "gate": "no-mistakes axi",
+    "gate:status": "no-mistakes status",
+    "gate:doctor": "no-mistakes doctor",
+    "gate:run": "no-mistakes axi run"
   },
   "engines": {
     "bun": ">=1.3.0",
