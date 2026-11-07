@@ -7,6 +7,7 @@ import { formatWhatsAppMessage } from '../domain/whatsapp-formatter';
 import { executeWithModelFallback, parseModelChain } from './model-fallback';
 import { formatMemoriesForPrompt } from '../domain/user-memory';
 import { detectConversationStyle, getStylePromptDirective, isExplicitStyleRequest, type ConversationStyle } from './adaptive-style';
+import type { DualMemoryManager } from '../domain/learning-memory';
 
 export const DEFAULT_MODERATOR_PERSONA: ModeratorPersona = {
   name: 'ممدوح (الموديرتور الذكي)',
@@ -55,6 +56,7 @@ export class ModeratorAgent {
   private persona: ModeratorPersona;
   private policy: PolicyConfig;
   private rateLimiter: HumanRateLimiter;
+  private dualMemoryManager?: DualMemoryManager;
 
   constructor(
     private gemini: GeminiClient,
@@ -63,6 +65,7 @@ export class ModeratorAgent {
       persona?: Partial<ModeratorPersona>;
       policy?: Partial<PolicyConfig>;
       rateLimiter?: HumanRateLimiter;
+      dualMemoryManager?: DualMemoryManager;
     } = {}
   ) {
     this.persona = { ...DEFAULT_MODERATOR_PERSONA, ...options.persona };
@@ -71,6 +74,15 @@ export class ModeratorAgent {
       minDelayMs: this.persona.minTypingDelayMs,
       maxDelayMs: this.persona.maxTypingDelayMs
     });
+    this.dualMemoryManager = options.dualMemoryManager;
+  }
+
+  getDualMemoryManager(): DualMemoryManager | undefined {
+    return this.dualMemoryManager;
+  }
+
+  setDualMemoryManager(manager: DualMemoryManager): void {
+    this.dualMemoryManager = manager;
   }
 
   getPersona(): ModeratorPersona {
@@ -161,11 +173,25 @@ ${commitmentsList}\n`;
     const activeStyle = (this.memoryStore.getChatStyle(message.chatId) as ConversationStyle) || detectedStyle;
     const styleDirective = getStylePromptDirective(activeStyle);
 
+    let notebookPrompt = '';
+    let workbookRulesPrompt = '';
+    if (this.dualMemoryManager) {
+      const nbContext = this.dualMemoryManager.getActiveContextForPrompt(message.chatId);
+      if (nbContext) {
+        notebookPrompt = `\n📌 الذاكرة التراكمية وسياق الدفتر (Notebook Context):\n${nbContext}\n`;
+      }
+      const wbRules = this.dualMemoryManager.getActiveRulesForPrompt();
+      if (wbRules) {
+        workbookRulesPrompt = `\n\n=== قواعد وإرشادات التعلم التراكمي (Workbook Rules & Guardrails) ===\n${wbRules}`;
+      }
+    }
+
     const prompt = `سياق المحادثة السابقة بين الطرفين:
 ${historyText}
 ${quotedContextPrompt}
 ${dossierPrompt}
 ${memoryPrompt}
+${notebookPrompt}
 الرسالة الجديدة الواردة الآن:
 من: ${message.senderName || message.sender}
 نص الرسالة: ${message.text || message.transcription || `[${message.type}]`}
@@ -194,7 +220,7 @@ ${memoryPrompt}
   "contactStage": "lead | qualified | negotiation | customer | vip"
 }`;
 
-    const systemInstruction = `${this.persona.systemPrompt}\nالنبرة المطلوبة: ${this.persona.tone}\n${styleDirective}\nالقواعد:\n${this.persona.rules.map((r) => `- ${r}`).join('\n')}`;
+    const systemInstruction = `${this.persona.systemPrompt}\nالنبرة المطلوبة: ${this.persona.tone}\n${styleDirective}\nالقواعد:\n${this.persona.rules.map((r) => `- ${r}`).join('\n')}${workbookRulesPrompt}`;
 
     let parsedDecision: AgentDecision;
 

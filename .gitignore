@@ -1,31 +1,111 @@
-node_modules
-.DS_Store
-dist
-coverage/
-data/
-ui/dist
-ui/node_modules
-*.log
-.venv/
-__pycache__/
-.pytest_cache/
+# Dependencies & Package Managers
+node_modules/
+ui/node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Build Outputs & Bundles
+dist/
+ui/dist/
+buck-out/
+.buckd/
+
+# Environment, Secrets & Credentials
 .env
 .env.*
 !.env.example
-.agentic-tdd-work-order.md
+ui/.env
+ui/.env.*
+!ui/.env.example
+env-vault
+.env.vault
+*.pem
+*.key
+*.cert
+*.crt
+*.p12
+*.pfx
+id_rsa*
+credentials.json
+service-account*.json
 
-# Bug Killer cryptographic identities & config
+# Databases & Runtime SQLite Persistence
+data/
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+supabase/.temp/
+
+# WhatsApp Auth Sessions & Temporary Media
+auth_info/
+auth_info_baileys/
+session/
+sessions/
+*.qr.png
+uploads/
+temp/
+tmp/
+media/
+
+# Python Runtime & Tests
+.venv/
+venv/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# Quality, Linter & Cache Tools
+.qlty/
+.cache/
+.parcel-cache/
+
+# Logs & Test Coverage
+coverage/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+test-results/
+ui/tests/artifacts/
+
+# Operating System & Editors
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+.Spotlight-V100
+.Trashes
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+*.swp
+*.swo
+*~
+
+# Agent Runtimes & Local Machine Artifacts
+.agentic-tdd-work-order.md
 .aegis/
 .bugkiller/
 .unslop/
-
-# Local agent caches
 .agents/
 .claude/
-
-# Fable local runtime state
+.gemini/
 .fable/events.jsonl
 .fable/learnings.json
 .fable/redteam-findings.json
 .fable/run-attestation.json
 .fable/reflex/
+.fable/incidents/
+.fable/watchdog-heartbeat.json

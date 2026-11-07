@@ -7,6 +7,10 @@ export interface GeminiGenerateOptions {
   maxOutputTokens?: number;
   responseMimeType?: string;
   responseSchema?: any;
+  thinkingConfig?: {
+    thinkingLevel?: 'HIGH' | 'LOW' | 'MEDIUM';
+    thinkingBudget?: number;
+  };
 }
 
 export interface ContentPart {
@@ -115,6 +119,16 @@ export class GeminiClient {
     if (options.maxOutputTokens !== undefined) generationConfig.maxOutputTokens = options.maxOutputTokens;
     if (options.responseMimeType) generationConfig.responseMimeType = options.responseMimeType;
     if (options.responseSchema) generationConfig.responseSchema = options.responseSchema;
+    if (options.thinkingConfig) {
+      generationConfig.thinkingConfig = {
+        thinkingLevel: options.thinkingConfig.thinkingLevel,
+        thinkingBudget: options.thinkingConfig.thinkingBudget
+      };
+      generationConfig.thinking_config = {
+        thinking_level: options.thinkingConfig.thinkingLevel,
+        thinking_budget: options.thinkingConfig.thinkingBudget
+      };
+    }
 
     if (Object.keys(generationConfig).length > 0) {
       body.generationConfig = generationConfig;

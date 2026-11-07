@@ -13,6 +13,9 @@ import { registerDashboardAuth } from './dashboard-auth';
 import { UserMemoryManager } from '../domain/user-memory';
 import type { ConversationStyle } from '../ai/adaptive-style';
 import { handleGitHubWebhook } from './github-webhook';
+import type { DualMemoryManager } from '../domain/learning-memory';
+import type { ReflectionWorker } from '../agent/reflection-worker';
+import type { ReflectionEngine } from '../ai/reflection-engine';
 
 const allowedOrigins = new Set(['http://localhost:3000','http://127.0.0.1:3000','http://localhost:5173','http://127.0.0.1:5173',...((process.env.AGENT_ALLOWED_ORIGINS??'').split(',').map(v=>v.trim()).filter(Boolean))]);
 const trustedOrigin=(origin:string)=>allowedOrigins.has(origin);
@@ -30,6 +33,9 @@ export function createApiServer(deps: {
   funnelEngine?: FableFunnelEngine;
   dashboardToken?: string;
   sseHeartbeatMs?: number;
+  dualMemoryManager?: DualMemoryManager;
+  reflectionWorker?: ReflectionWorker;
+  reflectionEngine?: ReflectionEngine;
 }): Hono {
   const app = new Hono();
   const funnelEngine = deps.funnelEngine ?? new FableFunnelEngine({
@@ -207,7 +213,7 @@ export function createApiServer(deps: {
     const draft = deps.memoryStore.getDraft(draftId);
     if (!draft) return c.json({ error: 'Draft not found' }, 404);
 
-    const replyText = body.editedText || draft.proposedReply;
+    const replyText = body.editedText || body.replyText || draft.proposedReply;
     const shouldSendVoice = (body.asVoice !== undefined ? Boolean(body.asVoice) : Boolean(draft.sendAsVoiceNote)) && Boolean(deps.voiceSynthesizer);
 
     try {
@@ -232,6 +238,17 @@ export function createApiServer(deps: {
       }
 
       deps.memoryStore.updateDraftStatus(draftId, 'approved', replyText);
+
+      if (draft.proposedReply !== replyText && deps.reflectionWorker) {
+        deps.reflectionWorker.recordModerationFeedback({
+          chatId: draft.chatId,
+          draftId,
+          feedbackType: 'edited',
+          originalReply: draft.proposedReply,
+          revisedReply: replyText,
+          humanNote: 'Operator revised draft prior to approval'
+        });
+      }
 
       const message: ChatMessage = {
         id: sentMessageId,
@@ -258,9 +275,78 @@ export function createApiServer(deps: {
 
   app.post('/api/drafts/:draftId/reject', (c) => {
     const draftId = c.req.param('draftId');
+    const draft = deps.memoryStore.getDraft(draftId);
     deps.memoryStore.updateDraftStatus(draftId, 'rejected');
     deps.sse.broadcast('draft_updated', { draftId, status: 'rejected' });
+
+    if (deps.reflectionWorker && draft) {
+      deps.reflectionWorker.recordModerationFeedback({
+        chatId: draft.chatId,
+        draftId,
+        feedbackType: 'rejected',
+        originalReply: draft.proposedReply,
+        humanNote: 'Operator rejected draft'
+      });
+    }
+
     return c.json({ success: true, draftId });
+  });
+
+  // Continuous Learning & Memory Reflection API
+  app.get('/api/learning/state', (c) => {
+    const memoryManager = deps.dualMemoryManager || deps.moderatorAgent.getDualMemoryManager();
+    if (!memoryManager) {
+      return c.json({ error: 'Dual memory manager not initialized' }, 404);
+    }
+    const wb = memoryManager.getWorkbook();
+    const nb = memoryManager.getNotebook();
+    const reflections = deps.memoryStore.getReflectionRuns(undefined, 10);
+    return c.json({
+      workbook: wb,
+      notebook: nb,
+      needsCompaction: memoryManager.needsCompaction(),
+      recentReflections: reflections
+    });
+  });
+
+  app.post('/api/learning/reflect', async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const chatId = body?.chatId;
+    if (deps.reflectionWorker && chatId) {
+      const result = await deps.reflectionWorker.reflectOnThread(chatId, 'manual_api');
+      return c.json({ success: true, result });
+    } else if (deps.reflectionWorker) {
+      const sweep = await deps.reflectionWorker.sweepColdThreads();
+      return c.json({ success: true, sweep });
+    }
+    return c.json({ error: 'Reflection worker not available' }, 400);
+  });
+
+  app.put('/api/learning/rules', async (c) => {
+    const body = await c.req.json();
+    const memoryManager = deps.dualMemoryManager || deps.moderatorAgent.getDualMemoryManager();
+    if (!memoryManager) {
+      return c.json({ error: 'Dual memory manager not initialized' }, 404);
+    }
+    if (typeof body?.rule === 'string' && body.rule.trim()) {
+      memoryManager.addEnforcedRule(body.rule);
+      return c.json({ success: true, workbook: memoryManager.getWorkbook() });
+    }
+    return c.json({ error: 'Invalid rule string' }, 400);
+  });
+
+  app.post('/api/learning/compact', async (c) => {
+    const engine = deps.reflectionEngine;
+    if (!engine) {
+      return c.json({ error: 'Reflection engine not initialized' }, 400);
+    }
+    const compacted = await engine.performCompaction();
+    const memoryManager = deps.dualMemoryManager || deps.moderatorAgent.getDualMemoryManager();
+    return c.json({
+      success: true,
+      compacted,
+      workbook: memoryManager?.getWorkbook()
+    });
   });
 
   // Persona & Configuration

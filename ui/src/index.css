@@ -205,7 +205,8 @@ button, input, textarea { -webkit-tap-highlight-color: transparent; }
 .wa-primary-button:hover:not(:disabled) { background: var(--wa-green-dark); }
 .wa-secondary-button { color: #374b52; background: #fff; border-color: #cbd5d8; }
 .wa-secondary-button:hover:not(:disabled) { background: #f3f6f5; }
-.wa-draft-actions .wa-primary-button { flex: 1; }
+.wa-draft-actions .wa-primary-button,
+.wa-draft-actions > :first-child { flex: 1; }
 .wa-draft-more-actions { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
 .wa-draft-more-actions button { min-height: 35px; padding: 7px 10px; border: 0; background: transparent; border-radius: 8px; color: #60747a; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 650; }
 .wa-draft-more-actions button:hover { background: #f0f4f3; }

@@ -1,13 +1,13 @@
 {
   "schemaVersion": 3,
-  "stateRevision": 20,
+  "stateRevision": 29,
   "workspaceId": "e6e371de2623bf032ba0feec",
   "phase": "complete",
   "currentSkill": null,
   "failureStreak": 0,
   "substantial": true,
-  "mutationGeneration": 8,
-  "verifiedGeneration": 8,
+  "mutationGeneration": 12,
+  "verifiedGeneration": 12,
   "activeCard": null,
   "lastDecision": null,
   "evidence": [
@@ -58,7 +58,67 @@
       "generation": 8,
       "timestamp": "2026-11-07T19:43:42.307Z",
       "workspaceId": "e6e371de2623bf032ba0feec"
+    },
+    {
+      "kind": "test",
+      "source": "bun test",
+      "result": "pass",
+      "detail": "162 pass across 41 files",
+      "repositoryRevision": "df5fe6b8ab0e786124948304faba9e794b1ca4d8",
+      "commandCategory": "test",
+      "scope": "workspace",
+      "generation": 9,
+      "timestamp": "2026-11-07T19:50:57.992Z",
+      "workspaceId": "e6e371de2623bf032ba0feec"
+    },
+    {
+      "kind": "test",
+      "source": "bun test",
+      "result": "pass",
+      "detail": "162 pass across 82 files",
+      "repositoryRevision": "3e8d4db757b223b9824518c639c4b00fc09f444d",
+      "commandCategory": "test",
+      "scope": "workspace",
+      "generation": 10,
+      "timestamp": "2026-11-07T20:31:23.320Z",
+      "workspaceId": "e6e371de2623bf032ba0feec"
+    },
+    {
+      "kind": "test",
+      "source": "bun test",
+      "result": "pass",
+      "detail": "162 pass across 82 files",
+      "repositoryRevision": "ae25f98cc3d632d44f1736797f8822a3db064c20",
+      "commandCategory": "test",
+      "scope": "workspace",
+      "generation": 11,
+      "timestamp": "2026-11-07T20:32:47.808Z",
+      "workspaceId": "e6e371de2623bf032ba0feec"
+    },
+    {
+      "kind": "test",
+      "source": "bun test",
+      "result": "pass",
+      "detail": "169 pass across 84 files",
+      "repositoryRevision": "ae25f98cc3d632d44f1736797f8822a3db064c20",
+      "commandCategory": "test",
+      "scope": "workspace",
+      "generation": 11,
+      "timestamp": "2026-11-07T20:46:06.365Z",
+      "workspaceId": "e6e371de2623bf032ba0feec"
+    },
+    {
+      "kind": "test",
+      "source": "bun test",
+      "result": "pass",
+      "detail": "169 pass across 84 files",
+      "repositoryRevision": "884d9c5cea5915a4eb89b8b33643d5cd04f6cb71",
+      "commandCategory": "test",
+      "scope": "workspace",
+      "generation": 12,
+      "timestamp": "2026-11-07T20:48:02.098Z",
+      "workspaceId": "e6e371de2623bf032ba0feec"
     }
   ],
-  "updatedAt": "2026-11-07T19:50:28.831Z"
+  "updatedAt": "2026-11-07T20:48:02.098Z"
 }

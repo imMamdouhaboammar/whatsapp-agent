@@ -149,6 +149,24 @@ export class MemoryStore {
     return this.sqlite.getDossier(chatId)?.preferredTone;
   }
 
+  // --- Learning States & Reflections ---
+
+  saveLearningState(brandId: string, stateType: 'workbook' | 'notebook', content: string): void {
+    this.sqlite.saveLearningState(brandId, stateType, content);
+  }
+
+  getLearningState(brandId: string, stateType: 'workbook' | 'notebook') {
+    return this.sqlite.getLearningState(brandId, stateType);
+  }
+
+  saveReflectionRun(record: Parameters<SqliteStore['saveReflectionRun']>[0]): void {
+    this.sqlite.saveReflectionRun(record);
+  }
+
+  getReflectionRuns(chatId?: string, limit = 20) {
+    return this.sqlite.getReflectionRuns(chatId, limit);
+  }
+
   getSqliteStore(): SqliteStore {
     return this.sqlite;
   }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { AlertCircle, CheckCircle2, LogOut, Phone, QrCode, RefreshCw, X } from 'lucide-react';
+import { Button } from '@astryxdesign/core/Button';
 import type { SystemStatus } from '../api/types';
 import { useLocale } from '../locale-context';
 
@@ -51,8 +52,8 @@ export function PairingModal({ status, isOpen, onClose, onConnect, onDisconnect 
               <h3>{tr('واتساب متصل بنجاح', 'WhatsApp is connected')}</h3>
               <p>{tr('الحساب:', 'Account:')} <strong dir="auto">{status.connectedUser?.name || status.connectedUser?.phone || 'WhatsApp'}</strong></p>
               <div className="wa-modal-actions">
-                <button type="button" className="wa-secondary-button" onClick={onDisconnect}><LogOut size={16} /> {tr('فصل الحساب', 'Disconnect')}</button>
-                <button type="button" className="wa-primary-button" onClick={onClose}>{tr('تم', 'Done')}</button>
+                <Button variant="secondary" label={tr('فصل الحساب', 'Disconnect')} icon={<LogOut size={16} />} onClick={onDisconnect} />
+                <Button variant="primary" label={tr('تم', 'Done')} onClick={onClose} />
               </div>
             </div>
           ) : (
@@ -78,7 +79,7 @@ export function PairingModal({ status, isOpen, onClose, onConnect, onDisconnect 
                     <li>{tr('ادخل إلى الأجهزة المرتبطة', 'Go to Linked devices')}</li>
                     <li>{tr('اختار ربط جهاز وامسح الرمز', 'Tap Link a device and scan this code')}</li>
                   </ol>
-                  <button type="button" className="wa-quiet-button" onClick={() => onConnect()}><RefreshCw size={16} /> {tr('إنشاء رمز جديد', 'Generate a new code')}</button>
+                  <Button variant="ghost" label={tr('إنشاء رمز جديد', 'Generate a new code')} icon={<RefreshCw size={16} />} onClick={() => onConnect()} />
                 </div>
               ) : (
                 <div className="wa-phone-panel">
@@ -93,7 +94,7 @@ export function PairingModal({ status, isOpen, onClose, onConnect, onDisconnect 
                       <strong dir="ltr">{status.pairingCode}</strong>
                     </div>
                   )}
-                  <button type="button" className="wa-primary-button wa-full-button" disabled={!phoneNumber.trim()} onClick={() => onConnect(phoneNumber)}>{tr('طلب كود الربط', 'Request pairing code')}</button>
+                  <Button variant="primary" width="100%" label={tr('طلب كود الربط', 'Request pairing code')} isDisabled={!phoneNumber.trim()} onClick={() => onConnect(phoneNumber)} />
                 </div>
               )}
             </>

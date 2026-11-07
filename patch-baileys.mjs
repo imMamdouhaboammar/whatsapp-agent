@@ -4,7 +4,7 @@
  * 2. remove lidDbMigrated (unrecognized field rejected by WhatsApp)
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -17,11 +17,17 @@ function normalizeWs(s) {
 
 function patch(file, find, replace, label) {
   const path = join(baileys, file);
-  if (!existsSync(path)) {
-    console.log(`  skip: ${file} not found`);
-    return;
+  let src;
+  try {
+    src = readFileSync(path, 'utf8');
+  } catch (err) {
+    if (err && typeof err === 'object' && err.code === 'ENOENT') {
+      console.log(`  skip: ${file} not found`);
+      return;
+    }
+    throw err;
   }
-  let src = readFileSync(path, 'utf8');
+
   if (src.includes(replace)) {
     console.log(`  ok: ${label} (already patched)`);
     return;
@@ -34,11 +40,11 @@ function patch(file, find, replace, label) {
     }
   }
   src = src.replaceAll(find, replace);
-  writeFileSync(path, src);
+  writeFileSync(path, src, 'utf8');
   console.log(`  patched: ${label}`);
 }
 
-if (existsSync(baileys)) {
+try {
   console.log('[Fable Agent] Patching Baileys connection validator...');
   patch(
     'Utils/validate-connection.js',
@@ -53,4 +59,6 @@ if (existsSync(baileys)) {
     'lidDbMigrated'
   );
   console.log('[Fable Agent] Baileys patch complete.');
+} catch (err) {
+  console.warn('[Fable Agent] Baileys patch skipped or errored:', err instanceof Error ? err.message : err);
 }

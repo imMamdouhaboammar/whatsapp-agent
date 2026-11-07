@@ -74,7 +74,8 @@ function convertMarkdownTables(text: string): string {
       // Check if table has a header and separator
       if (tableLines.length >= 2) {
         const headerRow = parseCells(tableLines[0]);
-        const isSeparator = /^\|?[\s:-|-]+\|?$/.test(tableLines[1]);
+        const separatorCells = parseCells(tableLines[1]);
+        const isSeparator = separatorCells.length > 0 && separatorCells.every((c) => /^:?-+:?$/.test(c.trim()));
         const startRow = isSeparator ? 2 : 1;
 
         for (let r = startRow; r < tableLines.length; r++) {
