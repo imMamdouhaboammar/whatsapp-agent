@@ -1,0 +1,16 @@
+{
+  "title": "PrePilot WhatsApp AI Copilot",
+  "subtitle": "Inbound Real Estate Inquiries",
+  "button": "Qualify & Schedule All",
+  "total_label": "Qualified Pipeline",
+  "sample_data": true,
+  "accent": "#059669",
+  "statuses": ["Inquiry Received", "Budget & Area Qualified", "Agent Viewing Booked"],
+  "rows": [
+    { "name": "Downtown 3BR Sky Penthouse (Inquiry: Karim S.)", "amount": "$45,000.00", "note": "Budget $2.5M, cash buyer, requested weekend viewing" },
+    { "name": "Palm Jumeirah Beachfront Villa (Inquiry: Elena R.)", "amount": "$78,000.00", "note": "Relocating executive, pre-approved mortgage, needs 4BR" },
+    { "name": "Dubai Marina 2BR Waterfront (Inquiry: David H.)", "amount": "$18,500.00", "note": "Investor seeking 8% ROI, asked for payment plan breakdown" },
+    { "name": "Business Bay Luxury Suite (Inquiry: Noor A.)", "amount": "$14,200.00", "note": "First-time buyer, scheduled viewing for Thursday 5 PM" },
+    { "name": "Creek Harbour Sunset Horizon (Inquiry: Marcus T.)", "amount": "$22,000.00", "note": "Cash buyer, requested brochure and floor plan in WhatsApp" }
+  ]
+}

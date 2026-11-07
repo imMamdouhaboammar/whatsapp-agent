@@ -416,7 +416,7 @@ export function App() {
           </>}
           {page === 'chats' && <button type="button" className="wa-header-agent-trigger" onClick={toggleInspector} aria-controls="wa-agent-panel" aria-expanded={inspectorVisible} aria-label={inspectorVisible ? tr('طي لوحة المساعد', 'Collapse AI assistant') : tr('فتح لوحة المساعد', 'Expand AI assistant')}>
             <Gemini.Color size={18} /><span>{tr('المساعد الذكي', 'AI assistant')}</span>
-            {drafts.length > 0 && <span className="wa-count wa-count-light"><AstryxBadge variant="blue" label={drafts.length} /></span>}
+            {drafts.length > 0 && <span className="wa-count wa-count-light"><AstryxBadge variant="teal" label={drafts.length} /></span>}
           </button>}
         </div>
       </header>

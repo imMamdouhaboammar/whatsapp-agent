@@ -226,9 +226,9 @@ ${notebookPrompt}
 
     try {
       const fallbackModels = parseModelChain(
-        this.persona.model || 'gemini-2.5-flash',
+        this.persona.model || 'gemini-3.8-flash',
         process.env.GEMINI_FALLBACK_MODELS,
-        'gemini-2.5-flash,gemini-2.5-pro,gemini-2.0-flash'
+        'gemini-3.8-flash,gemini-3.1-pro,gemini-4-argon'
       );
 
       const fallbackRes = await executeWithModelFallback(fallbackModels, async (model) => {

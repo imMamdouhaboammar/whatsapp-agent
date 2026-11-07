@@ -43,7 +43,7 @@ export class AudioTranscriber {
         responseMimeType: 'application/json'
       });
     } catch {
-      // Graceful fallback to gemini-2.5-flash
+      // Graceful fallback to gemini-3.8-flash
       response = await this.gemini.generateContent([
         {
           role: 'user',
@@ -58,7 +58,7 @@ export class AudioTranscriber {
           ]
         }
       ], {
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.8-flash',
         responseMimeType: 'application/json'
       });
     }

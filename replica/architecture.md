@@ -27,7 +27,7 @@ flowchart TD
         D -->|"Sticker Request"| E["StickerEngine (FFmpeg WebP Ladder)"]
         D -->|"Memory Request"| F["ContactMemoryStore (SQLite WAL)"]
         D -->|"Style Request"| G["AdaptiveStyleEngine (Arabic & EN)"]
-        D -->|"Agent Turn"| H["ModeratorAgent (Gemini 2.5)"]
+        D -->|"Agent Turn"| H["ModeratorAgent (Gemini 3.8 Flash)"]
         H --> I["ModelFallbackEngine (Chain on 429/503)"]
     end
 

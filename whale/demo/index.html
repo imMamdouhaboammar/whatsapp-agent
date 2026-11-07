@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PrePilot WhatsApp AI Copilot demo</title>
+<style>
+:root { --ink:#1a1a18; --soft:#6b6a65; --line:#e6e4dd; --bg:#faf9f5; --accent:#059669; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+.banner { background:#fff4d6; border-bottom:1px solid #ecd9a0; padding:10px 16px; text-align:center; font-size:14px; }
+main { max-width:760px; margin:0 auto; padding:24px 16px 48px; }
+header { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:20px; }
+.mark { width:40px; height:40px; border-radius:10px; background:var(--accent); color:#fff; display:grid; place-items:center; font-weight:700; }
+h1 { font-size:20px; margin:0; } .sub { color:var(--soft); font-size:14px; }
+button { margin-left:auto; background:var(--accent); color:#fff; border:0; border-radius:8px; padding:10px 18px; font:inherit; font-weight:600; cursor:pointer; }
+button:disabled { opacity:.55; cursor:default; }
+table { width:100%; border-collapse:collapse; background:#fff; border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+td { padding:12px 14px; border-top:1px solid var(--line); } tr:first-child td { border-top:0; }
+td.amount { text-align:right; font-variant-numeric:tabular-nums; } td.note { color:var(--soft); font-size:14px; }
+td.status { text-align:right; font-size:14px; color:var(--soft); min-width:120px; } td.status.done { color:#0a7d4f; font-weight:600; }
+.total { margin-top:16px; display:flex; justify-content:space-between; font-size:18px; font-weight:600; }
+.total span:last-child { font-variant-numeric:tabular-nums; }
+@media (max-width:560px) { td.note { display:none; } button { margin-left:0; width:100%; } }
+</style>
+</head>
+<body>
+<div class="banner" role="note">Demo with sample data. This shows how it will work, not a finished product.</div>
+<main>
+<header>
+<div class="mark" aria-hidden="true">P</div>
+<div><h1>PrePilot WhatsApp AI Copilot</h1><div class="sub">Inbound Real Estate Inquiries</div></div>
+<button id="go" type="button">Qualify &amp; Schedule All</button>
+</header>
+<table><tbody id="rows"><tr><td>Downtown 3BR Sky Penthouse (Inquiry: Karim S.)</td><td class="note">Budget $2.5M, cash buyer, requested weekend viewing</td><td class="amount">$45,000.00</td><td class="status"></td></tr><tr><td>Palm Jumeirah Beachfront Villa (Inquiry: Elena R.)</td><td class="note">Relocating executive, pre-approved mortgage, needs 4BR</td><td class="amount">$78,000.00</td><td class="status"></td></tr><tr><td>Dubai Marina 2BR Waterfront (Inquiry: David H.)</td><td class="note">Investor seeking 8% ROI, asked for payment plan breakdown</td><td class="amount">$18,500.00</td><td class="status"></td></tr><tr><td>Business Bay Luxury Suite (Inquiry: Noor A.)</td><td class="note">First-time buyer, scheduled viewing for Thursday 5 PM</td><td class="amount">$14,200.00</td><td class="status"></td></tr><tr><td>Creek Harbour Sunset Horizon (Inquiry: Marcus T.)</td><td class="note">Cash buyer, requested brochure and floor plan in WhatsApp</td><td class="amount">$22,000.00</td><td class="status"></td></tr></tbody></table>
+<div class="total"><span>Qualified Pipeline</span><span id="total">$0.00</span></div>
+</main>
+<script>
+var AMOUNTS = [45000.0, 78000.0, 18500.0, 14200.0, 22000.0], STATUSES = ["Inquiry Received", "Budget & Area Qualified", "Agent Viewing Booked"];
+var rows = document.querySelectorAll("#rows tr"), tot = document.getElementById("total"), go = document.getElementById("go");
+function fmt(n) { return "$" + n.toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2}); }
+go.addEventListener("click", function () {
+  go.disabled = true;
+  var sum = 0;
+  Array.prototype.forEach.call(rows, function (row, i) {
+    var cell = row.querySelector(".status");
+    STATUSES.forEach(function (status, s) {
+      setTimeout(function () {
+        cell.textContent = status;
+        if (s === STATUSES.length - 1) { cell.classList.add("done"); sum += AMOUNTS[i]; tot.textContent = fmt(sum); }
+      }, 350 * i + 700 * s + 200);
+    });
+  });
+});
+</script>
+</body>
+</html>

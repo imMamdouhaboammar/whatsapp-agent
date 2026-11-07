@@ -156,7 +156,7 @@ export class GeminiClient {
 
     // Fallback gracefully if model not yet enabled on Vertex AI endpoint
     if (!res.ok && res.status === 404 && auth.type === 'vertex') {
-      const fallbackModel = model.includes('argon') || model.includes('pro') ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
+      const fallbackModel = model.includes('argon') || model.includes('pro') ? 'gemini-3.1-pro' : 'gemini-3.8-flash';
       console.warn(`⚠️ [GeminiClient] Model "${model}" is not enabled in this region, gracefully falling back to "${fallbackModel}"`);
       res = await callApi(fallbackModel);
       data = await res.json();

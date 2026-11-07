@@ -24,7 +24,7 @@ Based on analysis of open-source WhatsApp assistant repositories and Reddit/HN o
 ### List 1: What Users Hate
 1. **"The bot broke when Gemini ran out of tokens"**:
    - *Impact*: Total silence in chat when Gemini returns 429 or 503.
-   - *Fix*: Deterministic Model Fallback Chain (`gemini-2.5-flash` -> `gemini-2.5-pro` -> `gemini-2.0-flash`) with circuit breaker.
+   - *Fix*: Deterministic Model Fallback Chain (`gemini-3.8-flash` -> `gemini-3.1-pro` -> `gemini-4-argon`) with circuit breaker.
 2. **"Markdown tables and titles look horrible on mobile"**:
    - *Impact*: Raw `# Title` and `| col | col |` turn into ugly broken strings.
    - *Fix*: WhatsApp Native Formatter that transforms tables into bullet lists and headers into bolded accents.

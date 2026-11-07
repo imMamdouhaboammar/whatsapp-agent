@@ -33,7 +33,7 @@ export class WebScout {
       'Question: '+input.question
     ].filter(Boolean).join('\n');
     const answer=await this.model.generateContent([{role:'user',parts:[{text:prompt}]}],{
-      model:'gemini-2.5-flash',googleSearch:true,temperature:0.1,maxOutputTokens:1200
+      model:'gemini-3.8-flash',googleSearch:true,temperature:0.1,maxOutputTokens:1200
     });
     const sources:WebSource[]=[];
     const seen=new Set<string>();

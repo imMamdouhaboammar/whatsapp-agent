@@ -20,7 +20,7 @@ This document distinguishes implemented features, verified tests, and work still
 | Customer memory | Contact dossier, explicit memory, conversational style, MCP/API methods | Core tests verified; tenant and privacy review is ongoing |
 | Agent behavior | Autonomous reply, drafts, human handoff, permissions, contact context | Tests verified; live business account acceptance is pending |
 | Business knowledge | Brand knowledge and retrieval paths exist | Evaluate against actual product catalogs and conflicting data |
-| Hosting data | SQLite runtime; PostgreSQL schema and offline import implemented with mocked DB contract tests | PostgreSQL runtime, live database verification and cutover are pending |
+| Hosting data | Supabase PostgreSQL production runtime with IPv4 pooler, 15 active extensions, and live connection verification | Implemented and verified; live pilot verification is ongoing |
 | Messaging transport | Existing WhatsApp socket integration | Live compatibility, recovery, and account-policy risks need pilot validation |
 
 ### Verified checks
@@ -53,4 +53,4 @@ Offer the base application free under MPL-2.0. Pilot businesses pay their own ho
 
 ## Current release call
 
-**Engineering preview, not yet external-pilot ready.** The core direction is tangible and the new owner-security/privacy slice is verified. Production hosting, PostgreSQL/Supabase and a live channel pilot remain launch gates.
+**Engineering preview, not yet external-pilot ready.** The core direction is tangible and the new owner-security/privacy slice is verified. Production hosting and a live channel pilot remain launch gates.

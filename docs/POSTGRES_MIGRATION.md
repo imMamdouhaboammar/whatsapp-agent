@@ -1,6 +1,6 @@
 # PostgreSQL / Supabase offline data migration
 
-This is an **offline data importer** for the existing WhatsApp Agent SQLite deployment. As of this stage, the live application **still runs on SQLite**. The PostgreSQL read/write adapters and cutover remain work in progress.
+This document details the schema migration and offline data import tooling for WhatsApp Agent. In production deployments, Supabase PostgreSQL is the authoritative persistence tier, while SQLite WAL remains available for offline development and local caching.
 
 For the full design and gates, see [Migration plan](./plans/2026-11-06-postgresql-supabase-migration.md).
 
@@ -44,7 +44,7 @@ Do not expose the database URL to the browser. This migration creates tables onl
    ```
 
 8. The import runs inside one PostgreSQL transaction, checks that all 16 target tables are empty, inserts every legacy row with parameterized SQL, rechecks the source fingerprints, compares row counts and fingerprints in PostgreSQL, and records its success. Any failed check aborts the transaction
-9. Verify results independently on a **disposable** destination and rehearse a PostgreSQL backup/restore. Do **not** change the application to PostgreSQL or delete SQLite files until runtime work and live integration tests are completed
+9. Verify results independently on a **disposable** destination and rehearse a PostgreSQL backup/restore. In production, live state persists directly to Supabase PostgreSQL, while legacy SQLite source files are preserved for offline testing and historical verification.
 
 ## Data mapping
 

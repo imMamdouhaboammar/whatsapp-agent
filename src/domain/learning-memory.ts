@@ -27,8 +27,16 @@ export interface NotebookState {
   businessInsights: string[];
 }
 
+export interface LearningPersistenceStore {
+  saveLearningState(brandId: string, stateType: 'workbook' | 'notebook', content: string): Promise<void> | void;
+  getLearningState(brandId: string, stateType: 'workbook' | 'notebook'): Promise<{ content: string; version: number; updatedAt: number } | undefined> | { content: string; version: number; updatedAt: number } | undefined;
+  saveReflectionRun?(record: any): Promise<void> | void;
+  getReflectionRuns?(chatId?: string, limit?: number): Promise<any[]> | any[];
+}
+
 export interface DualMemoryOptions {
   storageDir?: string;
+  persistenceStore?: LearningPersistenceStore;
   sqliteStore?: SqliteStore;
   persistSqlite?: boolean;
   brandId?: string;
@@ -71,6 +79,7 @@ export class DualMemoryManager {
   private storageDir: string;
   private workbookPath: string;
   private notebookPath: string;
+  private persistenceStore?: LearningPersistenceStore;
   private sqliteStore?: SqliteStore;
   private persistSqlite: boolean;
   private brandId: string;
@@ -82,6 +91,7 @@ export class DualMemoryManager {
 
   constructor(options: DualMemoryOptions = {}) {
     this.storageDir = options.storageDir ?? './data/learning';
+    this.persistenceStore = options.persistenceStore;
     this.sqliteStore = options.sqliteStore;
     this.persistSqlite = options.persistSqlite ?? true;
     this.brandId = options.brandId ?? 'default';
@@ -464,11 +474,36 @@ export class DualMemoryManager {
     return { threadSemantics, customerProfiles, businessInsights };
   }
 
+  async syncFromPersistenceStore(): Promise<boolean> {
+    if (!this.persistenceStore) return false;
+    try {
+      const remoteWb = await this.persistenceStore.getLearningState(this.brandId, 'workbook');
+      if (remoteWb?.content) {
+        this.workbookCache = this.parseWorkbook(remoteWb.content);
+        writeFileSync(this.workbookPath, remoteWb.content, 'utf-8');
+      }
+
+      const remoteNb = await this.persistenceStore.getLearningState(this.brandId, 'notebook');
+      if (remoteNb?.content) {
+        this.notebookCache = this.parseNotebook(remoteNb.content);
+        writeFileSync(this.notebookPath, remoteNb.content, 'utf-8');
+      }
+      return true;
+    } catch (err: any) {
+      console.warn('⚠️ [DualMemoryManager] Failed to sync from persistence store:', err.message);
+      return false;
+    }
+  }
+
   private persistWorkbook(): void {
     const content = this.formatWorkbook(this.workbookCache);
     writeFileSync(this.workbookPath, content, 'utf-8');
 
-    if (this.persistSqlite && this.sqliteStore) {
+    if (this.persistenceStore) {
+      void Promise.resolve(this.persistenceStore.saveLearningState(this.brandId, 'workbook', content)).catch((err) => {
+        console.warn('⚠️ [DualMemoryManager] Persistence store save error:', err.message);
+      });
+    } else if (this.persistSqlite && this.sqliteStore) {
       try {
         this.sqliteStore.saveLearningState(this.brandId, 'workbook', content);
       } catch {
@@ -481,7 +516,11 @@ export class DualMemoryManager {
     const content = this.formatNotebook(this.notebookCache);
     writeFileSync(this.notebookPath, content, 'utf-8');
 
-    if (this.persistSqlite && this.sqliteStore) {
+    if (this.persistenceStore) {
+      void Promise.resolve(this.persistenceStore.saveLearningState(this.brandId, 'notebook', content)).catch((err) => {
+        console.warn('⚠️ [DualMemoryManager] Persistence store save error:', err.message);
+      });
+    } else if (this.persistSqlite && this.sqliteStore) {
       try {
         this.sqliteStore.saveLearningState(this.brandId, 'notebook', content);
       } catch {

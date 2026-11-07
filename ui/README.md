@@ -11,7 +11,7 @@ React 19, TypeScript, Vite 8 and Tailwind 4 frontend for WhatsApp Agent. The wor
 - Responsive layouts support desktop, tablet and phone widths. The assistant becomes a dismissible panel on smaller screens.
 - The assistant inspector collapses on desktop and opens as a drawer on smaller screens.
 - Assistant settings live on the standalone `/settings/assistant` route.
-- Outgoing receipt status comes from Baileys events, is stored in SQLite and appears as pending, sent, delivered or read indicators.
+- Outgoing receipt status comes from Baileys events, is stored in Supabase PostgreSQL (or local SQLite in offline mode) and appears as pending, sent, delivered or read indicators.
 
 ## Run
 

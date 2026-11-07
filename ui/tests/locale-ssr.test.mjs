@@ -135,7 +135,7 @@ test('Assistant approval is available in English without translating user conten
 test('Assistant settings provides a bilingual, accessible multi-section layout', () => {
   const persona = {
     name: 'Mamdouh assistant', language: 'ar-EG', tone: 'Natural', systemPrompt: 'Help with messages',
-    rules: [], model: 'gemini-2.5-flash', temperature: 0.5, minConfidence: 0.75,
+    rules: [], model: 'gemini-3.8-flash', temperature: 0.5, minConfidence: 0.75,
     simulateTypingDelay: true, minTypingDelayMs: 200, maxTypingDelayMs: 600
   };
   const props = { initialPersona: persona, onClose: () => {}, onSave: noop };
@@ -158,7 +158,7 @@ test('Assistant settings provides a bilingual, accessible multi-section layout',
 test('Models & providers is directly accessible with existing controls', () => {
   const persona = {
     name: 'Mamdouh', language: 'ar-EG', tone: 'Natural', systemPrompt: 'Help',
-    rules: [], model: 'gemini-2.5-pro', temperature: 0.5, minConfidence: 0.85,
+    rules: [], model: 'gemini-3.1-pro', temperature: 0.5, minConfidence: 0.85,
     simulateTypingDelay: false, minTypingDelayMs: 200, maxTypingDelayMs: 600,
     voiceName: 'kore'
   };
@@ -173,7 +173,7 @@ test('Models & providers is directly accessible with existing controls', () => {
     assert.match(html, /Minimum confidence/);
     assert.match(html, /Natural typing delay/);
     assert.match(html, /85%/);
-    assert.match(html, /gemini-2.5-pro/);
+    assert.match(html, /gemini-3.1-pro/);
   } finally {
     globalThis.window = previousWindow;
   }

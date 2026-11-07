@@ -1,7 +1,7 @@
 # PRODUCT.md
 
 ## Product Summary
-WhatsApp Agent (PrePilot AI) is an enterprise-grade autonomous and co-pilot conversational cockpit for WhatsApp business operations. Built on Baileys, SQLite WAL, and Google Gemini API, it provides intelligent multi-turn customer engagement, scatter-gather parallel execution, long-term contact memory, and human-in-the-loop review capabilities with a real-time reactive interface.
+WhatsApp Agent (PrePilot AI) is an enterprise-grade autonomous and co-pilot conversational cockpit for WhatsApp business operations. Built on Baileys, production Supabase PostgreSQL persistence (with local SQLite developer caching), and Google Gemini API, it provides intelligent multi-turn customer engagement, scatter-gather parallel execution, long-term contact memory, and human-in-the-loop review capabilities with a real-time reactive interface.
 
 ## Target Users & Roles
 - **Account Owner / Business Operator**: Manages system connectivity, credentials vault, master system prompts, fallback providers, and organizational settings.
@@ -25,7 +25,7 @@ WhatsApp Agent (PrePilot AI) is an enterprise-grade autonomous and co-pilot conv
 - The product will not persist passwords, API keys, OTPs, or customer credentials in contact memory; credential detection fails closed.
 
 ## Data Boundaries & State Behavior
-- **Server Authoritative State**: SQLite with Write-Ahead Logging (WAL) is the single source of truth for messages, contact dossiers, memories, audit logs, and agent personas.
+- **Server Authoritative State**: Supabase PostgreSQL is the authoritative production persistence tier (supporting dual IPv4 session and transaction poolers, pgvector embeddings, and pgmq queues), while SQLite WAL provides isolated offline developer caching.
 - **Client Cache & Optimistic State**: Local UI state manages drafts, search filtering, and drawer expansion, while Server-Sent Events (SSE) stream live turn events to clients.
 - **Credential Storage**: Protected under private authentication with bcrypt hashing, strict rate-limiting, and constant-time string comparison.
 

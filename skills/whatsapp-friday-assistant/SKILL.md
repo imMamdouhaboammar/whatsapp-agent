@@ -25,7 +25,7 @@ metadata:
 
 1. **The 100KB WhatsApp Sticker Invariant**: All WebP stickers MUST be strictly $\le 101,888$ bytes (`100KB - 512B`). The transcode engine iterates through a 6-step compression ladder (`512px @ q78` down to `256px @ q35`).
 2. **The Zero-Credential Persistence Invariant**: Stored memory strictly intercepts and rejects passwords, OTPs, API keys, tokens, PINs, and credit card patterns via Unicode-aware boundaries with HTTP 422.
-3. **The Fail-Closed Model Fallback Invariant**: Transient errors (429, 500, 502, 503, 504, 404) trigger fallback through backup models (`gemini-2.5-flash` $\to$ `gemini-2.5-pro` $\to$ `gemini-2.0-flash`), while fatal authentication errors (401, 403) fail closed immediately.
+3. **The Fail-Closed Model Fallback Invariant**: Transient errors (429, 500, 502, 503, 504, 404) trigger fallback through backup models (`gemini-3.8-flash` $\to$ `gemini-3.1-pro` $\to$ `gemini-4-argon`), while fatal authentication errors (401, 403) fail closed immediately.
 4. **The Direct Payload Formatting Invariant**: Outbound messages are sanitized for WhatsApp rendering—Markdown tables become mobile-friendly bullet points, `# Header` becomes `*Header*`, and links `[Label](url)` become `Label (url)`.
 
 ---

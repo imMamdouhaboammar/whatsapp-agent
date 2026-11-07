@@ -35,7 +35,7 @@ flowchart TD
     D -->|"Social Video URL"| G["download-social-video.js (yt-dlp + FFmpeg)"]
     D -->|"Voice Note"| H["transcribe-voice-note.js (Gemini Audio)"]
     D -->|"Text / Image Query"| I["ask-friday.js / gemini.js"]
-    I --> J["model-fallback.js (Gemini 2.5 Flash -> Backup)"]
+    I --> J["model-fallback.js (Gemini 3.8 Flash -> Backup)"]
     J --> K["format-message.js (Markdown -> WhatsApp)"]
     K --> L["Outbound Delivery"]
 ```

@@ -1,0 +1,64 @@
+name: Security Audit & GitHub Advisory Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  dependency-review:
+    name: GitHub Advisory PR Review Gate
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Dependency Review (GitHub Advisory Database)
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: always
+
+  security-audit:
+    name: Repository Dependency Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Node & Bun Dependencies
+        run: |
+          bun install
+          cd ui && bun install
+
+      - name: Install OSV-Scanner (GitHub Advisory Database)
+        run: |
+          curl -fsSL https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64 -o /usr/local/bin/osv-scanner
+          chmod +x /usr/local/bin/osv-scanner
+
+      - name: Run Dependency Audit (Fail on High or Critical)
+        run: bun run security:audit
+
+      - name: Audit Python Worker Dependencies (pip-audit)
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          pip-audit -r workers/media-python/requirements.txt

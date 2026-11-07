@@ -3,7 +3,7 @@ import { SQL } from 'bun';
 
 const supabaseUrl = process.env.SUPABASE_URL || '';
 const supabaseKey = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || '';
-const databaseUrl = process.env.DATABASE_URL || '';
+const databaseUrl = process.env.DATABASE_TRANSACTION_URL || process.env.DATABASE_URL || '';
 
 let cachedClient: SupabaseClient | null = null;
 let cachedSql: SQL | null = null;
@@ -29,7 +29,7 @@ export function getPostgresClient(maxDepth = 1): SQL {
     throw new Error('Database client requires DATABASE_URL in environment');
   }
   if (!cachedSql) {
-    cachedSql = new SQL(databaseUrl);
+    cachedSql = new SQL(databaseUrl, { max: 3, idleTimeout: 5 });
   }
   return cachedSql;
 }

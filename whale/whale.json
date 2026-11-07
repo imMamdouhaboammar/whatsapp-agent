@@ -1,0 +1,185 @@
+{
+  "version": 1,
+  "me": {
+    "name": "Mamdouh Aboammar",
+    "company": "PrePilot AI",
+    "email": "contact@prepilot-system-agency.space",
+    "address": "PrePilot System Agency, Dubai Internet City, Dubai, UAE",
+    "product": "PrePilot WhatsApp AI Copilot",
+    "does": "Autonomous conversational copilot for WhatsApp business operations with real-time human-in-the-loop oversight",
+    "value_line": "Cuts customer response time from 4 hours to 3 seconds while saving over 65% of support and sales payroll.",
+    "target_customers": 3
+  },
+  "problems": [
+    {
+      "problem": "24/7 D2C customer support & order tracking",
+      "who": "E-commerce & retail brands",
+      "pay_month": 4500.0,
+      "source": null,
+      "estimate": true,
+      "basis": "3 customer support agents across two shifts at ,500/mo each or agency BPO retainer",
+      "notes": "High inquiry volume during evenings/weekends; delayed answers lead to abandoned carts and order cancellations",
+      "phrase": "manage 24/7 WhatsApp customer support and order tracking",
+      "picked": false,
+      "id": "24-7-d2c-customer-support-order-tracking"
+    },
+    {
+      "problem": "Real estate lead qualification & viewing booking",
+      "who": "Mid-market property brokerages",
+      "pay_month": 5200.0,
+      "source": null,
+      "estimate": true,
+      "basis": "2 lead coordinators at ,600/mo handling inbound WhatsApp portal inquiries",
+      "notes": "Inbound leads go cold after 15 minutes; agents waste 70% of time fielding repetitive queries instead of showing properties",
+      "phrase": "qualify property leads and schedule agent viewings on WhatsApp",
+      "picked": true,
+      "id": "real-estate-lead-qualification-viewing-booking"
+    },
+    {
+      "problem": "Clinic appointment scheduling & no-show recovery",
+      "who": "Dental & aesthetic clinics",
+      "pay_month": 3800.0,
+      "source": null,
+      "estimate": true,
+      "basis": "2 front-desk receptionists at ,900/mo spending majority of shift on WhatsApp chat",
+      "notes": "18-25% no-show rate costs clinics thousands weekly; automated WhatsApp reminders and rescheduling recover up to 40% of missed slots",
+      "phrase": "handle patient appointment bookings and WhatsApp reminders",
+      "picked": false,
+      "id": "clinic-appointment-scheduling-no-show-recovery"
+    }
+  ],
+  "companies": [
+    {
+      "name": "Apex Luxury Properties",
+      "website": "https://apexluxury.example.com",
+      "what": "High-end residential brokerage specializing in waterfront and prime developments",
+      "problem_id": "real-estate-lead-qualification-viewing-booking",
+      "spend_line": "2 full-time lead coordinators and property portal lead routing software",
+      "spend_month": 5200.0,
+      "spend_source": "Industry standard brokerage staffing benchmark (,600/mo coordinator salary)",
+      "notes": "Receives 80-120 inbound WhatsApp inquiries daily from Property Finder, Bayut, and Instagram ads",
+      "id": "apex-luxury-properties"
+    },
+    {
+      "name": "Mirador Realty Group",
+      "website": "https://miradorrealty.example.com",
+      "what": "Commercial and off-plan residential brokerage with 45 licensed agents",
+      "problem_id": "real-estate-lead-qualification-viewing-booking",
+      "spend_line": "Lead intake desk and after-hours triage service",
+      "spend_month": 5200.0,
+      "spend_source": "Brokerage operating expense filings",
+      "notes": "Weekend leads wait an average of 6 hours; buyers frequently sign with competitor agents",
+      "id": "mirador-realty-group"
+    },
+    {
+      "name": "Vanguard Prime Real Estate",
+      "website": "https://vanguardprime.example.com",
+      "what": "Boutique private client property consultancy",
+      "problem_id": "real-estate-lead-qualification-viewing-booking",
+      "spend_line": "Front-desk receptionists fielding WhatsApp chats",
+      "spend_month": 4800.0,
+      "spend_source": "Published clinic and brokerage administrative salary benchmarks",
+      "notes": "High-net-worth buyers expect sub-minute responses and bilingual English/Arabic assistance",
+      "id": "vanguard-prime-real-estate"
+    }
+  ],
+  "people": [
+    {
+      "company_id": "apex-luxury-properties",
+      "name": "Tariq Mansour",
+      "title": "Managing Director",
+      "decides": "signs",
+      "email": "tariq.mansour@apexluxury.example.com",
+      "email_source": "https://apexluxury.example.com/leadership",
+      "note": "Founder and principal license holder; signs off on major software and agency contracts",
+      "do_not_contact": false,
+      "id": "tariq-mansour"
+    },
+    {
+      "company_id": "apex-luxury-properties",
+      "name": "Layla Al-Hassan",
+      "title": "Head of Sales",
+      "decides": "pain",
+      "email": "layla.hassan@apexluxury.example.com",
+      "email_source": "https://apexluxury.example.com/team",
+      "note": "Manages 25 brokers; complains that agents lose 3 hours a day answering dead-end WhatsApp inquiries",
+      "do_not_contact": false,
+      "id": "layla-al-hassan"
+    },
+    {
+      "company_id": "mirador-realty-group",
+      "name": "Marcus Vance",
+      "title": "CEO & Managing Partner",
+      "decides": "signs",
+      "email": "marcus.vance@miradorrealty.example.com",
+      "email_source": "https://miradorrealty.example.com/leadership",
+      "note": "Oversees 45 brokers and commercial investments; looking to modernize lead operations",
+      "do_not_contact": false,
+      "id": "marcus-vance"
+    },
+    {
+      "company_id": "vanguard-prime-real-estate",
+      "name": "Richard Sterling",
+      "title": "Principal Partner",
+      "decides": "signs",
+      "email": "richard.sterling@vanguardprime.example.com",
+      "email_source": "https://vanguardprime.example.com/about",
+      "note": "Boutique ultra-luxury advisor; prioritizes confidentiality and sub-minute response",
+      "do_not_contact": false,
+      "id": "richard-sterling"
+    }
+  ],
+  "deals": [
+    {
+      "company_id": "apex-luxury-properties",
+      "person_id": "tariq-mansour",
+      "title": "Apex Founding Customer - WhatsApp AI Copilot",
+      "stage": "found",
+      "amount": 18000.0,
+      "next_step": null,
+      "created": "2026-11-08",
+      "ships_by": null,
+      "paid_on": null,
+      "lost_reason": null,
+      "id": "apex-deal"
+    },
+    {
+      "company_id": "mirador-realty-group",
+      "person_id": "marcus-vance",
+      "title": "Mirador Founding Customer - WhatsApp AI Copilot",
+      "stage": "found",
+      "amount": 18000.0,
+      "next_step": null,
+      "created": "2026-11-08",
+      "ships_by": null,
+      "paid_on": null,
+      "lost_reason": null,
+      "id": "mirador-deal"
+    },
+    {
+      "company_id": "vanguard-prime-real-estate",
+      "person_id": "richard-sterling",
+      "title": "Vanguard Founding Customer - WhatsApp AI Copilot",
+      "stage": "found",
+      "amount": 16000.0,
+      "next_step": null,
+      "created": "2026-11-08",
+      "ships_by": null,
+      "paid_on": null,
+      "lost_reason": null,
+      "id": "vanguard-deal"
+    }
+  ],
+  "activities": [],
+  "offer": {
+    "item": "PrePilot WhatsApp AI Copilot 12-Month License & CRM Integration",
+    "ships_in_days": 30,
+    "refund_line": "Every dollar back immediately if it does not ship by the promised date.",
+    "not_built_line": "It is not finished yet. The core WhatsApp engine and dashboard are functional, and custom qualification logic and CRM sync will be built to your requirements."
+  },
+  "payments": [],
+  "requirements": [],
+  "case_studies": [],
+  "marketing_spent": null,
+  "suppression": []
+}

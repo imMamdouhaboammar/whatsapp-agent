@@ -18,6 +18,7 @@ import { FableFunnelEngine, FunnelRegistry } from './funnel';
 import { DualMemoryManager } from './domain/learning-memory';
 import { ReflectionEngine } from './ai/reflection-engine';
 import { ReflectionWorker } from './agent/reflection-worker';
+import { PostgresLearningStore } from './persistence/postgres/learning-store';
 import { join } from 'node:path';
 
 export async function createFableWhatsAppAgent(options: {
@@ -47,10 +48,21 @@ export async function createFableWhatsAppAgent(options: {
 
   const messageSplitter = new MessageSplitter();
 
+  let postgresLearningStore: PostgresLearningStore | undefined;
+  if (process.env.DATABASE_URL) {
+    try {
+      postgresLearningStore = new PostgresLearningStore({ databaseUrl: process.env.DATABASE_URL });
+    } catch (err: any) {
+      console.warn('⚠️ [Fable Agentic WhatsApp] Failed to initialize PostgresLearningStore:', err.message);
+    }
+  }
+
   const dualMemoryManager = new DualMemoryManager({
     storageDir: dataDir === ':memory:' ? './data/learning' : join(dataDir, 'learning'),
-    sqliteStore: memoryStore.getSqliteStore(),
-    persistSqlite: true
+    persistenceStore: postgresLearningStore,
+    sqliteStore: postgresLearningStore ? undefined : memoryStore.getSqliteStore(),
+    persistSqlite: !postgresLearningStore,
+    brandId: options.capabilityAutopilotBrandId ?? process.env.AGENT_AUTOPILOT_BRAND_ID ?? 'default'
   });
 
   const reflectionEngine = new ReflectionEngine(geminiClient, dualMemoryManager);
@@ -59,6 +71,8 @@ export async function createFableWhatsAppAgent(options: {
     memoryStore,
     memoryManager: dualMemoryManager,
     reflectionEngine,
+    persistenceStore: postgresLearningStore,
+    brandId: options.capabilityAutopilotBrandId ?? process.env.AGENT_AUTOPILOT_BRAND_ID ?? 'default',
     idleThresholdMs: 15 * 60 * 1000 // 15 mins cold thread threshold
   });
   reflectionWorker.startPeriodicSweep(60_000);

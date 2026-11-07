@@ -1,71 +1,102 @@
-# Fable Agentic WhatsApp (ZapFast Edition)
+# Fable Agentic WhatsApp
 
-[![DeepScan grade](https://deepscan.io/api/teams/31047/projects/32697/branches/1096954/badge/grade.svg)](https://deepscan.io/dashboard#view=project&tid=31047&pid=32697&bid=1096954)
+> Browserless WhatsApp copilot and autonomous moderator with real-time SSE streaming, multi-model fallback, SQLite WAL and Supabase persistence, and Model Context Protocol (MCP) support.
 
-> A browserless, fully agentic WhatsApp client and AI supervisor powered by Gemini 2.5, Google Cloud CLI ADC, Baileys socket transport, and the Model Context Protocol (MCP).
+## Core capabilities
 
----
+- **Socket transport**: Browserless WebSocket engine powered by `@whiskeysockets/baileys` directly over the Noise Protocol (~80 MB RAM vs Chromium or Puppeteer). Supports QR and 8-digit phone pairing.
+- **Multi-model fallback**: Google Gemini (`gemini-4-argon`, `gemini-3.1-pro`, `gemini-3.8-flash`) via `gcloud` Application Default Credentials (ADC) or `GEMINI_API_KEY`. Fails closed on authentication errors (401/403); falls back automatically on rate limits (429) and upstream server errors (5xx).
+- **Human cadence simulation**: Inbound burst accumulator fuses rapid sequential messages into a single turn. Multi-bubble message splitting and randomized typing delays (1500 to 4500 ms) reflect natural conversational pacing.
+- **Push-to-talk voice notes**: Inbound audio notes (`audio/ogg`) are transcribed directly via Gemini. Outbound voice synthesis generates authentic WhatsApp voice notes (`ptt: true`) using Google Cloud Text-to-Speech.
+- **Continuous learning engine**: Background reflection worker runs structured synthesis after 15 minutes of thread inactivity, extracting procedural rules and semantic contact preferences into durable memory with automatic distillation and fail-closed credential scrubbing.
+- **Tri-mode operational moderation**:
+  - *Autopilot*: Automatic responses with simulated typing delay.
+  - *Copilot*: Draft preparation with confidence scores and reasoning traces for one-click human approval.
+  - *Human*: Silent observation with manual operator control.
+- **Model Context Protocol (MCP)**: Native stdio and HTTP MCP server exposing 10 tools for Claude Desktop, Gemini CLI, Cursor, and custom agent integrations.
+- **Dual persistence tiers**: Authoritative production persistence in Supabase PostgreSQL (with dual IPv4 session and transaction pooling, 15 active extensions including pgvector and pgmq); standalone offline caching and test fixtures in SQLite WAL.
+- **Web cockpit**: React 19 interface with Tailwind CSS, bilingual layout (Arabic RTL and English LTR), real-time Server-Sent Events (SSE), Brand Brain manager, and token-gated access.
 
-## Capabilities
-
-- **Zero-Browser Socket Transport**: Powered by `@whiskeysockets/baileys` directly over WebSockets and the Noise Protocol. Consumes ~80MB RAM with zero Chromium or Puppeteer overhead (unlike legacy `whatsapp-web.js`).
-- **Google Cloud & Gemini 2.5 Native**: Automatically resolves credentials via `gcloud auth print-access-token` and the active `gcloud` project. Supports `gemini-2.5-flash` and `gemini-2.5-pro` with multimodal voice note comprehension.
-- **Human-in-the-Loop Moderation**:
-  - **Auto-Pilot Mode**: AI replies automatically with simulated typing delay and natural reactions.
-  - **Co-Pilot Mode**: AI prepares response drafts with confidence scores and reasoning for 1-click human approval.
-  - **Human-Only Mode**: AI remains silent; you chat manually.
-- **Model Context Protocol (MCP) Server**: Exposes 7 standard tools over `stdio` and HTTP for Gemini CLI, Claude Desktop, Cursor, and Antigravity.
-- **Multimodal Voice Notes**: Inbound voice notes (`audio/ogg`) are transcribed and analyzed directly using Gemini.
-- **Delightful Real-Time UI**: Built with Vite, React, and Tailwind CSS. Features live QR pairing, 8-digit phone pairing codes, live chat threads, agent thoughts inspector, and a test message simulator.
-
----
-
-## Quickstart
+## Quick start
 
 ### Prerequisites
-- [Bun](https://bun.sh) (v1.2+)
-- [Google Cloud SDK](https://cloud.google.com/sdk) logged in (`gcloud auth login`), or a `GEMINI_API_KEY`.
 
-### 1. Installation
+- [Bun](https://bun.sh) (v1.2.0 or later)
+- Google Cloud SDK authenticated (`gcloud auth login`) or a `GEMINI_API_KEY`
+- Supabase PostgreSQL database URL for production persistence (or local SQLite for standalone offline development)
+- Optional: Python 3.9+ for bounded document extraction (`workers/media-python`)
+
+### Installation
+
 ```bash
 bun install
-bun run build # builds the React UI
+bun run build
 ```
 
-### 2. Run Environment Doctor
+### Environment diagnostics
+
 ```bash
 bun run cli doctor
 ```
 
-### 3. Launch Web UI & Agent Engine
+### Starting the application
+
 ```bash
+# Start in development mode with hot reloading
 bun run dev
+
+# Or start the production server
+bun run start
 ```
-Open **[http://localhost:3000](http://localhost:3000)** in your browser:
-1. Click **ربط جهاز (Link Device)**.
-2. Scan the live QR code with your phone or request an 8-digit phone pairing code.
-3. Configure your persona or start interacting!
 
-### Self-hosted dashboard access
+The web cockpit runs at `http://localhost:3000`.
 
-The web app listens on `127.0.0.1` by default. To make it reachable from another device, set `HOST` and a random `AGENT_DASHBOARD_TOKEN` of at least 24 characters in the environment. Put the app behind an HTTPS reverse proxy and set `AGENT_ALLOWED_ORIGINS` to its public origin. The owner signs in using the token on the dashboard. The token stays out of browser storage and the URL; the server issues a temporary HttpOnly session cookie.
+### Terminal testing
 
-Brand Brain has a separate `AGENT_CAPABILITIES_OWNER_TOKEN` for its owner APIs. Set it before connecting private knowledge sources. See [`.env.example`](.env.example) for these settings.
-
-### PostgreSQL / Supabase data migration (offline preview)
-
-The app currently runs on SQLite. A read-only inventory tool, private PostgreSQL schema, and verified offline import path are available for preparing a future cutover. Follow [the migration procedure](docs/POSTGRES_MIGRATION.md) and [the implementation plan](docs/plans/2026-11-06-postgresql-supabase-migration.md). Do not switch a live business to PostgreSQL until runtime adapters and a live database test have passed.
-
-### 4. Test Gemini Moderator from Terminal
 ```bash
+# Test the Gemini moderator decision pipeline without sending a message
 bun run cli simulate "السلام عليكم، هو الكورس متاح حالياً وبكام؟"
+
+# Pair a WhatsApp companion client from the command line
+bun run cli pair
 ```
 
----
+## Configuration
 
-## MCP Server Integration
+Set environment variables in `.env`. See [`.env.example`](.env.example) for default values.
 
-To connect external AI assistants (e.g. Claude Desktop, Cursor, Gemini CLI):
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `PORT` | number | `3000` | HTTP port for REST API and web UI |
+| `HOST` | string | `127.0.0.1` | Network interface to bind |
+| `DATA_DIR` | string | `./data` | Directory for SQLite database and local state |
+| `GEMINI_API_KEY` | string | | Google Gemini Developer API key (optional if using `gcloud` ADC) |
+| `GOOGLE_CLOUD_PROJECT` | string | | Google Cloud project ID for Vertex AI |
+| `GOOGLE_CLOUD_LOCATION` | string | `us-central1` | Regional location for Vertex AI endpoints |
+| `GEMINI_MODEL` | string | `gemini-4-argon` | Primary model identifier |
+| `AGENT_DASHBOARD_TOKEN` | string | | Secret token (24+ characters) required to access web cockpit |
+| `AGENT_ALLOWED_ORIGINS` | string | | Comma-separated allowed origins when running behind a reverse proxy |
+| `DATABASE_URL` | string | | PostgreSQL connection string (Supavisor pooler port 5432) |
+| `DATABASE_TRANSACTION_URL` | string | | Supabase transaction pooler connection string (port 6543) |
+| `AGENT_CAPABILITIES_OWNER_TOKEN` | string | | Secret token protecting Brand Brain capability endpoints |
+| `AGENT_AUTOPILOT_BRAND_ID` | string | `default` | Tenant identifier for multi-brand memory isolation |
+| `MIN_TYPING_DELAY_MS` | number | `2000` | Minimum simulated typing delay |
+| `MAX_TYPING_DELAY_MS` | number | `5000` | Maximum simulated typing delay |
+
+## Web cockpit access and security
+
+The web cockpit listens on `127.0.0.1` by default. When deployed on a remote host:
+
+1. Configure `HOST=0.0.0.0` and set `AGENT_DASHBOARD_TOKEN` to a secret of at least 24 characters.
+2. Route traffic through an HTTPS reverse proxy (such as Cloudflare or Nginx).
+3. Set `AGENT_ALLOWED_ORIGINS` to the public HTTPS domain.
+4. The web application authenticates using `AGENT_DASHBOARD_TOKEN` and issues an `HttpOnly`, `SameSite=Strict` session cookie.
+
+Brand Brain management APIs are separately protected by `AGENT_CAPABILITIES_OWNER_TOKEN`.
+
+## MCP server integration
+
+To use WhatsApp Agent tools inside Claude Desktop, Cursor, or Gemini CLI, register the stdio runner:
 
 ```json
 {
@@ -78,53 +109,129 @@ To connect external AI assistants (e.g. Claude Desktop, Cursor, Gemini CLI):
 }
 ```
 
-### Registered MCP Tools
-1. `whatsapp_list_chats`: List recent conversations and unread messages.
-2. `whatsapp_get_messages`: Read chat history and voice note transcriptions.
-3. `whatsapp_send_message`: Send messages as a human moderator.
-4. `whatsapp_send_reaction`: React with emojis (👍, ❤️, etc.).
-5. `whatsapp_get_status`: Inspect connection state and pending drafts.
-6. `whatsapp_set_chat_mode`: Switch chat between autopilot, copilot, and human modes.
-7. `whatsapp_approve_draft`: 1-click approve a pending draft reply.
+### Available MCP tools
 
----
+| Tool | Parameters | Description |
+|---|---|---|
+| `whatsapp_list_chats` | `limit?: number, unreadOnly?: boolean` | List active conversations, contact names, unread message counts, and current agent modes. |
+| `whatsapp_get_messages` | `chatId: string, limit?: number` | Retrieve message history, timestamps, sender IDs, and voice note transcriptions. |
+| `whatsapp_send_message` | `chatId: string, text: string, replyToMessageId?: string` | Send a WhatsApp message with simulated human typing cadence. |
+| `whatsapp_send_reaction` | `chatId: string, messageId: string, emoji: string` | Send an emoji reaction to a specific message. |
+| `whatsapp_get_status` | *(none)* | Inspect companion socket connection status, phone number, and pending drafts. |
+| `whatsapp_set_chat_mode` | `chatId: string, mode: "autopilot" \| "copilot" \| "human"` | Set agent operation mode for a specific conversation. |
+| `whatsapp_approve_draft` | `draftId: string, editedText?: string` | Approve and dispatch a pending copilot draft reply. |
+| `whatsapp_manage_memory` | `chatId: string, action: string, content?: string, index?: number` | Inspect, save, or delete long-term contact preferences with credential filtering. |
+| `whatsapp_set_chat_style` | `chatId: string, style: string` | Configure tone: `professional`, `casual`, `playful`, `assertive`, or `empathetic`. |
+| `whatsapp_funnel_scatter_gather` | `method: string, payload?: object, queryParams?: object` | Execute concurrent scatter-gather dispatch across external systems with circuit-breaking. |
+
+## Command-line interface
+
+```bash
+# Verify environment, storage paths, and gcloud ADC credentials
+bun run cli doctor
+
+# Simulate inbound message processing and print reasoning traces
+bun run cli simulate "Can I get pricing for the enterprise tier?"
+
+# Pair a WhatsApp companion client via QR code or phone pairing code
+bun run cli pair
+
+# Run PostgreSQL schema migrations
+bun run db:postgres migrate
+
+# Import existing SQLite chat records into PostgreSQL offline
+bun run db:postgres import
+
+# Execute polyglot dependency vulnerability audit
+bun run security:audit
+```
 
 ## Architecture
 
 ```
 whatsapp-agent/
 ├── src/
-│   ├── index.ts               # Core server & orchestrator
-│   ├── cli.ts                 # Terminal commands (doctor, simulate, pair)
-│   ├── transport/
-│   │   └── whatsapp-socket.ts # Baileys browserless WebSocket connection
-│   ├── ai/
-│   │   ├── gemini-client.ts   # Vertex AI & Google Gen AI client with gcloud ADC
-│   │   ├── moderator-agent.ts # Human moderator persona & back-and-forth loop
-│   │   └── audio-transcriber.ts # Voice note transcription
-│   ├── domain/
-│   │   ├── permission-engine.ts # Deterministic policy evaluation
-│   │   ├── rate-limiter.ts    # Human typing delays & send queue
-│   │   ├── memory-store.ts    # Chat persistence & draft store
-│   │   └── types.ts           # Domain models
-│   ├── mcp/
-│   │   ├── server.ts          # Model Context Protocol definition
-│   │   └── cli.ts             # Stdio runner for external AI clients
-│   └── server/
-│       ├── api.ts             # REST API
-│       └── sse.ts             # Real-time event streaming
-├── tests/                     # Bun tests for core behavior and APIs
-└── ui/                        # Vite + React + Tailwind UI
+│   ├── index.ts                 # Server setup, Hono routes, SSE streaming, turn loop
+│   ├── cli.ts                   # CLI entry point (doctor, simulate, pair)
+│   ├── agent/                   # Autonomous workflows and background services
+│   │   ├── autonomous-operator.ts # Capability execution and goal planning
+│   │   ├── brand-knowledge.ts     # Document and policy management
+│   │   ├── capabilities-api.ts    # Protected brand data and configuration endpoints
+│   │   ├── reflection-worker.ts   # Background thread reflection for cold conversations
+│   │   └── turn-coordinator.ts    # Orchestration between moderator and capabilities
+│   ├── ai/                      # Model integration and generation
+│   │   ├── adaptive-style.ts      # Conversational tone adaptation
+│   │   ├── audio-transcriber.ts   # Audio transcription via Gemini
+│   │   ├── gemini-client.ts       # Vertex AI and Google Gen AI client with ADC
+│   │   ├── model-fallback.ts      # Fail-closed auth and zero-downtime retry fallback
+│   │   ├── moderator-agent.ts     # Persona and moderation decision engine
+│   │   ├── reflection-engine.ts   # Distillation and rule extraction
+│   │   └── voice-synthesizer.ts   # Text-to-speech voice note synthesis
+│   ├── domain/                  # Business logic and local persistence
+│   │   ├── burst-accumulator.ts   # Rapid sequential message fuser
+│   │   ├── learning-memory.ts     # Dual markdown and database learning store
+│   │   ├── memory-store.ts        # SQLite storage for messages, chats, and drafts
+│   │   ├── message-splitter.ts    # Multi-bubble message segmenter
+│   │   ├── permission-engine.ts   # Deterministic intent-to-action policy rules
+│   │   ├── rate-limiter.ts        # Human typing cadence delays and dispatch queue
+│   │   ├── types.ts               # Core domain models and interfaces
+│   │   └── user-memory.ts         # Contact facts with credential screening
+│   ├── funnel/                  # External system fan-out
+│   │   ├── circuit-breaker.ts     # Per-target failure tracking and recovery
+│   │   ├── engine.ts              # Scatter-gather and hedged race executor
+│   │   └── registry.ts            # External integration endpoints
+│   ├── mcp/                     # Model Context Protocol
+│   │   ├── cli.ts                 # Stdio runner for external AI assistants
+│   │   └── server.ts              # MCP tool registrations and handlers
+│   ├── persistence/             # Database access
+│   │   └── postgres/              # PostgreSQL schema migrations and learning store
+│   └── server/                  # HTTP transport
+│       ├── api.ts                 # REST endpoints
+│       ├── dashboard-auth.ts      # Token authentication and session cookies
+│       └── sse.ts                 # Server-Sent Events broadcaster
+├── ui/                          # Web cockpit (Vite, React 19, Tailwind CSS, Astryx)
+│   └── src/
+│       ├── components/            # ChatThread, ModeratorDrawer, BrandBrain, etc.
+│       └── i18n.tsx               # Bilingual layout (Arabic RTL and English LTR)
+├── workers/                     # Bounded microservices
+│   └── media-python/            # Document extraction worker (CSV, Excel, PDF)
+└── tests/                       # Automated test suites
 ```
 
----
+## Verification and testing
+
+Execute automated verification before submitting pull requests:
+
+```bash
+# Run backend test suite
+bun test
+
+# Run UI SSR component tests
+cd ui && bun test:ui
+
+# Verify frontend build and type checking
+cd ui && bun run build
+
+# Run vulnerability scan across all package lockfiles
+bun run security:audit
+
+# Run design and anti-slop governance audit
+bun .agents/skills/unslop-preflight/bin/cli.js audit
+```
+
+## Migration and enterprise storage
+
+The application uses Supabase PostgreSQL as its production persistence tier and SQLite with write-ahead logging for standalone developer caching:
+
+- Run schema migrations: `bun run db:postgres --schema`
+- Perform offline migration from SQLite: `bun run db:postgres --import --apply --data-dir ./data --legacy-brand <brand-id>`
+- See [PostgreSQL migration guide](docs/POSTGRES_MIGRATION.md) for details on IPv4 pooler setup, schema namespaces, and rollback steps.
 
 ## License
 
-The project-authored source code in this repository is licensed under the [Mozilla Public License 2.0](LICENSE) (`MPL-2.0`).
+Source code authored in this repository is licensed under the [Mozilla Public License 2.0](LICENSE) (`MPL-2.0`).
 
-The core is free to use, modify, and self-host, including for commercial purposes. When distributing modifications to MPL-covered files, the MPL source-availability and notice requirements apply. Separately developed extensions, plugins, and skills may have their own licenses, including commercial licenses.
-
-See [MVP launch readiness](docs/MVP_LAUNCH_READINESS.md) for verified capabilities, platform limits and the remaining pilot acceptance checks.
-
-See [Licensing and Extensions](docs/LICENSING.md) for the intended free-core and optional paid-add-on model. Third-party dependencies retain their respective licenses, and this license does not grant rights to WhatsApp or Meta trademarks.
+- Free to run, modify, and self-host for commercial and private use.
+- Modifications to MPL-covered files must be made available under the same license when distributed.
+- Separately developed extensions, plugins, and custom skills may maintain their own licensing terms.
+- See [Licensing and Extensions](docs/LICENSING.md) for details. WhatsApp and Meta trademarks belong to their respective owners.

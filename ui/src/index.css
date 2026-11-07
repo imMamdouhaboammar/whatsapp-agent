@@ -86,9 +86,9 @@ button, input, textarea { -webkit-tap-highlight-color: transparent; }
 .wa-filter.is-active { background: var(--wa-green); border-color: var(--wa-green); color: #fff; }
 .wa-filter-count { min-width: 16px; text-align: center; font-size: 10px; font-weight: 800; }
 .wa-chat-list { overflow: auto; flex: 1; min-height: 0; }
-.wa-chat-item { width: 100%; min-height: 82px; padding: 12px 13px; text-align: start; border: 0; border-bottom: 1px solid #f0f1f1; background: white; display: flex; align-items: flex-start; gap: 11px; color: inherit; transition: background-color .16s ease; }
+.wa-chat-item { width: 100%; min-height: 82px; padding: 12px 13px; text-align: start; border: 0; border-bottom: 1px solid #f0f1f1; background: white; display: flex; align-items: flex-start; gap: 11px; color: inherit; transition: background-color .16s ease, border-color .16s ease; }
 .wa-chat-item:hover { background: #f5f9f7; }
-.wa-chat-item.is-selected { background: #e5f6e9; }
+.wa-chat-item.is-selected { background: #e5f6e9; border-inline-start: 3px solid var(--wa-green); }
 .wa-avatar { display: inline-grid; place-items: center; flex: none; overflow: hidden; border-radius: 50%; color: #225b56; font-size: 18px; font-weight: 750; background: #cde4dd; }
 .wa-avatar img { width: 100%; height: 100%; object-fit: cover; }
 .wa-avatar-chat { width: 46px; height: 46px; }
@@ -200,9 +200,10 @@ button, input, textarea { -webkit-tap-highlight-color: transparent; }
 .wa-draft-edit textarea { resize: vertical; outline: 0; min-height: 90px; }
 .wa-draft-edit textarea:focus { border-color: var(--wa-green); }
 .wa-draft-actions { display: flex; gap: 8px; align-items: stretch; }
-.wa-primary-button, .wa-secondary-button { min-height: 42px; border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 12px; font-size: 12px; font-weight: 750; border: 1px solid transparent; transition: background-color .16s ease; }
+.wa-primary-button, .wa-secondary-button { min-height: 42px; border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 12px; font-size: 12px; font-weight: 750; border: 1px solid transparent; transition: background-color .16s ease, transform .12s cubic-bezier(0.23, 1, 0.32, 1); }
 .wa-primary-button { background: var(--wa-green); color: #fff; }
 .wa-primary-button:hover:not(:disabled) { background: var(--wa-green-dark); }
+.wa-primary-button:active:not(:disabled), .wa-secondary-button:active:not(:disabled), .wa-send-button:active:not(:disabled), .wa-icon-button:active, .wa-segmented button:active { transform: scale(0.97); }
 .wa-secondary-button { color: #374b52; background: #fff; border-color: #cbd5d8; }
 .wa-secondary-button:hover:not(:disabled) { background: #f3f6f5; }
 .wa-draft-actions .wa-primary-button,
@@ -233,7 +234,7 @@ button, input, textarea { -webkit-tap-highlight-color: transparent; }
 .wa-inspector-close { position: absolute; display: grid; inset-inline-end: 7px; top: 12px; z-index: 2; }
 .wa-scrim { display: none; }
 
-.wa-modal-backdrop { position: fixed; inset: 0; z-index: 100; padding: 20px; display: grid; place-items: center; background: #142b2a80; }
+.wa-modal-backdrop { position: fixed; inset: 0; z-index: 100; padding: 20px; display: grid; place-items: center; background: #142b2a80; backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
 .wa-modal { width: min(100%, 470px); max-height: min(90dvh, 950px); display: flex; flex-direction: column; background: white; border: 1px solid #dce5e1; border-radius: 18px; box-shadow: 0 22px 64px #0e2d2b30; overflow: hidden; }
 .wa-modal-medium { width: min(100%, 570px); }
 .wa-modal-wide { width: min(100%, 740px); }

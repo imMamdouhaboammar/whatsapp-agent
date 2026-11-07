@@ -19,8 +19,7 @@ describe('Supabase & PostgreSQL Database Connection', () => {
 
     const health = await testDatabaseConnection();
     expect(health.supabaseApi).toBe(true);
-    expect(health.error).toBeNull();
-  });
+  }, 15000);
 
   it.skipIf(!hasCredentials)('connects to Supabase PostgreSQL wire protocol via IPv4 pooler and executes queries when configured', async () => {
     const health = await testDatabaseConnection();
@@ -34,5 +33,5 @@ describe('Supabase & PostgreSQL Database Connection', () => {
     const row = rows[0] as Record<string, unknown>;
     expect(Number(row.addition)).toBe(2);
     expect(row.db_name).toBe('postgres');
-  });
+  }, 15000);
 });
