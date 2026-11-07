@@ -15,7 +15,7 @@ async function doctor() {
     const token = (await Bun.$`gcloud auth print-access-token`.text()).trim();
     console.log(`✓ Google Cloud CLI: Authenticated`);
     console.log(`  Active Project: ${project}`);
-    console.log(`  Access Token: Valid (${token.substring(0, 8)}...)`);
+    console.log(`  Access Credential: Valid (active)`);
   } catch {
     if (process.env.GEMINI_API_KEY) {
       console.log('✓ Gemini API Key: Configured in environment');

@@ -192,7 +192,7 @@ export class SqliteStore {
   }
 
   getChat(id: string): ChatSummary | undefined {
-    const row = this.db.query('SELECT * FROM chats WHERE id = ?;').get(id) as any;
+    const row = this.db.query('SELECT * FROM chats WHERE id = ? LIMIT 1;').get(id) as any;
     if (!row) return undefined;
     return {
       id: row.id,
@@ -414,7 +414,7 @@ export class SqliteStore {
   }
 
   getDossier(chatId: string): ContactDossier | undefined {
-    const row = this.db.query('SELECT * FROM contact_dossiers WHERE chat_id = ?;').get(chatId) as any;
+    const row = this.db.query('SELECT * FROM contact_dossiers WHERE chat_id = ? LIMIT 1;').get(chatId) as any;
     if (!row) return undefined;
     return {
       chatId: row.chat_id,
@@ -487,7 +487,7 @@ export class SqliteStore {
   }
 
   getDraft(id: string): AgentDraft | undefined {
-    const row = this.db.query('SELECT * FROM drafts WHERE id = ?;').get(id) as any;
+    const row = this.db.query('SELECT * FROM drafts WHERE id = ? LIMIT 1;').get(id) as any;
     if (!row) return undefined;
     return {
       id: row.id,

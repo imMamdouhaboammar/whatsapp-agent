@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { LocaleContext, type Language } from './locale-context';
+import { ConfigProvider } from '@lobehub/ui';
+// react-doctor-disable-next-line react-doctor/use-lazy-motion
+import { motion } from 'motion/react';
 const STORAGE_KEY = 'whatsapp-agent-language';
 
 function initialLanguage(): Language {
@@ -32,5 +35,11 @@ export function LocaleProvider({ children, initial }: { children: ReactNode; ini
     tr
   }), [language, tr]);
 
-  return <LocaleContext.Provider value={value}>{children}</LocaleContext.Provider>;
+  return (
+    <LocaleContext.Provider value={value}>
+      <ConfigProvider motion={motion} direction={value.direction} locale={value.language} enableCustomFonts={false}>
+        {children}
+      </ConfigProvider>
+    </LocaleContext.Provider>
+  );
 }

@@ -28,11 +28,11 @@ export class QualityLoop {
   this.db.query('INSERT OR REPLACE INTO agent_evaluations(brand_id,scenario_id,intent,resolved,supported,missing_source,question_hash,created_at) VALUES(?,?,?,?,?,?,?,?)').run(event.brandId,event.scenarioId,event.intent,event.resolved?1:0,event.supported?1:0,event.missingSource??null,questionHash,Date.now());
  }
  gaps(brandId:string):Array<{intent:string;missingSource:string;count:number}> {
-  const rows=this.db.query('SELECT intent,missing_source,COUNT(*) AS count FROM agent_evaluations WHERE brand_id=? AND resolved=0 AND missing_source IS NOT NULL GROUP BY intent,missing_source ORDER BY count DESC').all(brandId) as any[];
+  const rows=this.db.query('SELECT intent,missing_source,COUNT(*) AS count FROM agent_evaluations WHERE brand_id=? AND resolved=0 AND missing_source IS NOT NULL GROUP BY intent,missing_source ORDER BY count DESC LIMIT 500').all(brandId) as any[];
   return rows.map(r=>({intent:r.intent,missingSource:r.missing_source,count:r.count}));
  }
  scorecard(brandId:string):{attempts:number;resolved:number;supported:number;autonomousResolutionRate:number|null;evidenceSupportedRate:number|null} {
-  const row=this.db.query('SELECT COUNT(*) AS attempts,COALESCE(SUM(resolved),0) AS resolved,COALESCE(SUM(supported),0) AS supported FROM agent_evaluations WHERE brand_id=?').get(brandId) as {attempts:number;resolved:number;supported:number};
+  const row=this.db.query('SELECT COUNT(*) AS attempts,COALESCE(SUM(resolved),0) AS resolved,COALESCE(SUM(supported),0) AS supported FROM agent_evaluations WHERE brand_id=? LIMIT 1').get(brandId) as {attempts:number;resolved:number;supported:number};
   return {...row,autonomousResolutionRate:row.attempts?row.resolved/row.attempts:null,evidenceSupportedRate:row.attempts?row.supported/row.attempts:null};
  }
  shouldPromote(results:Array<{scenarioId:string;before:boolean;after:boolean;required:boolean}>):boolean {

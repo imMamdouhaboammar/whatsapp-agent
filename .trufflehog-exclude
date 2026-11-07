@@ -1,0 +1,9 @@
+# TruffleHog Exclusion Patterns (Regex per line)
+.*node_modules/.*
+.*ui/dist/.*
+.*dist/.*
+.*\.git/.*
+.*\.qlty/.*
+.*\.cache/.*
+.*bun\.lock.*
+.*coverage/.*

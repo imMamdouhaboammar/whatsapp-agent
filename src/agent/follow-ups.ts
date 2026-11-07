@@ -29,7 +29,7 @@ export class FollowUpStore {
   return id;
  }
  get(id:string):Trigger|null {
-  const row=this.db.query('SELECT * FROM engagement_triggers WHERE trigger_id=?').get(id) as any;
+  const row=this.db.query('SELECT * FROM engagement_triggers WHERE trigger_id=? LIMIT 1').get(id) as any;
   return row?{triggerId:row.trigger_id,brandId:row.brand_id,contactId:row.contact_id,reason:row.reason,dueAt:row.due_at,sourceWorkflowId:row.source_workflow_id,consentRef:row.consent_ref??undefined,templateRef:row.template_ref??undefined,status:row.status,receiptId:row.receipt_id??undefined}:null;
  }
  optOut(brandId:string,contactId:string) {
@@ -45,7 +45,7 @@ export class FollowUpStore {
   const followup=this.get(id);
   if(!followup)return {decision:'skip',reason:'not_found'};
   if(followup.status!=='scheduled')return {decision:'skip',reason:followup.status};
-  if(this.db.query('SELECT 1 FROM engagement_optouts WHERE brand_id=? AND contact_id=?').get(followup.brandId,followup.contactId))return {decision:'skip',reason:'opted_out'};
+  if(this.db.query('SELECT 1 FROM engagement_optouts WHERE brand_id=? AND contact_id=? LIMIT 1').get(followup.brandId,followup.contactId))return {decision:'skip',reason:'opted_out'};
   if(!ctx.optIn || !followup.consentRef)return {decision:'skip',reason:'missing_consent'};
   if(ctx.channel!=='meta-cloud')return {decision:'skip',reason:'unsupported_channel'};
   if(!ctx.templateApproved || !followup.templateRef)return {decision:'skip',reason:'no_approved_template'};

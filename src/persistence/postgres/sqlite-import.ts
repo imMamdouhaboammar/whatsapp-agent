@@ -63,8 +63,16 @@ function requireBrand(brand: string): void {
     throw new Error('Explicit valid --legacy-brand is required for legacy conversations');
   }
 }
+const ALLOWED_TABLES = new Set(SQLITE_TABLES.map(s => s.table));
+const ALLOWED_COLUMNS = new Set([
+  ...SQLITE_TABLES.flatMap(s => [...s.columns, ...s.primaryKey]),
+  'brand_id'
+]);
+
 function quoted(name: string): string {
-  if (!/^[a-z][a-z0-9_]*$/.test(name)) throw new Error('Unrecognized SQL identifier');
+  if (!ALLOWED_TABLES.has(name) && !ALLOWED_COLUMNS.has(name)) {
+    throw new Error(`Unrecognized SQL identifier: ${name}`);
+  }
   return '"' + name + '"';
 }
 function columnNames(spec: TableSpec): string[] {
@@ -117,9 +125,13 @@ function sourceValues(spec: TableSpec, row: Record<string, unknown>, brand: stri
   return columnNames(spec).map(col => col === 'brand_id' && spec.addLegacyBrand ? brand : numericSafe(row[col]));
 }
 function getSourceRows(db: Database, spec: TableSpec): Iterable<Record<string, unknown>> {
+  if (!ALLOWED_TABLES.has(spec.table)) {
+    throw new Error(`Table not allowed: ${spec.table}`);
+  }
   const columns = spec.columns.map(quoted).join(', ');
   const keys = spec.primaryKey.map(quoted).join(', ');
-  return db.query(`SELECT ${columns} FROM ${quoted(spec.table)} ORDER BY ${keys}`).iterate() as Iterable<Record<string, unknown>>;
+  const selectQuery = `SELECT ${columns} FROM ${quoted(spec.table)} ORDER BY ${keys}`;
+  return db.query(selectQuery).iterate() as Iterable<Record<string, unknown>>;
 }
 function sourceTableDigest(db: Database, spec: TableSpec, brand: string): { count: number; sha256: string } {
   const hash = createHash('sha256');
@@ -198,7 +210,8 @@ export function inspectSqliteSources({ dataDir, legacyBrand }: {dataDir: string;
   }
   return { dataDir: directory, legacyBrand, sources, tables: summaries };
 }
-export function getImportFingerprint(manifest: ImportManifest): string {
+export function getImportFingerprint(manifest: ImportManifest, maxDepth = 1): string {
+  if (maxDepth < 1) return '';
   // A fingerprint must be portable between directories on different hosts.
   return createHash('sha256').update(JSON.stringify({
     brand: manifest.legacyBrand,

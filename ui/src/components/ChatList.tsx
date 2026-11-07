@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { MessageCircle, Search } from 'lucide-react';
+import { Avatar, Badge, Tag } from '@lobehub/ui';
 import type { ChatSummary } from '../api/types';
 import { useLocale, type Language } from '../locale-context';
 
@@ -28,13 +29,14 @@ export function ChatList({ chats, selectedChatId, pendingDraftChatIds, onSelectC
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<ChatFilter>('all');
   const query = search.trim().toLocaleLowerCase();
+  const pendingDraftSet = useMemo(() => new Set(pendingDraftChatIds), [pendingDraftChatIds]);
 
   const filtered = chats.filter((chat) => {
     const matchesQuery = !query || [chat.name, chat.id, chat.lastMessage ?? '']
       .some((value) => value.toLocaleLowerCase().includes(query));
     if (!matchesQuery) return false;
     if (filter === 'unread') return chat.unreadCount > 0;
-    if (filter === 'review') return pendingDraftChatIds.includes(chat.id);
+    if (filter === 'review') return pendingDraftSet.has(chat.id);
     return true;
   });
 
@@ -70,7 +72,7 @@ export function ChatList({ chats, selectedChatId, pendingDraftChatIds, onSelectC
             >
               {label}
               {key === 'review' && pendingDraftChatIds.length > 0 && (
-                <span className="wa-filter-count">{new Set(pendingDraftChatIds).size}</span>
+                <span className="wa-filter-count">{pendingDraftSet.size}</span>
               )}
             </button>
           ))}
@@ -86,7 +88,7 @@ export function ChatList({ chats, selectedChatId, pendingDraftChatIds, onSelectC
           </div>
         ) : filtered.map((chat) => {
           const selected = chat.id === selectedChatId;
-          const hasDraft = pendingDraftChatIds.includes(chat.id);
+          const hasDraft = pendingDraftSet.has(chat.id);
           return (
             <button
               type="button"
@@ -96,7 +98,11 @@ export function ChatList({ chats, selectedChatId, pendingDraftChatIds, onSelectC
               aria-current={selected ? 'true' : undefined}
             >
               <span className="wa-avatar wa-avatar-chat">
-                {chat.avatarUrl ? <img src={chat.avatarUrl} alt="" loading="lazy" /> : chat.name.slice(0, 1)}
+                {chat.avatarUrl ? (
+                  <Avatar avatar={chat.avatarUrl} alt={chat.name} size={46} shape="circle" />
+                ) : (
+                  chat.name.slice(0, 1)
+                )}
               </span>
               <span className="wa-chat-content">
                 <span className="wa-chat-primary">
@@ -105,9 +111,20 @@ export function ChatList({ chats, selectedChatId, pendingDraftChatIds, onSelectC
                 </span>
                 <span className="wa-chat-preview" dir="auto">{chat.lastMessage || tr('لا توجد رسائل بعد', 'No messages yet')}</span>
                 <span className="wa-chat-bottom">
-                  <span className={'wa-mode-chip wa-mode-' + chat.agentMode}>{chat.agentMode === 'autopilot' ? tr('تلقائي', 'Auto-Pilot') : chat.agentMode === 'copilot' ? tr('بالموافقة', 'Co-Pilot') : tr('يدوي', 'Human')}</span>
-                  {hasDraft && <span className="wa-needs-review">{tr('بانتظار موافقة', 'Awaiting approval')}</span>}
-                  {chat.unreadCount > 0 && <span className="wa-count">{chat.unreadCount}</span>}
+                  <Tag
+                    size="small"
+                    variant="filled"
+                    color={chat.agentMode === 'autopilot' ? 'geekblue' : chat.agentMode === 'copilot' ? 'orange' : 'gray'}
+                    className={'wa-mode-chip wa-mode-' + chat.agentMode}
+                  >
+                    {chat.agentMode === 'autopilot' ? tr('تلقائي', 'Auto-Pilot') : chat.agentMode === 'copilot' ? tr('بالموافقة', 'Co-Pilot') : tr('يدوي', 'Human')}
+                  </Tag>
+                  {hasDraft && (
+                    <Tag size="small" variant="outlined" color="volcano" className="wa-needs-review">
+                      {tr('بانتظار موافقة', 'Awaiting approval')}
+                    </Tag>
+                  )}
+                  {chat.unreadCount > 0 && <span className="wa-count"><Badge count={chat.unreadCount} size="small" /></span>}
                 </span>
               </span>
             </button>

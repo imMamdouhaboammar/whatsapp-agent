@@ -7,7 +7,10 @@ import { OwnerAccessGate } from './components/OwnerAccessGate'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <LocaleProvider><OwnerAccessGate><App /></OwnerAccessGate></LocaleProvider>
+    <LocaleProvider>
+      <OwnerAccessGate>
+        <App />
+      </OwnerAccessGate>
+    </LocaleProvider>
   </StrictMode>,
 )
-

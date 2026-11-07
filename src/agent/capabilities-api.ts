@@ -15,6 +15,21 @@ import {DocumentExtractionService} from './media-service';
 
 const validBrand=(id:string)=>/^[A-Za-z0-9_-]{1,64}$/.test(id);
 const digest=(s:string)=>createHash('sha256').update(s).digest();
+function isValidBase64(str: string): boolean {
+  if (!str || str.length % 4 !== 0 || str.length > 21 * 1024 * 1024) return false;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    if (
+      !(ch >= 65 && ch <= 90) &&
+      !(ch >= 97 && ch <= 122) &&
+      !(ch >= 48 && ch <= 57) &&
+      ch !== 43 && ch !== 47 && ch !== 61
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
 export function createCapabilities(dataDir:string,model?:Pick<GeminiClient,'generateContent'>) {
  const path=(filename:string)=>dataDir===':memory:' ? ':memory:' : join(dataDir,filename);
  const knowledge=new BrandKnowledgeStore({dbPath:path('agent-knowledge.sqlite')});
@@ -61,7 +76,7 @@ export function registerCapabilityRoutes(app:Hono, capabilities:CapabilityEngine
   const brandId=c.req.param('brandId');
   const body=await c.req.json().catch(()=>({}));
   const supported=['text/plain','text/markdown','text/csv','text/html','application/pdf','application/vnd.openxmlformats-officedocument.wordprocessingml.document','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','application/vnd.openxmlformats-officedocument.presentationml.presentation'];
-  if(!validBrand(brandId) || !supported.includes(body.mimeType) || typeof body.locator!=='string' || !body.locator.trim() || body.locator.length>256 || !['official','working','external'].includes(body.authority) || typeof body.base64!=='string' || body.base64.length>21*1024*1024 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(body.base64))return c.json({error:'Invalid document request'},400);
+  if(!validBrand(brandId) || !supported.includes(body.mimeType) || typeof body.locator!=='string' || !body.locator.trim() || body.locator.length>256 || !['official','working','external'].includes(body.authority) || !isValidBase64(body.base64))return c.json({error:'Invalid document request'},400);
   try{
    const extracted=await capabilities.documents.extract({brandId,messageId:'owner:'+body.locator,mimeType:body.mimeType,data:Buffer.from(body.base64,'base64')});
    const normalized=capabilities.documents.toKnowledgeContent(extracted);

@@ -1,5 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { BookOpen, Bot, CheckCheck, ContactRound, MessageCircle, Network, Play, Settings2, Smartphone, Wifi, WifiOff, X } from 'lucide-react';
+import { BookOpen, CheckCheck, ContactRound, MessageCircle, Network, Play, Settings2, Smartphone, Smile, Wifi, WifiOff, X } from 'lucide-react';
+import { Gemini } from '@lobehub/icons';
+import { WhatsApp } from '@lobehub/ui/icons';
+import { Badge } from '@lobehub/ui';
 import { api } from './api/client';
 import type { AgentDecision, AgentDraft, AgentMode, ChatMessage, ChatSummary, ModeratorPersona, PolicyConfig, SystemStatus } from './api/types';
 import { ChatList } from './components/ChatList';
@@ -10,6 +13,7 @@ import { ModeratorDrawer } from './components/ModeratorDrawer';
 import { PairingModal } from './components/PairingModal';
 import { PersonaSettingsPage } from './components/PersonaSettingsPage';
 import { SimulatorModal } from './components/SimulatorModal';
+import { StickerStudioModal } from './components/StickerStudioModal';
 import { OwnerSignOutButton } from './components/OwnerAccessGate';
 import { useOwnerAccess } from './components/owner-access-context';
 import { useLocale } from './locale-context';
@@ -32,7 +36,7 @@ export function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [drafts, setDrafts] = useState<AgentDraft[]>([]);
   const [persona, setPersona] = useState<ModeratorPersona | undefined>();
-  const [policy, setPolicy] = useState<PolicyConfig | undefined>();
+  const policyRef = useRef<PolicyConfig | undefined>(undefined);
   const [personaLoadFailed, setPersonaLoadFailed] = useState(false);
   const [latestThought, setLatestThought] = useState<{ chatId: string; messageId: string; decision: AgentDecision } | undefined>();
 
@@ -50,6 +54,7 @@ export function App() {
     typeof window !== 'undefined' && window.location.pathname === '/funnel' ? 'funnel' : 'chats'
   );
   const [isSimulatorOpen, setIsSimulatorOpen] = useState(false);
+  const [isStickerStudioOpen, setIsStickerStudioOpen] = useState(false);
   const [inspectorView, setInspectorView] = useState<'assistant' | 'drafts' | 'memory'>('assistant');
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [inspectorExpanded, setInspectorExpanded] = useState(true);
@@ -98,7 +103,7 @@ export function App() {
       if (draftsRes.drafts) setDrafts(draftsRes.drafts);
       if (personaRes) {
         setPersona(personaRes.persona);
-        setPolicy(personaRes.policy);
+        policyRef.current = personaRes.policy;
         setPersonaLoadFailed(false);
       } else {
         setPersonaLoadFailed(true);
@@ -183,59 +188,89 @@ export function App() {
 
       api.listChats().then((res) => {
         if (res.chats) setChats(res.chats);
-      }).catch(() => {});
+      }).catch((err) => console.warn('Failed to refresh chats after new message:', err));
     });
 
     eventSource.addEventListener('message_status', (e: MessageEvent) => {
-      const { chatId, messageId, status } = JSON.parse(e.data) as {
-        chatId: string;
-        messageId: string;
-        status: ChatMessage['status'];
-      };
-      if (selectedChatIdRef.current !== chatId) return;
-      setMessages((prev) => prev.map((message) =>
-        message.id === messageId && message.isFromMe ? { ...message, status } : message
-      ));
+      try {
+        const payload = JSON.parse(e.data);
+        if (!payload || typeof payload !== 'object') return;
+        const { chatId, messageId, status } = payload as {
+          chatId: string;
+          messageId: string;
+          status: ChatMessage['status'];
+        };
+        if (selectedChatIdRef.current !== chatId) return;
+        setMessages((prev) => prev.map((message) =>
+          message.id === messageId && message.isFromMe ? { ...message, status } : message
+        ));
+      } catch {
+        // Ignore malformed SSE message
+      }
     });
 
     eventSource.addEventListener('agent_thought', (e: MessageEvent) => {
-      const thoughtData = JSON.parse(e.data);
-      setLatestThought(thoughtData);
+      try {
+        const thoughtData = JSON.parse(e.data);
+        if (thoughtData && typeof thoughtData === 'object') {
+          setLatestThought(thoughtData);
+        }
+      } catch {
+        // Ignore malformed SSE message
+      }
     });
 
     eventSource.addEventListener('message_reaction', (e: MessageEvent) => {
-      const { chatId, messageId, emoji } = JSON.parse(e.data);
-      const activeId = selectedChatIdRef.current;
-      if (activeId === chatId) {
-        setMessages((prev) =>
-          prev.map((m) => {
-            if (m.id === messageId) {
-              const current = m.reactions || [];
-              const updated = emoji
-                ? Array.from(new Set([...current, emoji]))
-                : current;
-              return { ...m, reactions: updated };
-            }
-            return m;
-          })
-        );
+      try {
+        const payload = JSON.parse(e.data);
+        if (!payload || typeof payload !== 'object') return;
+        const { chatId, messageId, emoji } = payload;
+        const activeId = selectedChatIdRef.current;
+        if (activeId === chatId) {
+          setMessages((prev) =>
+            prev.map((m) => {
+              if (m.id === messageId) {
+                const current = m.reactions || [];
+                const updated = emoji
+                  ? Array.from(new Set([...current, emoji]))
+                  : current;
+                return { ...m, reactions: updated };
+              }
+              return m;
+            })
+          );
+        }
+      } catch {
+        // Ignore malformed SSE message
       }
     });
 
     eventSource.addEventListener('new_draft', (e: MessageEvent) => {
-      const draft: AgentDraft = JSON.parse(e.data);
-      setDrafts((prev) => [draft, ...prev.filter((d) => d.id !== draft.id)]);
+      try {
+        const draft = JSON.parse(e.data) as AgentDraft;
+        if (draft && draft.id) {
+          setDrafts((prev) => [draft, ...prev.filter((d) => d.id !== draft.id)]);
+        }
+      } catch {
+        // Ignore malformed SSE message
+      }
     });
 
     eventSource.addEventListener('draft_updated', (e: MessageEvent) => {
-      const { draftId } = JSON.parse(e.data);
-      setDrafts((prev) => prev.filter((d) => d.id !== draftId));
+      try {
+        const payload = JSON.parse(e.data);
+        if (payload && payload.draftId) {
+          setDrafts((prev) => prev.filter((d) => d.id !== payload.draftId));
+        }
+      } catch {
+        // Ignore malformed SSE message
+      }
     });
 
     eventSource.addEventListener('chat_updated', () => {
       api.listChats().then((res) => {
         if (res.chats) setChats(res.chats);
-      }).catch(() => {});
+      }).catch((err) => console.warn('Failed to refresh chats after new message:', err));
     });
 
     return () => {
@@ -279,7 +314,7 @@ export function App() {
   const handleSavePersona = async (updatedPersona: Partial<ModeratorPersona>, updatedPolicy?: Partial<PolicyConfig>) => {
     await api.updatePersona(updatedPersona, updatedPolicy);
     if (persona) setPersona({ ...persona, ...updatedPersona });
-    if (policy && updatedPolicy) setPolicy({ ...policy, ...updatedPolicy });
+    if (policyRef.current && updatedPolicy) policyRef.current = { ...policyRef.current, ...updatedPolicy };
   };
 
   const handleSimulate = async (text: string, senderName?: string) => {
@@ -355,7 +390,7 @@ export function App() {
     <div className="wa-app" dir={direction}>
       <header className="wa-header">
         <div className="wa-brand" aria-label="WhatsApp Agent">
-          <span className="wa-brand-mark"><MessageCircle size={22} strokeWidth={2.5} /></span>
+          <span className="wa-brand-mark"><WhatsApp.Color size={22} /></span>
           <strong dir="ltr">WhatsApp <span>Agent</span></strong>
         </div>
         <div className="wa-header-actions">
@@ -369,6 +404,7 @@ export function App() {
           </button>
           <span className="wa-header-separator" aria-hidden="true" />
           <button type="button" className="wa-icon-button wa-simulator-trigger" onClick={() => setIsSimulatorOpen(true)} aria-label={tr('اختبار رد المساعد', 'Test the assistant')} title={tr('اختبار رد المساعد', 'Test the assistant')}><Play size={19} /></button>
+          <button type="button" className="wa-icon-button" onClick={() => setIsStickerStudioOpen(true)} aria-label={tr('استوديو الملصقات', 'Sticker Studio')} title={tr('استوديو الملصقات', 'Sticker Studio')}><Smile size={19} /></button>
           <button type="button" className={'wa-icon-button ' + (page === 'funnel' ? 'is-active' : '')} onClick={openFunnel} aria-label={tr('محرك التوزيع المتوازي', 'Scatter-Gather Funnel')} title={tr('محرك التوزيع المتوازي', 'Scatter-Gather Funnel')}><Network size={19} /></button>
           <button type="button" className={'wa-icon-button ' + (page === 'brain' ? 'is-active' : '')} onClick={openBrain} aria-label={tr('ذاكرة البراند', 'Brand Brain')} title={tr('ذاكرة البراند', 'Brand Brain')}><BookOpen size={19} /></button>
           <button type="button" className={'wa-icon-button ' + (page === 'settings' ? 'is-active' : '')} onClick={openSettings} aria-label={tr('إعدادات المساعد', 'Assistant settings')} title={tr('إعدادات المساعد', 'Assistant settings')}><Settings2 size={19} /></button>
@@ -378,8 +414,8 @@ export function App() {
             <OwnerSignOutButton onSignOut={handleSignOut} pending={signingOut} />
           </>}
           {page === 'chats' && <button type="button" className="wa-header-agent-trigger" onClick={toggleInspector} aria-controls="wa-agent-panel" aria-expanded={inspectorVisible} aria-label={inspectorVisible ? tr('طي لوحة المساعد', 'Collapse AI assistant') : tr('فتح لوحة المساعد', 'Expand AI assistant')}>
-            <Bot size={18} /><span>{tr('المساعد الذكي', 'AI assistant')}</span>
-            {drafts.length > 0 && <span className="wa-count wa-count-light">{drafts.length}</span>}
+            <Gemini.Color size={18} /><span>{tr('المساعد الذكي', 'AI assistant')}</span>
+            {drafts.length > 0 && <span className="wa-count wa-count-light"><Badge count={drafts.length} size="small" /></span>}
           </button>}
         </div>
       </header>
@@ -418,6 +454,7 @@ export function App() {
       )}
       <PairingModal isOpen={isPairingOpen} status={status} onClose={() => setIsPairingOpen(false)} onConnect={handleConnect} onDisconnect={handleDisconnect} />
       <SimulatorModal isOpen={isSimulatorOpen} onClose={() => setIsSimulatorOpen(false)} onSimulate={handleSimulate} />
+      <StickerStudioModal isOpen={isStickerStudioOpen} onClose={() => setIsStickerStudioOpen(false)} selectedChatId={selectedChatId} onSendSticker={async (chatId, _b64) => { await api.sendMessage(chatId, '[Sticker]'); }} />
     </div>
   );
 }

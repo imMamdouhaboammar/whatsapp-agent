@@ -30,9 +30,11 @@ export function BrandBrainPage({onClose}:{onClose:()=>void}) {
    headers:{'Content-Type':'application/json','X-Agent-Owner-Token':token},
    ...(body===undefined?{}:{body:JSON.stringify(body)})
   });
-  const result=await response.json().catch(()=>({error:'Invalid response'}));
-  if(!response.ok)throw new Error(result.error||tr('تعذر إكمال الطلب','Unable to complete request'));
-  return result;
+  if(!response.ok){
+   const errBody=await response.json().catch(()=>({error:'Invalid response'}));
+   throw new Error(errBody.error||tr('تعذر إكمال الطلب','Unable to complete request'));
+  }
+  return response.json();
  };
  const prefix='/api/brands/'+encodeURIComponent(brandId);
  const refresh=async()=>{

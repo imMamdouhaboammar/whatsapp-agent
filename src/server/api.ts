@@ -12,6 +12,7 @@ import { FableFunnelEngine, FunnelRegistry } from '../funnel';
 import { registerDashboardAuth } from './dashboard-auth';
 import { UserMemoryManager } from '../domain/user-memory';
 import type { ConversationStyle } from '../ai/adaptive-style';
+import { handleGitHubWebhook } from './github-webhook';
 
 const allowedOrigins = new Set(['http://localhost:3000','http://127.0.0.1:3000','http://localhost:5173','http://127.0.0.1:5173',...((process.env.AGENT_ALLOWED_ORIGINS??'').split(',').map(v=>v.trim()).filter(Boolean))]);
 const trustedOrigin=(origin:string)=>allowedOrigins.has(origin);
@@ -72,6 +73,12 @@ export function createApiServer(deps: {
       ...state,
       pendingDraftsCount: pendingDrafts.length
     });
+  });
+
+  app.get('/api/db/health', async (c) => {
+    const { testDatabaseConnection } = await import('./supabase');
+    const health = await testDatabaseConnection();
+    return c.json(health);
   });
 
   app.post('/api/connect', async (c) => {
@@ -513,6 +520,12 @@ export function createApiServer(deps: {
     const style = (body.style as ConversationStyle) || 'casual';
     deps.memoryStore.setChatStyle(jid, style);
     return c.json({ success: true, style });
+  });
+
+  // OpenReview GitHub App Webhook Endpoint
+  app.post('/api/webhooks/github', async (c) => {
+    // verifySignature verifies x-hub-signature-256 HMAC
+    return handleGitHubWebhook(c);
   });
 
   return app;

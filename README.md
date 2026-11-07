@@ -1,5 +1,7 @@
 # Fable Agentic WhatsApp (ZapFast Edition)
 
+[![DeepScan grade](https://deepscan.io/api/teams/31047/projects/32697/branches/1096954/badge/grade.svg)](https://deepscan.io/dashboard#view=project&tid=31047&pid=32697&bid=1096954)
+
 > A browserless, fully agentic WhatsApp client and AI supervisor powered by Gemini 2.5, Google Cloud CLI ADC, Baileys socket transport, and the Model Context Protocol (MCP).
 
 ---

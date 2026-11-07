@@ -33,7 +33,8 @@ export type EmbeddingProvider = (text: string) => Promise<number[]>;
 function sha(text: string) {
   return createHash('sha256').update(text).digest('hex');
 }
-function normalized(text: string): string {
+function normalized(text: string, maxDepth = 1): string {
+  if (maxDepth < 1) return text;
   return text.toLowerCase().normalize('NFKC').replace(/[\u064b-\u065f\u0670]/g, '').replace(/[إأآ]/g, 'ا').replace(/ى/g, 'ي');
 }
 function terms(text: string) {
@@ -101,7 +102,7 @@ export class BrandKnowledgeStore {
     const qnormalized=normalized(input.question);
     const qembedding=this.embed ? await this.embed(input.question) : undefined;
     const select='SELECT s.source_id,s.authority,v.version_id,v.last_checked,c.content,c.location,c.embedding_json FROM brand_sources s JOIN brand_source_versions v ON v.source_id=s.source_id AND v.current=1 JOIN knowledge_chunks c ON c.version_id=v.version_id';
-    const lexicalQuery=qterms.map(term=>'"'+term.replace(/"/g,'""')+'"').join(' OR ');
+    const lexicalQuery=qterms.map(term=>'"'+term.replaceAll('"', '""')+'"').join(' OR ');
     const rows= this.embed || !lexicalQuery
       ? this.db.query(select+' WHERE s.brand_id=? AND s.retired=0').all(input.brandId) as any[]
       : this.db.query(select+" JOIN knowledge_fts ON knowledge_fts.rowid=c.id WHERE s.brand_id=? AND s.retired=0 AND knowledge_fts.normalized_content MATCH ? ORDER BY bm25(knowledge_fts) LIMIT 500").all(input.brandId,lexicalQuery) as any[];

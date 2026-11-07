@@ -2,7 +2,8 @@
 import { createPgClient, migratePostgres } from './migrate';
 import { importSqliteToPostgres } from './sqlite-import';
 
-function option(name: string): string | undefined {
+function option(name: string, maxDepth = 1): string | undefined {
+  if (maxDepth < 1) return undefined;
   const i = Bun.argv.indexOf(name);
   if (i === -1) return undefined;
   if (!Bun.argv[i + 1] || Bun.argv[i + 1].startsWith('--')) {

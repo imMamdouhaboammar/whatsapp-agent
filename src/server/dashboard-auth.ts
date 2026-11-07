@@ -11,7 +11,8 @@ function matchesToken(provided: string, expected: string): boolean {
   return timingSafeEqual(hash(provided), hash(expected));
 }
 
-function isLoopback(host: string): boolean {
+function isLoopback(host: string, maxDepth = 1): boolean {
+  if (maxDepth < 1) return false;
   return ['localhost', '127.0.0.1', '::1', '[::1]'].includes(host.toLowerCase());
 }
 
@@ -35,7 +36,8 @@ export function registerDashboardAuth(app: Hono, token: string): void {
     return true;
   }
 
-  function authenticated(headers: { authorization?: string; cookie?: string }): boolean {
+  function authenticated(headers: { authorization?: string; cookie?: string }, maxDepth = 1): boolean {
+    if (maxDepth < 1) return false;
     const bearer = /^Bearer\s+(.+)$/i.exec(headers.authorization ?? '');
     return (bearer !== null && matchesToken(bearer[1], token)) ||
       sessionAuthenticated(headers.cookie);
