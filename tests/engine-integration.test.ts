@@ -138,7 +138,7 @@ describe('E10 simulated WhatsApp-to-confirmed-provider round trip',()=>{
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content: 'Prefers express delivery' })
     });
-    const saveRes = await agent.app.fetch(saveReq);
+    const saveRes = await agent.app.request(saveReq);
     expect(saveRes.status).toBe(200);
     const saveBody: any = await saveRes.json();
     expect(saveBody.status).toBe('saved');
@@ -149,12 +149,12 @@ describe('E10 simulated WhatsApp-to-confirmed-provider round trip',()=>{
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content: 'my password is secret123' })
     });
-    const credRes = await agent.app.fetch(credReq);
+    const credRes = await agent.app.request(credReq);
     expect(credRes.status).toBe(422);
 
     // 3. List memories
     const listReq = new Request(`http://localhost/api/contacts/${contactJid}/memories`);
-    const listRes = await agent.app.fetch(listReq);
+    const listRes = await agent.app.request(listReq);
     expect(listRes.status).toBe(200);
     const listBody: any = await listRes.json();
     expect(listBody.memories.length).toBe(1);
@@ -166,12 +166,12 @@ describe('E10 simulated WhatsApp-to-confirmed-provider round trip',()=>{
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ style: 'playful' })
     });
-    const styleRes = await agent.app.fetch(styleReq);
+    const styleRes = await agent.app.request(styleReq);
     expect(styleRes.status).toBe(200);
 
     // 5. Get style
     const getStyleReq = new Request(`http://localhost/api/chats/${contactJid}/style`);
-    const getStyleRes = await agent.app.fetch(getStyleReq);
+    const getStyleRes = await agent.app.request(getStyleReq);
     const styleBody: any = await getStyleRes.json();
     expect(styleBody.style).toBe('playful');
   } finally {

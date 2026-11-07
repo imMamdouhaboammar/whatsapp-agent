@@ -1,6 +1,7 @@
 node_modules
 .DS_Store
 dist
+coverage/
 data/
 ui/dist
 ui/node_modules
@@ -12,3 +13,19 @@ __pycache__/
 .env.*
 !.env.example
 .agentic-tdd-work-order.md
+
+# Bug Killer cryptographic identities & config
+.aegis/
+.bugkiller/
+.unslop/
+
+# Local agent caches
+.agents/
+.claude/
+
+# Fable local runtime state
+.fable/events.jsonl
+.fable/learnings.json
+.fable/redteam-findings.json
+.fable/run-attestation.json
+.fable/reflex/

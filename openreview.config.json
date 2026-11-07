@@ -1,0 +1,43 @@
+{
+  "version": "1.0.0",
+  "bot_username": "openreview",
+  "server": {
+    "host": "0.0.0.0",
+    "port": 3000,
+    "webhook_path": "/api/webhooks/github",
+    "health_path": "/health",
+    "metrics_path": "/metrics"
+  },
+  "sandbox": {
+    "driver": "docker",
+    "docker_image": "ghcr.io/immamdouhaboammar/openreview-sandbox:latest",
+    "timeout_seconds": 180,
+    "memory_limit_mb": 2048,
+    "cpu_limit": 2.0
+  },
+  "llm": {
+    "provider": "gemini",
+    "model": "gemini-2.5-flash",
+    "max_steps": 20,
+    "max_tokens": 200000,
+    "temperature": 0.2
+  },
+  "review_rules": {
+    "auto_review_on_pr_opened": false,
+    "require_bot_mention": true,
+    "reaction_approval_triggers_push": true,
+    "ignore_draft_prs": true,
+    "ignored_paths": [
+      "dist/**",
+      "build/**",
+      "node_modules/**",
+      "ui/node_modules/**",
+      "*.lock",
+      "*.min.js",
+      "data/**",
+      "coverage/**",
+      ".fable/**",
+      ".agents/**"
+    ]
+  }
+}

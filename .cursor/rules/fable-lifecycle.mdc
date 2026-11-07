@@ -1,0 +1,18 @@
+---
+description: Fable coding lifecycle discipline and situational awareness for Cursor
+globs: *
+alwaysApply: true
+---
+
+# Cursor Fable Lifecycle Rules
+
+Follow the `get-fable` coding lifecycle for all engineering tasks in this project.
+
+## Core Rules
+
+- **Route Before Coding**: Run `get-fable route "<task>" --apply` when selecting a lifecycle phase.
+- **Durable Cards**: Work on one bounded card in `.fable/LEDGER.md` (`get-fable card "<card>"`).
+- **Mutation Tracking**: Every file edit invalidates previous test verification.
+- **Evidence Verification**: Record typed evidence (`get-fable evidence pass test "<tool>" "<detail>"`).
+- **Failure Recovery**: On repeated test or command failures, enter `fable-recover` and diagnose root cause before attempting fixes.
+- **Situational Prediction**: Query `get-fable spark` for the single atomic next move.

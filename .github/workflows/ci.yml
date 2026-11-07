@@ -1,0 +1,74 @@
+name: CI & Quality Gate
+
+'on':
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test-and-build:
+    name: Run Unit, Integration & UI Quality Gates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@4bc047ad259df6fc24a6c9b0f9a0cb08cf17fbe5 # v2.0.1
+        with:
+          bun-version: latest
+
+      - name: Install Dependencies
+        run: |
+          bun install
+          cd ui && bun install
+
+      - name: Run Full Backend Test Pyramid (142 Tests)
+        run: bun test
+
+      - name: Run UI SSR Tests & Vite Production Build
+        run: |
+          cd ui
+          bun test:ui
+          bun run build
+
+      - name: Sourcery Action
+        uses: sourcery-ai/action@438ce67e9f15fbeacb72257da23e2fffb1b6d354 # v1
+        with:
+          token: ${{ secrets.SOURCERY_TOKEN }}
+        continue-on-error: true
+
+  qlty:
+    name: Qlty Code Quality Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install Qlty CLI
+        run: curl https://qlty.sh | sh
+
+      - name: Run Qlty Check
+        run: ~/.qlty/bin/qlty check
+        continue-on-error: true
+
+  trufflehog:
+    name: TruffleHog Secret Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: TruffleHog OSS
+        uses: trufflesecurity/trufflehog@f8221ca52ac51bf66228d6ec3691f3ea0782ae15 # main
+        with:
+          path: ./
+          base: ${{ github.event_name == 'pull_request' && github.event.repository.default_branch || '' }}
+          head: ${{ github.event_name == 'pull_request' && 'HEAD' || '' }}
+          extra_args: --exclude-paths=.trufflehog-exclude --only-verified

@@ -1,0 +1,31 @@
+version: '1'
+
+# A list of paths, directories, or files that Sourcery should ignore
+ignore:
+  - .git
+  - .agents
+  - .claude
+  - .unslop
+  - .qlty
+  - node_modules
+  - ui/node_modules
+  - dist
+  - ui/dist
+  - build
+  - cache
+  - "*.d.ts"
+  - "*.min.*"
+
+rule_settings:
+  enable:
+    - default
+
+rule_types:
+  - refactoring
+  - suggestion
+  - comment
+
+clone_detection:
+  min_lines: 3
+  min_duplicates: 2
+  identical_clones_only: false
