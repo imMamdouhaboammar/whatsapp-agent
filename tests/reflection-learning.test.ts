@@ -5,7 +5,7 @@ import { DualMemoryManager } from '../src/domain/learning-memory';
 import { ReflectionEngine } from '../src/ai/reflection-engine';
 import { ReflectionWorker } from '../src/agent/reflection-worker';
 import { MemoryStore } from '../src/domain/memory-store';
-import { ModeratorAgent, DEFAULT_MODERATOR_PERSONA } from '../src/ai/moderator-agent';
+import { ModeratorAgent } from '../src/ai/moderator-agent';
 import { GeminiClient } from '../src/ai/gemini-client';
 import { createApiServer } from '../src/server/api';
 import { SSEBroadcaster } from '../src/server/sse';
@@ -29,7 +29,7 @@ describe('Continuous Learning & Self-Correction Engine', () => {
 
   describe('Task 1: The Dual Memory State Schema (notebook.md & workbook.md)', () => {
     it('initializes default markdown files with required structured blocks', () => {
-      const memoryManager = new DualMemoryManager({
+      const _memoryManager = new DualMemoryManager({
         storageDir: TEST_DIR,
         persistSqlite: false
       });

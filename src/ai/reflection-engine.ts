@@ -72,7 +72,6 @@ export class ReflectionEngine {
     const { chatId, messages, moderationFeedback } = params;
 
     const currentWb = this.memoryManager.getWorkbook();
-    const currentNb = this.memoryManager.getNotebook();
 
     // Format transcript
     const transcriptText = messages.map(m => {
