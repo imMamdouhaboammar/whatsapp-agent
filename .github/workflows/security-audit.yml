@@ -50,10 +50,26 @@ jobs:
           bun install
           cd ui && bun install
 
-      - name: Install OSV-Scanner (GitHub Advisory Database)
+      - name: Install verified OSV-Scanner
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          curl -fsSL https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64 -o /usr/local/bin/osv-scanner
-          chmod +x /usr/local/bin/osv-scanner
+          scanner_path="$RUNNER_TEMP/osv-scanner_linux_amd64"
+          if ! curl --fail --silent --show-error --location \
+            --retry 5 --retry-all-errors --retry-delay 3 \
+            --connect-timeout 20 --max-time 180 \
+            https://github.com/google/osv-scanner/releases/download/v2.7.0/osv-scanner_linux_amd64 \
+            --output "$scanner_path"; then
+            # GitHub release CDN can return 504 even after retries.
+            # The pinned release asset is also available through the GitHub API.
+            gh api -H 'Accept: application/octet-stream' \
+              repos/google/osv-scanner/releases/assets/632251666 > "$scanner_path"
+          fi
+          printf '%s  %s\n' \
+            '160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b' \
+            "$scanner_path" | sha256sum --check --
+          sudo install -m 0755 "$scanner_path" /usr/local/bin/osv-scanner
+          osv-scanner --version
 
       - name: Run Dependency Audit (Fail on High or Critical)
         run: bun run security:audit
