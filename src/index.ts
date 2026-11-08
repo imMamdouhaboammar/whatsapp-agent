@@ -8,6 +8,7 @@ import { VoiceSynthesizer } from './ai/voice-synthesizer';
 import { BurstAccumulator, type FusedBurst } from './domain/burst-accumulator';
 import { MessageSplitter } from './domain/message-splitter';
 import { MemoryStore } from './domain/memory-store';
+import { SendIntentService } from './domain/send-intent-service';
 import { HumanRateLimiter } from './domain/rate-limiter';
 import type { ChatMessage } from './domain/types';
 import { createApiServer } from './server/api';
@@ -91,6 +92,7 @@ export async function createFableWhatsAppAgent(options: {
   });
 
   let whatsappClient: WhatsAppSocketClient;
+  let sendIntents: SendIntentService;
 
   // Burst Accumulator: fuses multi-line rapid messages before calling Gemini
   const burstAccumulator = new BurstAccumulator({
@@ -146,35 +148,21 @@ export async function createFableWhatsAppAgent(options: {
 
             // 2. Decide between Voice Note (PTT) vs Split Text Bubbles
             if (result.decision.sendAsVoiceNote) {
-              const personaVoice = moderatorAgent.getPersona().voiceName;
-              console.log(`🎙️ [Agent Voice Auto-Reply] Synthesizing & sending WhatsApp voice note using ${personaVoice || 'Chirp3-HD-Fenrir'}...`);
-              try {
-                const audioBuffer = await voiceSynthesizer.synthesizeVoice(result.decision.replyText!, personaVoice);
-                const sent = await whatsappClient.sendVoiceNote(fusedMsg.chatId, audioBuffer, {
-                  replyToMessageId: fusedMsg.id
-                });
-
-                const outboundMsg: ChatMessage = {
-                  id: sent.messageId,
-                  chatId: fusedMsg.chatId,
-                  sender: 'me',
-                  text: `🎵 [رسالة صوتية صادرة: ${result.decision.replyText!}]`,
-                  transcription: result.decision.replyText!,
-                  timestamp: Date.now(),
-                  isFromMe: true,
-                  type: 'audio',
-                  replyToId: fusedMsg.id,
-                  quotedMessage: fusedMsg.quotedMessage,
-                  status: 'sent'
-                };
-
-                const persistedMessage = memoryStore.addMessage(outboundMsg);
-                sse.broadcast('new_message', persistedMessage);
-                sse.broadcast('chat_updated', { chatId: fusedMsg.chatId });
-                return;
-              } catch (err: any) {
-                console.warn('⚠️ [Voice Synthesis Failed, falling back to text]:', err.message);
+              const voiceResult = await sendIntents.sendVoice({
+                sourceKind: 'autopilot',
+                sourceId: `${fusedMsg.chatId}:${fusedMsg.id}:voice`,
+                sourceRevision: 1,
+                actionKind: 'voice',
+                chatId: fusedMsg.chatId,
+                text: result.decision.replyText!,
+                replyToMessageId: fusedMsg.id,
+                policyRevision: moderatorAgent.getPolicy().version
+              });
+              if (voiceResult.intent.state !== 'accepted') {
+                console.warn('[Delivery] Voice response needs retry or reconciliation', voiceResult.intent.state);
               }
+              sse.broadcast('chat_updated', { chatId: fusedMsg.chatId });
+              return;
             }
 
             // Natural multi-bubble human splitting for text replies
@@ -186,26 +174,21 @@ export async function createFableWhatsAppAgent(options: {
               const isFirstBubble = i === 0;
               const delay = messageSplitter.calculateDelay(bubbleText, isFirstBubble);
 
-              const sent = await whatsappClient.sendMessage(fusedMsg.chatId, bubbleText, {
-                replyToMessageId: isFirstBubble ? fusedMsg.id : undefined,
-                simulatedDelayMs: delay
-              });
-
-              const outboundMsg: ChatMessage = {
-                id: sent.messageId,
+              const deliveryResult = await sendIntents.sendText({
+                sourceKind: 'autopilot',
+                sourceId: `${fusedMsg.chatId}:${fusedMsg.id}:part-${i + 1}-of-${bubbles.length}`,
+                sourceRevision: 1,
+                actionKind: 'text',
                 chatId: fusedMsg.chatId,
-                sender: 'me',
                 text: bubbleText,
-                timestamp: Date.now(),
-                isFromMe: true,
-                type: 'text',
-                replyToId: isFirstBubble ? fusedMsg.id : undefined,
-                quotedMessage: isFirstBubble ? fusedMsg.quotedMessage : undefined,
-                status: 'sent'
-              };
-
-              const persistedMessage = memoryStore.addMessage(outboundMsg);
-              sse.broadcast('new_message', persistedMessage);
+                replyToMessageId: isFirstBubble ? fusedMsg.id : undefined,
+                simulatedDelayMs: delay,
+                policyRevision: moderatorAgent.getPolicy().version
+              });
+              if (!['accepted', 'delivered', 'read'].includes(deliveryResult.intent.state)) {
+                console.warn('[Delivery] Stopped remaining bubbles after a pending send', deliveryResult.intent.state);
+                break;
+              }
               sse.broadcast('chat_updated', { chatId: fusedMsg.chatId });
             }
           });
@@ -222,8 +205,12 @@ export async function createFableWhatsAppAgent(options: {
     onStateChange: (state) => {
       console.log(`📡 [WhatsApp State] ${state.state}`);
       sse.broadcast('state_change', state);
+      if (state.state === 'connected') {
+        void sendIntents?.dispatchDue().catch((error) => console.warn('[Delivery] Resume failed:', error));
+      }
     },
     onMessageStatus: ({ chatId, messageId, status }) => {
+      if (status !== 'pending') sendIntents?.receipt(chatId, messageId, status);
       const persistedStatus = memoryStore.updateMessageStatus(chatId, messageId, status);
       if (persistedStatus) sse.broadcast('message_status', { chatId, messageId, status: persistedStatus });
     },
@@ -259,6 +246,16 @@ export async function createFableWhatsAppAgent(options: {
     }
   });
 
+  sendIntents = new SendIntentService({
+    memoryStore,
+    sendText: (chatId, text, sendOptions) => whatsappClient.sendMessage(chatId, text, sendOptions),
+    prepareVoice: (text) => voiceSynthesizer.synthesizeVoice(text, moderatorAgent.getPersona().voiceName),
+    sendVoice: (chatId, audio, sendOptions) => whatsappClient.sendVoiceNote(chatId, audio, {
+      replyToMessageId: sendOptions?.replyToMessageId
+    }),
+    publish: (event, data) => sse.broadcast(event, data)
+  });
+
   // Initialize Scatter-Gather Funnel Engine
   const funnelEngine = new FableFunnelEngine({
     registry: new FunnelRegistry({
@@ -288,6 +285,7 @@ export async function createFableWhatsAppAgent(options: {
     memoryStore,
     whatsappClient,
     moderatorAgent,
+    sendIntents,
     sse,
     audioTranscriber,
     voiceSynthesizer,
@@ -305,6 +303,11 @@ export async function createFableWhatsAppAgent(options: {
   app.get('*', serveStatic({ path: './ui/dist/index.html' }));
 
   if (options.autoConnect) {
+    setInterval(() => {
+      if (whatsappClient.getState().state === 'connected') {
+        void sendIntents.dispatchDue().catch((error) => console.warn('[Delivery] Retry scan failed:', error));
+      }
+    }, 5000).unref();
     void whatsappClient.start();
   }
 

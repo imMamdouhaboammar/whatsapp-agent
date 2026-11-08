@@ -512,7 +512,9 @@ export class WhatsAppSocketClient {
     options: { replyToMessageId?: string; simulatedDelayMs?: number } = {}
   ): Promise<{ messageId: string }> {
     if (!this.sock) {
-      throw new Error('WhatsApp socket is not connected');
+      const error = new Error('WhatsApp socket is not connected') as Error & { code: string };
+      error.code = 'WHATSAPP_NOT_CONNECTED';
+      throw error;
     }
 
     const targetJid = this.transportJids.get(chatId) || chatId;
@@ -541,11 +543,14 @@ export class WhatsAppSocketClient {
 
     const sent = await this.sock.sendMessage(targetJid, { text }, quoted ? { quoted } : undefined);
 
-    if (sent?.key?.id && sent.message) {
-      this.rawMessages.set(sent.key.id, sent);
+    const messageId = sent?.key?.id;
+    if (!messageId) {
+      const error = new Error('WhatsApp send outcome is ambiguous: native message ID missing') as Error & { code: string };
+      error.code = 'WHATSAPP_ACCEPTANCE_AMBIGUOUS';
+      throw error;
     }
-
-    return { messageId: sent?.key?.id || `msg_${Date.now()}` };
+    if (sent.message) this.rawMessages.set(messageId, sent);
+    return { messageId };
   }
 
   /**
@@ -557,7 +562,9 @@ export class WhatsAppSocketClient {
     options: { replyToMessageId?: string; simulatedRecordingDurationMs?: number } = {}
   ): Promise<{ messageId: string }> {
     if (!this.sock) {
-      throw new Error('WhatsApp socket is not connected');
+      const error = new Error('WhatsApp socket is not connected') as Error & { code: string };
+      error.code = 'WHATSAPP_NOT_CONNECTED';
+      throw error;
     }
 
     const targetJid = this.transportJids.get(chatId) || chatId;
@@ -597,11 +604,14 @@ export class WhatsAppSocketClient {
       quoted ? { quoted } : undefined
     );
 
-    if (sent?.key?.id && sent.message) {
-      this.rawMessages.set(sent.key.id, sent);
+    const messageId = sent?.key?.id;
+    if (!messageId) {
+      const error = new Error('WhatsApp send outcome is ambiguous: native message ID missing') as Error & { code: string };
+      error.code = 'WHATSAPP_ACCEPTANCE_AMBIGUOUS';
+      throw error;
     }
-
-    return { messageId: sent?.key?.id || `msg_${Date.now()}` };
+    if (sent.message) this.rawMessages.set(messageId, sent);
+    return { messageId };
   }
 
   /**

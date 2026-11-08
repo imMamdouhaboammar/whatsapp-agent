@@ -5,6 +5,7 @@ import type { AudioTranscriber } from '../ai/audio-transcriber';
 import type { ModeratorAgent } from '../ai/moderator-agent';
 import type { VoiceSynthesizer } from '../ai/voice-synthesizer';
 import type { MemoryStore } from '../domain/memory-store';
+import { SendIntentService } from '../domain/send-intent-service';
 import type { ChatMessage } from '../domain/types';
 import type { WhatsAppSocketClient } from '../transport/whatsapp-socket';
 import type { SSEBroadcaster } from './sse';
@@ -36,8 +37,21 @@ export function createApiServer(deps: {
   dualMemoryManager?: DualMemoryManager;
   reflectionWorker?: ReflectionWorker;
   reflectionEngine?: ReflectionEngine;
+  sendIntents?: SendIntentService;
 }): Hono {
   const app = new Hono();
+  let delivery = deps.sendIntents;
+  const getDelivery = () => delivery ??= new SendIntentService({
+    memoryStore: deps.memoryStore,
+    sendText: (chatId, text, options) => deps.whatsappClient.sendMessage(chatId, text, options),
+    prepareVoice: deps.voiceSynthesizer
+      ? (text) => deps.voiceSynthesizer!.synthesizeVoice(text, deps.moderatorAgent.getPersona().voiceName)
+      : undefined,
+    sendVoice: deps.voiceSynthesizer
+      ? (chatId, audio, options) => deps.whatsappClient.sendVoiceNote(chatId, audio, { replyToMessageId: options?.replyToMessageId })
+      : undefined,
+    publish: (event, data) => deps.sse.broadcast(event, data)
+  });
   const funnelEngine = deps.funnelEngine ?? new FableFunnelEngine({
     registry: new FunnelRegistry({
       initialMethods: [
@@ -112,6 +126,26 @@ export function createApiServer(deps: {
     }
     const limit = Number(c.req.query('limit') ?? 50);
     const messages = deps.memoryStore.getMessages(chatId, limit);
+    const outstanding: ChatMessage[] = deps.memoryStore.getSendLedger().getOutstanding(chatId).map((intent): ChatMessage => {
+      const attempts = deps.memoryStore.getSendLedger().getAttempts(intent.id);
+      return {
+        id: `intent:${intent.id}`,
+        sendIntentId: intent.id,
+        chatId: intent.chatId,
+        sender: 'me',
+        text: intent.text,
+        timestamp: intent.createdAt,
+        isFromMe: true,
+        type: intent.actionKind === 'voice' ? 'audio' : 'text',
+        replyToId: intent.replyToMessageId,
+        status: 'pending',
+        deliveryState: intent.state as ChatMessage['deliveryState'],
+        lastAttemptAt: attempts.at(-1)?.startedAt,
+        nativeMessageId: intent.nativeMessageId
+      };
+    });
+    messages.push(...outstanding);
+    messages.sort((a, b) => a.timestamp - b.timestamp);
     deps.memoryStore.markChatRead(chatId);
     deps.sse.broadcast('chat_updated', { chatId, unreadCount: 0 });
     return c.json({ messages });
@@ -122,53 +156,56 @@ export function createApiServer(deps: {
     if (deps.whatsappClient?.canonicalizeJid) {
       chatId = await deps.whatsappClient.canonicalizeJid(chatId);
     }
-    const body = await c.req.json();
-    const text = String(body.text ?? '');
+    const body = await c.req.json().catch(() => ({}));
+    const messageText = String(body.text ?? '');
     const replyToMessageId = body.replyToMessageId ? String(body.replyToMessageId) : undefined;
 
-    if (!text.trim()) {
-      return c.json({ error: 'Text is required' }, 400);
-    }
+    if (!messageText.trim()) return c.json({ error: 'Text is required' }, 400);
 
     try {
-      const sent = await deps.whatsappClient.sendMessage(chatId, text, {
-        replyToMessageId,
-        simulatedDelayMs: 500
-      });
-
-      let quotedMessageInfo: ChatMessage['quotedMessage'] = undefined;
-      if (replyToMessageId) {
-        const quoted = deps.memoryStore.getMessage(chatId, replyToMessageId);
-        if (quoted) {
-          quotedMessageInfo = {
-            id: quoted.id,
-            sender: quoted.sender,
-            senderName: quoted.isFromMe ? 'أنت' : (quoted.senderName || 'المتصل'),
-            text: quoted.text || (quoted.transcription ? `🎵 ${quoted.transcription}` : `[${quoted.type}]`),
-            type: quoted.type
-          };
-        }
-      }
-
-      const message: ChatMessage = {
-        id: sent.messageId,
+      const result = await getDelivery().sendText({
+        sourceKind: 'ui',
+        sourceId: String(body.clientMutationId || c.req.header('Idempotency-Key') || crypto.randomUUID()),
+        sourceRevision: Number(body.sourceRevision ?? 1),
+        actionKind: 'text',
         chatId,
-        sender: 'me',
-        text,
-        timestamp: Date.now(),
-        isFromMe: true,
-        type: 'text',
-        replyToId: replyToMessageId,
-        quotedMessage: quotedMessageInfo,
-        status: 'sent'
+        text: messageText,
+        replyToMessageId,
+        policyRevision: 1
+      });
+      const success = ['accepted', 'delivered', 'read'].includes(result.intent.state);
+      const payload = {
+        success,
+        intentId: result.intent.id,
+        state: result.intent.state,
+        message: result.message,
+        needsReconciliation: result.intent.state === 'uncertain'
       };
+      return success ? c.json(payload) : c.json(payload, 202);
+    } catch (error: any) {
+      return c.json({ error: error.message }, error.name === 'SendIntentConflictError' ? 409 : 500);
+    }
+  });
 
-      const persistedMessage = deps.memoryStore.addMessage(message);
-      deps.sse.broadcast('new_message', persistedMessage);
-
-      return c.json({ success: true, message: persistedMessage });
-    } catch (err: any) {
-      return c.json({ error: err.message }, 500);
+  app.post('/api/send-intents/:intentId/retry', async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    if (body.confirm !== true) return c.json({ error: 'Explicit retry confirmation is required' }, 400);
+    const intentId = c.req.param('intentId');
+    try {
+      const result = await getDelivery().retryUncertain(
+        intentId, String(body.clientMutationId || crypto.randomUUID())
+      );
+      const success = ['accepted', 'delivered', 'read'].includes(result.intent.state);
+      const payload = {
+        success,
+        intentId: result.intent.id,
+        state: result.intent.state,
+        message: result.message,
+        needsReconciliation: result.intent.state === 'uncertain'
+      };
+      return success ? c.json(payload) : c.json(payload, 202);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 409);
     }
   });
 
@@ -212,34 +249,14 @@ export function createApiServer(deps: {
     const body = await c.req.json().catch(() => ({}));
     const draft = deps.memoryStore.getDraft(draftId);
     if (!draft) return c.json({ error: 'Draft not found' }, 404);
-
-    const replyText = body.editedText || body.replyText || draft.proposedReply;
-    const shouldSendVoice = (body.asVoice !== undefined ? Boolean(body.asVoice) : Boolean(draft.sendAsVoiceNote)) && Boolean(deps.voiceSynthesizer);
+    const replyText = String(body.editedText || body.replyText || draft.proposedReply);
+    const asVoice = Boolean(deps.voiceSynthesizer) &&
+      (body.asVoice !== undefined ? Boolean(body.asVoice) : Boolean(draft.sendAsVoiceNote));
 
     try {
-      let sentMessageId: string;
-      let msgType: ChatMessage['type'] = 'text';
-
-      if (shouldSendVoice && deps.voiceSynthesizer) {
-        // Synthesize native WhatsApp PTT voice note using Chirp3-HD / Gemini-TTS
-        const personaVoice = deps.moderatorAgent.getPersona().voiceName;
-        const audioBuffer = await deps.voiceSynthesizer.synthesizeVoice(replyText, personaVoice);
-        const sent = await deps.whatsappClient.sendVoiceNote(draft.chatId, audioBuffer, {
-          replyToMessageId: draft.incomingMessageId
-        });
-        sentMessageId = sent.messageId;
-        msgType = 'audio';
-      } else {
-        const sent = await deps.whatsappClient.sendMessage(draft.chatId, replyText, {
-          replyToMessageId: draft.incomingMessageId,
-          simulatedDelayMs: 1000
-        });
-        sentMessageId = sent.messageId;
-      }
-
-      deps.memoryStore.updateDraftStatus(draftId, 'approved', replyText);
-
-      if (draft.proposedReply !== replyText && deps.reflectionWorker) {
+      const approved = await getDelivery().approveDraft(draftId, replyText, 1, asVoice);
+      if (!approved.result) return c.json({ error: 'Draft already processed' }, 409);
+      if (approved.created && draft.proposedReply !== replyText && deps.reflectionWorker) {
         deps.reflectionWorker.recordModerationFeedback({
           chatId: draft.chatId,
           draftId,
@@ -249,27 +266,22 @@ export function createApiServer(deps: {
           humanNote: 'Operator revised draft prior to approval'
         });
       }
-
-      const message: ChatMessage = {
-        id: sentMessageId,
-        chatId: draft.chatId,
-        sender: 'me',
-        text: msgType === 'audio' ? `🎵 [رسالة صوتية صادرة: ${replyText}]` : replyText,
-        transcription: msgType === 'audio' ? replyText : undefined,
-        timestamp: Date.now(),
-        isFromMe: true,
-        type: msgType,
-        replyToId: draft.incomingMessageId,
-        status: 'sent'
+      deps.sse.broadcast('draft_updated', {
+        draftId,
+        status: approved.result.intent.state === 'accepted' ? 'sent' : 'approved'
+      });
+      const success = ['accepted', 'delivered', 'read'].includes(approved.result.intent.state);
+      const payload = {
+        success,
+        alreadyProcessed: !approved.created,
+        intentId: approved.result.intent.id,
+        state: approved.result.intent.state,
+        message: approved.result.message,
+        needsReconciliation: approved.result.intent.state === 'uncertain'
       };
-
-      const persistedMessage = deps.memoryStore.addMessage(message);
-      deps.sse.broadcast('new_message', persistedMessage);
-      deps.sse.broadcast('draft_updated', { draftId, status: 'approved' });
-
-      return c.json({ success: true, message: persistedMessage });
-    } catch (err: any) {
-      return c.json({ error: err.message }, 500);
+      return success ? c.json(payload) : c.json(payload, 202);
+    } catch (error: any) {
+      return c.json({ error: error.message }, error.name === 'SendIntentConflictError' ? 409 : 500);
     }
   });
 

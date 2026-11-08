@@ -136,6 +136,9 @@ export function App() {
                 !oldMsg ||
                 oldMsg.id !== newMsg.id ||
                 oldMsg.status !== newMsg.status ||
+                oldMsg.deliveryState !== newMsg.deliveryState ||
+                oldMsg.lastAttemptAt !== newMsg.lastAttemptAt ||
+                oldMsg.nativeMessageId !== newMsg.nativeMessageId ||
                 (oldMsg.reactions?.length ?? 0) !== (newMsg.reactions?.length ?? 0)
               );
             });
@@ -205,6 +208,18 @@ export function App() {
         setMessages((prev) => prev.map((message) =>
           message.id === messageId && message.isFromMe ? { ...message, status } : message
         ));
+      } catch {
+        // Ignore malformed SSE message
+      }
+    });
+
+    eventSource.addEventListener('send_intent', (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as { chatId: string };
+        if (data.chatId !== selectedChatIdRef.current) return;
+        void api.getMessages(data.chatId).then((response) => setMessages(response.messages)).catch((error) => {
+          console.warn('[Delivery] Could not refresh message states:', error);
+        });
       } catch {
         // Ignore malformed SSE message
       }
@@ -281,12 +296,19 @@ export function App() {
   }, [loadInitialData]);
 
   // Handlers
-  const handleSendMessage = async (text: string, replyToMessageId?: string) => {
+  const handleSendMessage = async (text: string, replyToMessageId?: string, clientMutationId?: string) => {
     if (!selectedChatId) return;
-    const res = await api.sendMessage(selectedChatId, text, replyToMessageId);
-    if (res.success && res.message) {
-      setMessages((prev) => prev.some((message) => message.id === res.message.id) ? prev : [...prev, res.message]);
-    }
+    const res = await api.sendMessage(selectedChatId, text, replyToMessageId, clientMutationId);
+    const latest = await api.getMessages(selectedChatId);
+    setMessages(latest.messages);
+    if (res.state === 'failed') throw new Error('Send failed before reaching WhatsApp');
+  };
+
+  const handleRetrySendIntent = async (intentId: string, clientMutationId: string) => {
+    if (!selectedChatId) return;
+    await api.retrySendIntent(intentId, clientMutationId);
+    const latest = await api.getMessages(selectedChatId);
+    setMessages(latest.messages);
   };
 
   const handleSendReaction = async (messageId: string, emoji: string) => {
@@ -460,7 +482,7 @@ export function App() {
           </button>
         </nav>
         <ChatList chats={chats} selectedChatId={selectedChatId} pendingDraftChatIds={pendingDraftChatIds} onSelectChat={selectChat} />
-        <ChatThread key={selectedChatId || 'empty'} chat={selectedChat} messages={messages} onSendMessage={handleSendMessage} onSendReaction={handleSendReaction} onChangeMode={handleChangeMode} onBack={() => setMobileView('list')} onOpenInspector={() => openInspector('assistant')} />
+        <ChatThread key={selectedChatId || 'empty'} chat={selectedChat} messages={messages} onSendMessage={handleSendMessage} onRetrySendIntent={handleRetrySendIntent} onSendReaction={handleSendReaction} onChangeMode={handleChangeMode} onBack={() => setMobileView('list')} onOpenInspector={() => openInspector('assistant')} />
         <aside id="wa-agent-panel" className={'wa-agent-shell ' + (inspectorOpen ? 'is-open' : '')} aria-label={tr('لوحة المساعد الذكي', 'AI assistant panel')} aria-hidden={!inspectorVisible} inert={!inspectorVisible}>
           <button type="button" className="wa-inspector-close wa-icon-button" onClick={closeInspector} aria-label={tr('إغلاق لوحة المساعد', 'Close assistant panel')}><X size={20} /></button>
           <ModeratorDrawer key={(selectedChatId || 'none') + inspectorView} view={inspectorView} drafts={drafts} latestThought={latestThought} persona={persona} selectedChatId={selectedChatId} selectedChatMode={selectedChat?.agentMode} onSelectChat={selectChat} onApproveDraft={handleApproveDraft} onRejectDraft={handleRejectDraft} />

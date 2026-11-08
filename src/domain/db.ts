@@ -1,6 +1,7 @@
 import { Database } from 'bun:sqlite';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { SendLedger } from './send-ledger';
 import type {
   AgentDraft,
   AgentMode,
@@ -31,6 +32,7 @@ export interface SqliteStoreOptions {
 export class SqliteStore {
   private db: Database;
   private dbPath: string;
+  private sendLedger: SendLedger;
   private pendingStatuses = new Map<string, NonNullable<ChatMessage['status']>>();
 
   constructor(options: SqliteStoreOptions = {}) {
@@ -44,6 +46,7 @@ export class SqliteStore {
 
     this.db = new Database(this.dbPath);
     this.init();
+    this.sendLedger = new SendLedger(this.db);
 
     if (options.legacyDataDir) {
       this.importLegacyJson(options.legacyDataDir);
@@ -686,6 +689,10 @@ export class SqliteStore {
       return this.db.query('SELECT * FROM learning_reflections WHERE chat_id = ? ORDER BY created_at DESC LIMIT ?;').all(chatId, limit) as any[];
     }
     return this.db.query('SELECT * FROM learning_reflections ORDER BY created_at DESC LIMIT ?;').all(limit) as any[];
+  }
+
+  getSendLedger(): SendLedger {
+    return this.sendLedger;
   }
 
   close() {

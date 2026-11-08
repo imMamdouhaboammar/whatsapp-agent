@@ -6,6 +6,7 @@ import {
 import type { AudioTranscriber } from '../ai/audio-transcriber';
 import type { ModeratorAgent } from '../ai/moderator-agent';
 import type { MemoryStore } from '../domain/memory-store';
+import { SendIntentService } from '../domain/send-intent-service';
 import type { WhatsAppSocketClient } from '../transport/whatsapp-socket';
 import type { FableFunnelEngine } from '../funnel';
 import { UserMemoryManager } from '../domain/user-memory';
@@ -17,7 +18,13 @@ export function createWhatsAppMcpServer(deps: {
   moderatorAgent: ModeratorAgent;
   audioTranscriber?: AudioTranscriber;
   funnelEngine?: FableFunnelEngine;
+  sendIntents?: SendIntentService;
 }): Server {
+  let delivery = deps.sendIntents;
+  const getDelivery = () => delivery ??= new SendIntentService({
+    memoryStore: deps.memoryStore,
+    sendText: (chatId, text, options) => deps.whatsappClient.sendMessage(chatId, text, options)
+  });
   const server = new Server(
     {
       name: 'fable-agentic-whatsapp',
@@ -86,6 +93,10 @@ export function createWhatsAppMcpServer(deps: {
               replyToMessageId: {
                 type: 'string',
                 description: 'Optional ID of the message to quote/reply to'
+              },
+              mutationId: {
+                type: 'string',
+                description: 'Stable mutation ID for safe retries of this send action'
               }
             },
             required: ['chatId', 'text']
@@ -281,35 +292,32 @@ export function createWhatsAppMcpServer(deps: {
       }
 
       case 'whatsapp_send_message': {
-        const chatId = String(args?.chatId);
-        const text = String(args?.text);
+        const chatId = deps.whatsappClient.canonicalizeJid
+          ? await deps.whatsappClient.canonicalizeJid(String(args?.chatId))
+          : String(args?.chatId);
+        const text = String(args?.text ?? '');
+        if (!text.trim()) throw new Error('Message text is required');
         const replyToMessageId = args?.replyToMessageId ? String(args.replyToMessageId) : undefined;
-
-        const sent = await deps.whatsappClient.sendMessage(chatId, text, {
-          replyToMessageId,
-          simulatedDelayMs: 1500
-        });
-
-        // Record into memory store
-        deps.memoryStore.addMessage({
-          id: sent.messageId,
+        const result = await getDelivery().sendText({
+          sourceKind: 'mcp',
+          sourceId: String(args?.mutationId || crypto.randomUUID()),
+          sourceRevision: 1,
+          actionKind: 'text',
           chatId,
-          sender: 'me',
           text,
-          timestamp: Date.now(),
-          isFromMe: true,
-          type: 'text',
-          replyToId: replyToMessageId,
-          status: 'sent'
+          replyToMessageId,
+          policyRevision: 1
         });
-
         return {
-          content: [
-            {
-              type: 'text',
-              text: `Message sent successfully. ID: ${sent.messageId}`
-            }
-          ]
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              intentId: result.intent.id,
+              state: result.intent.state,
+              messageId: result.intent.nativeMessageId ?? null,
+              needsReconciliation: result.intent.state === 'uncertain'
+            })
+          }]
         };
       }
 
@@ -367,36 +375,19 @@ export function createWhatsAppMcpServer(deps: {
       case 'whatsapp_approve_draft': {
         const draftId = String(args?.draftId);
         const editedText = args?.editedText ? String(args.editedText) : undefined;
-        const draft = deps.memoryStore.getDraft(draftId);
-        if (!draft) {
-          throw new Error(`Draft ${draftId} not found`);
-        }
-        const textToSend = editedText || draft.proposedReply;
-        const sent = await deps.whatsappClient.sendMessage(draft.chatId, textToSend, {
-          replyToMessageId: draft.incomingMessageId,
-          simulatedDelayMs: 1200
-        });
-
-        deps.memoryStore.updateDraftStatus(draftId, 'approved', textToSend);
-        deps.memoryStore.addMessage({
-          id: sent.messageId,
-          chatId: draft.chatId,
-          sender: 'me',
-          text: textToSend,
-          timestamp: Date.now(),
-          isFromMe: true,
-          type: 'text',
-          replyToId: draft.incomingMessageId,
-          status: 'sent'
-        });
-
+        const approved = await getDelivery().approveDraft(draftId, editedText);
+        if (!approved.result) throw new Error(`Draft ${draftId} not found or already processed`);
         return {
-          content: [
-            {
-              type: 'text',
-              text: `Draft ${draftId} approved and sent successfully.`
-            }
-          ]
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              draftId,
+              approved: approved.created,
+              intentId: approved.result.intent.id,
+              state: approved.result.intent.state,
+              messageId: approved.result.intent.nativeMessageId ?? null
+            })
+          }]
         };
       }
 

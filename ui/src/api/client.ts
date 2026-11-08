@@ -82,13 +82,22 @@ export const api = {
     return handleResponse<{ messages: ChatMessage[] }>(res, 'Failed to fetch messages');
   },
 
-  async sendMessage(chatId: string, text: string, replyToMessageId?: string): Promise<{ success: boolean; message: ChatMessage }> {
+  async sendMessage(chatId: string, text: string, replyToMessageId?: string, clientMutationId?: string): Promise<{ success: boolean; message?: ChatMessage; state: string; intentId: string }> {
     const res = await fetch(`${BASE_URL}/chats/${encodeURIComponent(chatId)}/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, replyToMessageId })
+      body: JSON.stringify({ text, replyToMessageId, clientMutationId: clientMutationId || crypto.randomUUID() })
     });
-    return handleResponse<{ success: boolean; message: ChatMessage }>(res, 'Failed to send message');
+    return handleResponse<{ success: boolean; message?: ChatMessage; state: string; intentId: string }>(res, 'Failed to send message');
+  },
+
+  async retrySendIntent(intentId: string, clientMutationId: string): Promise<{ success: boolean; state: string; intentId: string }> {
+    const res = await fetch(`${BASE_URL}/send-intents/${encodeURIComponent(intentId)}/retry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: true, clientMutationId })
+    });
+    return handleResponse<{ success: boolean; state: string; intentId: string }>(res, 'Failed to retry send intent');
   },
 
   async setChatMode(chatId: string, mode: 'autopilot' | 'copilot' | 'human'): Promise<{ success: boolean }> {

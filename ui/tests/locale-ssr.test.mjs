@@ -99,6 +99,7 @@ test('Conversation controls render correctly in both interface languages', () =>
     chat,
     messages: [],
     onSendMessage: noop,
+    onRetrySendIntent: noop,
     onSendReaction: noop,
     onChangeMode: noop,
     onBack: () => {},
@@ -112,6 +113,38 @@ test('Conversation controls render correctly in both interface languages', () =>
   assert.match(en, /Type a message/);
   assert.match(en, /Co-Pilot/);
   assert.match(en, /Back to chats/);
+});
+
+test('uncertain delivery is visible and retry requires explicit confirmation in both locales', () => {
+  const props = {
+    chat,
+    messages: [{
+      id: 'intent:sample',
+      sendIntentId: 'sample',
+      chatId: chat.id,
+      sender: 'me',
+      text: 'Important reply',
+      timestamp: Date.now(),
+      isFromMe: true,
+      type: 'text',
+      status: 'pending',
+      deliveryState: 'uncertain',
+      lastAttemptAt: Date.now()
+    }],
+    onSendMessage: noop,
+    onRetrySendIntent: noop,
+    onSendReaction: noop,
+    onChangeMode: noop,
+    onBack: () => {},
+    onOpenInspector: () => {}
+  };
+  const ar = render('ar', React.createElement(ChatThread, props));
+  const en = render('en', React.createElement(ChatThread, props));
+  assert.match(ar, /راجع واتساب قبل إعادة المحاولة/);
+  assert.match(ar, /إعادة الإرسال بعد المراجعة/);
+  assert.match(en, /Check WhatsApp before retrying/);
+  assert.match(en, /Retry after checking/);
+  assert.match(en, /role="alert"/);
 });
 
 test('Assistant approval is available in English without translating user content', () => {

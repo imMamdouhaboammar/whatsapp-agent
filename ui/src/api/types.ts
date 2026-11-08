@@ -23,6 +23,10 @@ export interface ChatMessage {
   quotedMessage?: QuotedMessageInfo;
   reactions?: string[];
   status?: 'pending' | 'sent' | 'delivered' | 'read';
+  sendIntentId?: string;
+  deliveryState?: 'queued' | 'attempting' | 'uncertain' | 'failed';
+  lastAttemptAt?: number;
+  nativeMessageId?: string;
 }
 
 export interface ChatSummary {
