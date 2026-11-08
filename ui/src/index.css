@@ -424,9 +424,8 @@ button, input, textarea { -webkit-tap-highlight-color: transparent; }
   --color-info: var(--wa-green-dark);
 }
 
-/* Neutralize layout property animation: ban transition on padding */
-.xjshnde:not(#\#):not(#\#):not(#\#),
-[class*="xjshnde"] {
+/* Keep toast row transitions, without animating layout padding */
+[data-toast-id].xjshnde {
   transition-property: grid-template-rows !important;
 }
 
