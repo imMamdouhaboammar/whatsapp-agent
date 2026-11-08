@@ -288,8 +288,23 @@ export class SendIntentService {
   async approveDraft(draftId: string, text?: string, policyRevision = 1, asVoice = false): Promise<{ created: boolean; result?: SendResult }> {
     const draft = this.options.memoryStore.getDraft(draftId);
     if (!draft) return { created: false };
+    if (draft.status !== 'pending') {
+      // Historical approvals are read-only acknowledgements, even if aliases changed.
+      const existing = this.options.memoryStore.getSendLedger().approveDraft(
+        draftId, text?.trim() || draft.proposedReply, policyRevision, Date.now(),
+        asVoice ? 'voice' : 'text'
+      );
+      return { created: false, result: existing.intent ? this.result(existing.intent) : undefined };
+    }
+    // Resolve the immutable recipient before the ledger's atomic draft-status claim.
+    // A missing or changed alias must leave the draft pending and unsent.
+    const recipientBinding = this.options.recipientDirectory?.bindRecipient({
+      brandId: this.options.brandId!,
+      jid: draft.chatId
+    });
     const claim = this.options.memoryStore.getSendLedger().approveDraft(
-      draftId, text?.trim() || draft.proposedReply, policyRevision, Date.now(), asVoice ? 'voice' : 'text'
+      draftId, text?.trim() || draft.proposedReply, policyRevision, Date.now(),
+      asVoice ? 'voice' : 'text', recipientBinding
     );
     if (!claim.intent) return { created: false };
     if (!claim.created) return { created: false, result: this.result(claim.intent) };
@@ -348,7 +363,11 @@ export class SendIntentService {
         id: intent.nativeMessageId,
         chatId: intent.chatId,
         sender: 'me',
-        text: intent.actionKind === 'voice' ? `🎵 [رسالة صوتية صادرة: ${intent.text}]` : intent.text,
+        text: intent.actionKind === 'voice'
+          ? `🎵 [رسالة صوتية صادرة: ${intent.text}]`
+          : intent.actionKind === 'template'
+            ? `[Meta template: ${intent.template?.name ?? 'approved'}]`
+            : intent.text,
         transcription: intent.actionKind === 'voice' ? intent.text : undefined,
         timestamp: intent.updatedAt,
         isFromMe: true,

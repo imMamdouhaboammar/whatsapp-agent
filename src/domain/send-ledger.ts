@@ -508,14 +508,18 @@ export class SendLedger {
     });
   }
 
-  approveDraft(draftId: string, text: string, policyRevision: number, now = Date.now(), actionKind: SendActionKind = 'text'): { created: boolean; intent?: SendIntent } {
+  approveDraft(
+    draftId: string, text: string, policyRevision: number, now = Date.now(),
+    actionKind: SendActionKind = 'text', recipientBinding?: RecipientBinding
+  ): { created: boolean; intent?: SendIntent } {
     return this.atomic(() => {
       const row = this.db.prepare('SELECT * FROM drafts WHERE id=?').get(draftId) as any;
       if (!row) return { created: false };
       const identity: SendIntentInput = {
         sourceKind: 'draft', sourceId: draftId, sourceRevision: 1,
         actionKind, chatId: row.chat_id,
-        text, replyToMessageId: row.incoming_message_id, policyRevision
+        text, replyToMessageId: row.incoming_message_id, policyRevision,
+        recipientBinding
       };
       if (row.status !== 'pending') {
         return { created: false, intent: this.getBySource(identity) };

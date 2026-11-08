@@ -9,7 +9,9 @@ This branch extends `src/domain/send-ledger.ts` and `src/domain/send-intent-serv
 - One `SendIntentService` per brand, with `brandId` supplied by trusted brand configuration, `recipientDirectory`, `sendTemplate` connected to the official Meta Cloud adapter, and `verifyTemplateEligibility` backed by current brand/provider/business records
 - A08 `ProactiveEngagementScheduler` started only after those dependencies are ready, with authenticated inbound replies and STOP forwarded using S07 canonical contact identity
 
-When a recipient directory is configured, it is required for **every** outgoing action. Text and voice also capture the immutable S07 `RecipientBinding` at queue creation and revalidate that exact binding immediately before network dispatch, after any awaited voice synthesis. An unbound legacy queued intent or a changed identity becomes terminal `failed`, reason `recipient_binding_changed`, with no network call. Source IDs, chat IDs and contact IDs are never silently remapped.
+When a recipient directory is configured, it is required for **every** outgoing action. Text and voice also capture the immutable S07 `RecipientBinding` at queue creation and revalidate that exact binding immediately before network dispatch, after any awaited voice synthesis. Approved drafts bind the recipient before the ledger atomically changes the draft status; an unknown alias leaves the draft pending with no new intent. Repeated acknowledgements of previously approved drafts are read-only, even if the identity directory later changes. An unbound legacy queued intent or a changed identity becomes terminal `failed`, reason `recipient_binding_changed`, with no network call. Source IDs, chat IDs and contact IDs are never silently remapped.
+
+A delivered template uses a safe local chat preview containing only the approved template name. The personalized template variables remain in the intent's durable payload and are never used as fallback preview text.
 
 ## Injectable SendIntentService options
 

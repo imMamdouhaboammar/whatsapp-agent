@@ -323,3 +323,112 @@ describe('S01 native Meta failure receipts', () => {
     } finally { memory.close(); }
   });
 });
+
+describe('S01 draft approvals and safe template previews', () => {
+  test('approval binds a draft recipient atomically and sends once under an enabled S07 directory', async () => {
+    const memory = new MemoryStore({ dataDir: ':memory:' });
+    const directory = new ContactIdentityDirectory();
+    try {
+      const contact = directory.observeAlias({ brandId, jid });
+      memory.saveDraft({
+        id: 'review-approved', chatId: jid, incomingMessageId: 'incoming-review',
+        incomingText: 'What is the status?', proposedReply: 'Confirmed',
+        reasoning: 'Owner approved', confidence: 0.9, status: 'pending', createdAt: Date.now()
+      });
+      let sends = 0;
+      const service = new SendIntentService({
+        memoryStore: memory, brandId, recipientDirectory: directory,
+        sendText: async () => { sends++; return { messageId: 'wamid.approved-draft' }; }
+      });
+      const first = await service.approveDraft('review-approved', 'Reply approved by owner');
+      const second = await service.approveDraft('review-approved', 'Reply approved by owner');
+      expect(first.created).toBe(true);
+      expect(first.result?.intent.state).toBe('accepted');
+      expect(first.result?.intent.recipientBinding).toMatchObject({ brandId, jid, contactId: contact.contactId });
+      expect(memory.getSendLedger().getIntent(first.result!.intent.id)?.recipientBinding).toEqual(first.result!.intent.recipientBinding!);
+      expect(memory.getDraft('review-approved')?.status).toBe('sent');
+      expect(second.created).toBe(false);
+      expect(sends).toBe(1);
+    } finally { memory.close(); directory.close(); }
+  });
+
+  test('failed S07 binding leaves a pending draft untouched with no send or ledger insertion', async () => {
+    const memory = new MemoryStore({ dataDir: ':memory:' });
+    const directory = new ContactIdentityDirectory();
+    try {
+      memory.saveDraft({
+        id: 'unbound-draft', chatId: jid, incomingMessageId: 'incoming-unbound',
+        incomingText: 'Request', proposedReply: 'Answer',
+        reasoning: 'Pending owner review', confidence: 0.8, status: 'pending', createdAt: Date.now()
+      });
+      let sends = 0;
+      const service = new SendIntentService({
+        memoryStore: memory, brandId, recipientDirectory: directory,
+        sendText: async () => { sends++; return { messageId: 'forbidden' }; }
+      });
+      await expect(service.approveDraft('unbound-draft', 'Owner approved'))
+        .rejects.toThrow(/recipient|identity|binding/i);
+      expect(memory.getDraft('unbound-draft')?.status).toBe('pending');
+      expect(memory.getSendLedger().getBySource({
+        sourceKind: 'draft', sourceId: 'unbound-draft', sourceRevision: 1, actionKind: 'text'
+      })).toBeUndefined();
+      expect(sends).toBe(0);
+    } finally { memory.close(); directory.close(); }
+  });
+
+  test('outbound template chat preview shows a safe approved name, without personal variables', async () => {
+    const memory = new MemoryStore({ dataDir: ':memory:' });
+    const directory = new ContactIdentityDirectory();
+    try {
+      directory.observeAlias({ brandId, jid });
+      const service = new SendIntentService({
+        memoryStore: memory, brandId, recipientDirectory: directory,
+        sendText: async () => { throw new Error('freeform forbidden'); },
+        verifyTemplateEligibility: async () => liveEvidence(),
+        sendTemplate: async () => ({ messageId: 'wamid.preview-template' })
+      });
+      const result = await service.sendTemplate(templateInput({ sourceId: 'preview-safe' }));
+      expect(result.intent.state).toBe('accepted');
+      expect(memory.getMessage(jid, 'wamid.preview-template')?.text).toBe('[Meta template: delivery_update]');
+      expect(memory.getMessage(jid, 'wamid.preview-template')?.text).not.toContain('Order 42');
+    } finally { memory.close(); directory.close(); }
+  });
+});
+
+test('repeat approval remains a read-only idempotent acknowledgement after recipient identity changes', async () => {
+  const memory = new MemoryStore({ dataDir: ':memory:' });
+  const directory = new ContactIdentityDirectory({ verifyEvidence: () => true });
+  try {
+    const otherJid = '201112223335@s.whatsapp.net';
+    directory.observeAlias({ brandId, jid });
+    directory.observeAlias({ brandId, jid: otherJid });
+    memory.saveDraft({
+      id: 'already-sent-draft', chatId: jid, incomingMessageId: 'incoming-sent',
+      incomingText: 'Question', proposedReply: 'Answered',
+      reasoning: 'Approved', confidence: 0.9, status: 'pending', createdAt: Date.now()
+    });
+    let sends = 0;
+    const service = new SendIntentService({
+      memoryStore: memory, brandId, recipientDirectory: directory,
+      sendText: async () => { sends++; return { messageId: 'wamid.sent-before-merge' }; }
+    });
+    const first = await service.approveDraft('already-sent-draft', 'Owner approved');
+    expect(first.result?.intent.state).toBe('accepted');
+    directory.verifyAliasRelationship({
+      brandId, primaryJid: otherJid, relatedJid: jid,
+      source: 'provider_verified', evidenceRef: 'verified-post-send-merge-001'
+    });
+    const restartedDirectory = new ContactIdentityDirectory();
+    try {
+      // A lost identity cache cannot turn a completed approval into a new send.
+      const restarted = new SendIntentService({
+        memoryStore: memory, brandId, recipientDirectory: restartedDirectory,
+        sendText: async () => { sends++; return { messageId: 'forbidden' }; }
+      });
+      const duplicate = await restarted.approveDraft('already-sent-draft', 'Owner approved');
+      expect(duplicate.created).toBe(false);
+      expect(duplicate.result?.intent.id).toBe(first.result!.intent.id);
+      expect(sends).toBe(1);
+    } finally { restartedDirectory.close(); }
+  } finally { memory.close(); directory.close(); }
+});
