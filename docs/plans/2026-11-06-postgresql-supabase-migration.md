@@ -29,7 +29,13 @@ Move all persistent data from seven Bun SQLite databases into a private PostgreS
 | `agent-followups.sqlite` | engagement_triggers, engagement_optouts | Atomic scheduling/claiming, consent, channel restrictions |
 | `agent-quality.sqlite` | agent_evaluations | Brand-scoped assessment records |
 
-Total: 16 persisted tables. `knowledge_fts` is a derived SQLite index, not a source table; PostgreSQL uses its own GIN lexical index.
+Total at the original S0 audit: 16 persisted tables. `knowledge_fts` is a derived SQLite index, not a source table; PostgreSQL uses its own GIN lexical index.
+
+### Post-S01 inventory correction (2026-11-08)
+
+S01 Reliable Delivery introduced **three more persistent tables** inside `fable_whatsapp.db`: `send_intents`, `send_attempts`, and `send_intent_events`. At this branch's baseline there are **19 source tables** across the seven SQLite files. This is a dated inventory, not the final count for B2: any newly landed second-batch SQLite schemas (including identity/working-context and follow-up changes) must be re-inventoried before migration parity is judged. The original PostgreSQL schema and offline importer still cover the preceding 16 tables. They must be extended with the S01 ledger's foreign keys, idempotency and append-only event history before any migration rehearsal or cutover. Missing historical ledger tables require an explicit version-aware import decision, never silent data fabrication.
+
+A first asynchronous PostgreSQL `PostgresActionJournal` slice now has an injectable transaction contract and isolated tests. The app's live `ActionJournal` and every other operational writer still use SQLite. `DATASTORE=postgres` deliberately rejects startup until all operational stores, including the S01 ledger, support one PostgreSQL writer with proven feature parity. A configured `DATABASE_URL` may still serve the separate learning/reflection persistence feature in the current SQLite-default runtime.
 
 ## Target design
 
