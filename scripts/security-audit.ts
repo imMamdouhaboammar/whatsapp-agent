@@ -125,7 +125,9 @@ try {
     }
   }
 
-  if (scan.status !== 0) {
+  // OSV exits 1 for any findings, even when every advisory is below our severity gate.
+  // An exit of 1 without corresponding JSON findings still indicates an inconsistent scan.
+  if (scan.status !== 0 && !(scan.status === 1 && findings.length > 0)) {
     throw new Error("osv-scanner exited unsuccessfully (status " + String(scan.status) + ")");
   }
   if (findings.some((finding) => finding.isHighOrCritical)) {

@@ -80,9 +80,18 @@ describe("dependency security audit", () => {
     expect(scanWithFakeScanner(JSON.stringify(payload)).status).not.toBe(0);
   });
 
-  it("permits a known moderate severity with an otherwise valid report", () => {
+  it("permits known moderate vulnerabilities when OSV exits 1 for findings", () => {
     const payload = { results: [{ packages: [{ package: { name: "synthetic", version: "1.0.0" }, vulnerabilities: [{ id: "GHSA-TEST-MODERATE", database_specific: { severity: "MODERATE" } }] }] }] };
-    expect(scanWithFakeScanner(JSON.stringify(payload)).status).toBe(0);
+    expect(scanWithFakeScanner(JSON.stringify(payload), 1).status).toBe(0);
+  });
+
+  it("fails closed when OSV exits 1 but reports no vulnerabilities", () => {
+    expect(scanWithFakeScanner(JSON.stringify({ results: [] }), 1).status).not.toBe(0);
+  });
+
+  it("fails closed when OSV reports a general scanner error despite valid findings", () => {
+    const payload = { results: [{ packages: [{ package: { name: "synthetic", version: "1.0.0" }, vulnerabilities: [{ id: "GHSA-TEST-MODERATE", database_specific: { severity: "MODERATE" } }] }] }] };
+    expect(scanWithFakeScanner(JSON.stringify(payload), 127).status).not.toBe(0);
   });
 
   it("fails closed on a vulnerability without severity evidence", () => {
