@@ -1,6 +1,7 @@
 import { serveStatic } from 'hono/bun';
 import { createCapabilities, registerCapabilityRoutes } from './agent/capabilities-api';
 import { AgentTurnCoordinator } from './agent/turn-coordinator';
+import { createInboundPlanner } from './agent/inbound-planner';
 import { AudioTranscriber } from './ai/audio-transcriber';
 import { GeminiClient } from './ai/gemini-client';
 import { ModeratorAgent } from './ai/moderator-agent';
@@ -16,6 +17,9 @@ import { createApiServer } from './server/api';
 import { SSEBroadcaster } from './server/sse';
 import { assertSafeDashboardBind } from './server/dashboard-auth';
 import { WhatsAppSocketClient } from './transport/whatsapp-socket';
+import { MetaCloudApi, type MetaCloudApiConfig, type MetaCloudWebhookEvent } from './transport/meta-cloud-api';
+import { registerMetaCloudWebhookRoutes } from './server/meta-cloud-routes';
+import { ContactIdentityDirectory } from './identity/contact-directory';
 import { FableFunnelEngine, FunnelRegistry } from './funnel';
 import { DualMemoryManager } from './domain/learning-memory';
 import { ReflectionEngine } from './ai/reflection-engine';
@@ -32,11 +36,32 @@ export async function createFableWhatsAppAgent(options: {
   dashboardToken?: string;
   capabilityAutopilotBrandId?: string;
   capabilityModel?: Pick<GeminiClient,'generateContent'>;
+  transport?: 'baileys' | 'meta-cloud';
+  metaCloud?: { config: MetaCloudApiConfig; fetch?: typeof fetch; now?: () => number };
+  plannerEnv?: Readonly<Record<string, string | undefined>>;
 } = {}) {
   // Fail before constructing a SQLite store if a partial PostgreSQL cutover was requested.
   resolveRuntimeDatastore();
   const port = options.port ?? Number(process.env.PORT || 3000);
   const dataDir = options.dataDir ?? './data';
+  const transportMode = options.transport ?? process.env.WHATSAPP_TRANSPORT ?? 'baileys';
+  if (transportMode !== 'baileys' && transportMode !== 'meta-cloud') {
+    throw new Error('Unsupported WhatsApp transport mode');
+  }
+  const brandId = options.capabilityAutopilotBrandId ?? process.env.AGENT_AUTOPILOT_BRAND_ID;
+  const metaConfig = options.metaCloud?.config ?? {
+    graphVersion: process.env.META_CLOUD_GRAPH_VERSION ?? '',
+    phoneNumberId: process.env.META_CLOUD_PHONE_NUMBER_ID ?? '',
+    businessAccountId: process.env.META_CLOUD_BUSINESS_ACCOUNT_ID ?? '',
+    accessToken: process.env.META_CLOUD_ACCESS_TOKEN ?? '',
+    appSecret: process.env.META_CLOUD_APP_SECRET ?? '',
+    webhookVerifyToken: process.env.META_CLOUD_VERIFY_TOKEN ?? ''
+  };
+  if (transportMode === 'meta-cloud' && (!brandId ||
+      !metaConfig.graphVersion || !metaConfig.phoneNumberId || !metaConfig.businessAccountId ||
+      !metaConfig.accessToken || !metaConfig.appSecret || !metaConfig.webhookVerifyToken)) {
+    throw new Error('Meta Cloud transport requires a configured brand and complete account credentials');
+  }
 
   console.log('🚀 [Fable Agentic WhatsApp] Initializing supervisor & agent engine...');
 
@@ -88,11 +113,20 @@ export async function createFableWhatsAppAgent(options: {
     dualMemoryManager
   });
 
+  const inboundPlanner = createInboundPlanner({
+    planner: capabilities.planner,
+    registry: capabilities.registry,
+    dataDir,
+    brandId,
+    env: options.plannerEnv ?? process.env
+  });
+
   const coordinator = new AgentTurnCoordinator({
     moderator: moderatorAgent,
     memory: memoryStore,
     operator: capabilities.operator,
-    brandId: options.capabilityAutopilotBrandId ?? process.env.AGENT_AUTOPILOT_BRAND_ID,
+    planner: inboundPlanner,
+    brandId,
     enabled: process.env.AGENT_CAPABILITIES_AUTOPILOT === '1' || Boolean(options.capabilityAutopilotBrandId)
   });
 
@@ -152,7 +186,7 @@ export async function createFableWhatsAppAgent(options: {
             }
 
             // 2. Decide between Voice Note (PTT) vs Split Text Bubbles
-            if (result.decision.sendAsVoiceNote) {
+            if (result.decision.sendAsVoiceNote && transportMode === 'baileys') {
               const voiceResult = await sendIntents.sendVoice({
                 sourceKind: 'autopilot',
                 sourceId: `${fusedMsg.chatId}:${fusedMsg.id}:voice`,
@@ -204,6 +238,33 @@ export async function createFableWhatsAppAgent(options: {
     }
   });
 
+  const recipientDirectory = transportMode === 'meta-cloud'
+    ? new ContactIdentityDirectory({
+      dbPath: dataDir === ':memory:' ? ':memory:' : join(dataDir, 'contact-identity.sqlite')
+    })
+    : undefined;
+
+  // Both transports share the durable inbound path and replay detection.
+  const handleInboundMessage = async (msg: ChatMessage, delivery?: { historical: boolean }): Promise<void> => {
+    if (!msg.text?.trim() && msg.type === 'text') return;
+    if (msg.text === '[رسالة]') return;
+    if (memoryStore.getMessage(msg.chatId, msg.id)) return;
+
+    if (!msg.isFromMe && recipientDirectory && brandId) {
+      recipientDirectory.observeAlias({ brandId, jid: msg.chatId });
+    }
+    const persistedMessage = memoryStore.addMessage(msg);
+    sse.broadcast('new_message', persistedMessage);
+    sse.broadcast('chat_updated', { chatId: msg.chatId });
+
+    if (msg.isFromMe || delivery?.historical) return;
+    if (transportMode === 'baileys') {
+      const ownPhone = whatsappClient.getState().connectedUser?.phone;
+      if (ownPhone && msg.chatId.startsWith(ownPhone)) return;
+    }
+    burstAccumulator.push(msg);
+  };
+
   whatsappClient = new WhatsAppSocketClient({
     sessionDir: `${dataDir}/session`,
     audioTranscriber,
@@ -224,41 +285,69 @@ export async function createFableWhatsAppAgent(options: {
       sse.broadcast('message_reaction', { chatId, messageId, emoji });
       sse.broadcast('chat_updated', { chatId });
     },
-    onMessage: async (msg: ChatMessage, delivery?: { historical: boolean }) => {
-      if (!msg.text?.trim() && msg.type === 'text') return;
-      if (msg.text === '[رسالة]') return;
-      // Transport reconnects/history replay the same message ID. Do not count or reply twice.
-      if (memoryStore.getMessage(msg.chatId,msg.id)) return;
-
-      // 1. Record incoming message immediately to SQLite and broadcast to UI
-      const persistedMessage = memoryStore.addMessage(msg);
-      sse.broadcast('new_message', persistedMessage);
-      sse.broadcast('chat_updated', { chatId: msg.chatId });
-
-      // If message is from me, do not run agent reply loop
-      if (msg.isFromMe || delivery?.historical) {
-        return;
-      }
-
-      const myPhone = whatsappClient.getState().connectedUser?.phone;
-      if (myPhone && msg.chatId.startsWith(myPhone)) {
-        // Self note (Note to Self) - do not auto-reply to own sync chat
-        return;
-      }
-
-      // 2. Push into Burst Accumulator (debounces rapid messages into single conversational turn)
-      burstAccumulator.push(msg);
-    }
+    onMessage: handleInboundMessage
   });
+
+  const handleMetaEvent = async (event: MetaCloudWebhookEvent): Promise<void> => {
+    if (event.kind === 'inbound_text') {
+      await handleInboundMessage({
+        id: event.nativeMessageId,
+        chatId: event.chatId,
+        sender: event.chatId,
+        text: event.text,
+        timestamp: event.timestampMs,
+        isFromMe: false,
+        type: 'text'
+      });
+      return;
+    }
+    if (event.kind === 'receipt') {
+      sendIntents.receipt(event.chatId, event.nativeMessageId, event.status);
+      const persistedStatus = memoryStore.updateMessageStatus(
+        event.chatId, event.nativeMessageId, event.status
+      );
+      if (persistedStatus) {
+        sse.broadcast('message_status', {
+          chatId: event.chatId,
+          messageId: event.nativeMessageId,
+          status: persistedStatus
+        });
+      }
+      return;
+    }
+    // S01 will attach a terminal failed-receipt transition once its bridge lands.
+    sse.broadcast('message_delivery_failed', {
+      chatId: event.chatId, messageId: event.nativeMessageId
+    });
+  };
+
+  const metaClient = transportMode === 'meta-cloud'
+    ? new MetaCloudApi({
+      config: metaConfig,
+      fetch: options.metaCloud?.fetch,
+      now: options.metaCloud?.now,
+      onEvent: handleMetaEvent
+    })
+    : undefined;
 
   sendIntents = new SendIntentService({
     memoryStore,
     diagnostics,
-    sendText: (chatId, text, sendOptions) => whatsappClient.sendMessage(chatId, text, sendOptions),
-    prepareVoice: (text) => voiceSynthesizer.synthesizeVoice(text, moderatorAgent.getPersona().voiceName),
-    sendVoice: (chatId, audio, sendOptions) => whatsappClient.sendVoiceNote(chatId, audio, {
-      replyToMessageId: sendOptions?.replyToMessageId
-    }),
+    sendText: (chatId, text, sendOptions) => {
+      if (!metaClient) return whatsappClient.sendMessage(chatId, text, sendOptions);
+      const lastInboundAtMs = memoryStore.getMessages(chatId, 100)
+        .filter(message => !message.isFromMe)
+        .reduce((latest, message) => Math.max(latest, message.timestamp), 0);
+      return metaClient.sendText({ to: chatId, text, lastInboundAtMs });
+    },
+    prepareVoice: transportMode === 'baileys'
+      ? (text) => voiceSynthesizer.synthesizeVoice(text, moderatorAgent.getPersona().voiceName)
+      : undefined,
+    sendVoice: transportMode === 'baileys'
+      ? (chatId, audio, sendOptions) => whatsappClient.sendVoiceNote(chatId, audio, {
+        replyToMessageId: sendOptions?.replyToMessageId
+      })
+      : undefined,
     publish: (event, data) => sse.broadcast(event, data)
   });
 
@@ -300,10 +389,12 @@ export async function createFableWhatsAppAgent(options: {
     dashboardToken: options.dashboardToken ?? process.env.AGENT_DASHBOARD_TOKEN ?? '',
     dualMemoryManager,
     reflectionWorker,
-    reflectionEngine
+    reflectionEngine,
+    transportMode
   });
 
   registerCapabilityRoutes(app, capabilities, options.capabilityToken ?? process.env.AGENT_CAPABILITIES_OWNER_TOKEN ?? '');
+  if (metaClient) registerMetaCloudWebhookRoutes(app, metaClient);
 
   // Serve static UI assets if built
   app.use('/*', serveStatic({ root: './ui/dist' }));
@@ -311,11 +402,11 @@ export async function createFableWhatsAppAgent(options: {
 
   if (options.autoConnect) {
     setInterval(() => {
-      if (whatsappClient.getState().state === 'connected') {
+      if (metaClient || whatsappClient.getState().state === 'connected') {
         void sendIntents.dispatchDue().catch((error) => console.warn('[Delivery] Retry scan failed:', error));
       }
     }, 5000).unref();
-    void whatsappClient.start();
+    if (!metaClient) void whatsappClient.start();
   }
 
   return {
@@ -323,8 +414,12 @@ export async function createFableWhatsAppAgent(options: {
     port,
     memoryStore,
     whatsappClient,
+    metaClient,
+    recipientDirectory,
+    transportMode,
     moderatorAgent,
     coordinator,
+    inboundPlanner,
     burstAccumulator,
     sse,
     capabilities,
