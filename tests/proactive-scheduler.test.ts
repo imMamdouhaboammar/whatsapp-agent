@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { FollowUpStore } from '../src/agent/follow-ups';
-import { ProactiveEngagementScheduler, type ProactiveTemplateIntentCommand } from '../src/agent/proactive-scheduler';
+import { ProactiveEngagementScheduler, type ProactiveEligibility, type ProactiveTemplateIntentCommand } from '../src/agent/proactive-scheduler';
 
 const due = Date.UTC(2026, 10, 8, 12, 0);
 const trigger = (sourceWorkflowId: string, dueAt = due, brandId = 'brand-a', contactId = 'contact-a') => ({
@@ -268,7 +268,7 @@ describe('A08 relevance and address enforcement', () => {
       let submitted = 0;
       const scheduler = new ProactiveEngagementScheduler({
         store,
-        eligibility: async (item) => byId.get(item.triggerId)!.evaluation as any,
+        eligibility: async (item) => byId.get(item.triggerId)!.evaluation as unknown as ProactiveEligibility,
         sender: {
           submit: async () => { submitted++; return { intentId: 'forbidden', state: 'accepted', providerMessageId: 'forbidden' }; },
           lookup: async () => undefined
@@ -412,7 +412,7 @@ test('A08 requires real consent timing and approved template identity before dur
     let submitted = 0;
     const scheduler = new ProactiveEngagementScheduler({
       store,
-      eligibility: async (item) => byId.get(item.triggerId)!.evaluation as any,
+      eligibility: async (item) => byId.get(item.triggerId)!.evaluation as unknown as ProactiveEligibility,
       sender: {
         submit: async () => { submitted++; return { intentId: 'forbidden', state: 'accepted', providerMessageId: 'forbidden' }; },
         lookup: async () => undefined
