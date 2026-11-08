@@ -9,6 +9,7 @@ import { BurstAccumulator, type FusedBurst } from './domain/burst-accumulator';
 import { MessageSplitter } from './domain/message-splitter';
 import { MemoryStore } from './domain/memory-store';
 import { SendIntentService } from './domain/send-intent-service';
+import { DiagnosticsCore } from './observability/diagnostics-core';
 import { HumanRateLimiter } from './domain/rate-limiter';
 import type { ChatMessage } from './domain/types';
 import { createApiServer } from './server/api';
@@ -38,6 +39,7 @@ export async function createFableWhatsAppAgent(options: {
 
   const sse = new SSEBroadcaster();
   const memoryStore = new MemoryStore({ dataDir });
+  const diagnostics = new DiagnosticsCore();
   const geminiClient = new GeminiClient();
   const capabilities = createCapabilities(dataDir, options.capabilityModel ?? geminiClient);
   const audioTranscriber = new AudioTranscriber(geminiClient);
@@ -248,6 +250,7 @@ export async function createFableWhatsAppAgent(options: {
 
   sendIntents = new SendIntentService({
     memoryStore,
+    diagnostics,
     sendText: (chatId, text, sendOptions) => whatsappClient.sendMessage(chatId, text, sendOptions),
     prepareVoice: (text) => voiceSynthesizer.synthesizeVoice(text, moderatorAgent.getPersona().voiceName),
     sendVoice: (chatId, audio, sendOptions) => whatsappClient.sendVoiceNote(chatId, audio, {
@@ -286,6 +289,7 @@ export async function createFableWhatsAppAgent(options: {
     whatsappClient,
     moderatorAgent,
     sendIntents,
+    diagnostics,
     sse,
     audioTranscriber,
     voiceSynthesizer,

@@ -2,6 +2,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { Database } from 'bun:sqlite';
 
 export type SendIntentState = 'queued' | 'attempting' | 'accepted' | 'delivered' | 'read' | 'uncertain' | 'failed';
+
+/** Persisted SQLite state counts; values are authoritative across process restarts. */
+export interface PersistedSendSummary {
+  source: 'sqlite_send_ledger';
+  totalIntents: number;
+  states: Record<SendIntentState, number>;
+  oldestUncertainAgeMs: number;
+}
 export type SendActionKind = 'text' | 'voice';
 
 export interface SendIntentInput {
@@ -391,6 +399,29 @@ export class SendLedger {
       ORDER BY parent.created_at DESC LIMIT 100
     `).all(chatId) as any[];
     return rows.map((row) => this.rowToIntent(row));
+  }
+
+  /** Read-only aggregate with no message, recipient, source or native IDs. */
+  getDiagnosticsSummary(now = Date.now()): PersistedSendSummary {
+    const states: PersistedSendSummary['states'] = {
+      queued: 0, attempting: 0, accepted: 0, delivered: 0,
+      read: 0, uncertain: 0, failed: 0
+    };
+    const rows = this.db.prepare('SELECT state, COUNT(*) AS count FROM send_intents GROUP BY state')
+      .all() as Array<{ state: SendIntentState; count: number }>;
+    for (const row of rows) {
+      if (Object.prototype.hasOwnProperty.call(states, row.state)) {
+        states[row.state] = row.count;
+      }
+    }
+    const oldest = this.db.prepare("SELECT MIN(updated_at) AS at FROM send_intents WHERE state='uncertain'")
+      .get() as { at: number | null };
+    return {
+      source: 'sqlite_send_ledger',
+      totalIntents: Object.values(states).reduce((total, count) => total + count, 0),
+      states,
+      oldestUncertainAgeMs: oldest.at === null ? 0 : Math.max(0, now - oldest.at)
+    };
   }
 
   getAttempts(id: string): SendAttempt[] {
