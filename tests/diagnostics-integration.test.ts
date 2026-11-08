@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { MemoryStore } from '../src/domain/memory-store';
+import type { ModeratorAgent } from '../src/ai/moderator-agent';
+import type { WhatsAppSocketClient } from '../src/transport/whatsapp-socket';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SendIntentService } from '../src/domain/send-intent-service';
-import type { SendIntentInput } from '../src/domain/send-ledger';
-import { DiagnosticsCore } from '../src/observability/diagnostics-core';
+import type { PersistedSendSummary, SendIntentInput } from '../src/domain/send-ledger';
+import { DiagnosticsCore, type DiagnosticsSnapshot } from '../src/observability/diagnostics-core';
 import { createApiServer } from '../src/server/api';
 import { SSEBroadcaster } from '../src/server/sse';
 
@@ -15,6 +17,15 @@ const chatId = '201123456789@s.whatsapp.net';
 const messageText = 'Sensitive customer message for diagnostics test';
 const sourceId = 'private-client-mutation';
 const nativeId = 'native-remote-message-id';
+
+type DiagnosticsResponse = {
+  persisted: PersistedSendSummary;
+  process: {
+    scope: 'current_process';
+    status: 'available' | 'unavailable';
+    snapshot: DiagnosticsSnapshot | null;
+  };
+};
 
 function memory() {
   const store = new MemoryStore({ dataDir: ':memory:' });
@@ -42,8 +53,8 @@ function api(store: MemoryStore, diagnostics: DiagnosticsCore) {
     dashboardToken: ownerToken,
     memoryStore: store,
     diagnostics,
-    whatsappClient: { getState: () => ({ state: 'disconnected' }) } as any,
-    moderatorAgent: {} as any,
+    whatsappClient: { getState: () => ({ state: 'disconnected' }) } as unknown as WhatsAppSocketClient,
+    moderatorAgent: {} as unknown as ModeratorAgent,
     sse: new SSEBroadcaster()
   });
 }
@@ -181,12 +192,12 @@ describe('S08 and S01 durable send diagnostics integration', () => {
     });
     expect(response.status).toBe(200);
     expect(response.headers.get('Cache-Control')).toBe('no-store');
-    const body = await response.json() as any;
+    const body = await response.json() as DiagnosticsResponse;
     expect(body.persisted.source).toBe('sqlite_send_ledger');
     expect(body.persisted.states.uncertain).toBe(1);
     expect(body.persisted.totalIntents).toBe(1);
     expect(body.process.scope).toBe('current_process');
-    expect(body.process.snapshot.metrics.uncertainSends.count).toBe(0);
+    expect(body.process.snapshot?.metrics.uncertainSends.count).toBe(0);
     const json = JSON.stringify(body);
     for (const sensitive of [chatId, messageText, sourceId, nativeId, 'ambiguous private transport issue']) {
       expect(json).not.toContain(sensitive);
@@ -202,7 +213,7 @@ describe('S08 and S01 durable send diagnostics integration', () => {
       headers: { authorization: 'Bearer ' + ownerToken }
     });
     expect(response.status).toBe(200);
-    const body = await response.json() as any;
+    const body = await response.json() as DiagnosticsResponse;
     expect(body.persisted.states.queued).toBe(1);
     expect(body.process.status).toBe('unavailable');
     expect(body.process.snapshot).toBeNull();
@@ -272,10 +283,10 @@ describe('S08 and S01 durable send diagnostics integration', () => {
       const response = await api(reopened, new DiagnosticsCore()).request('/api/diagnostics', {
         headers: { authorization: 'Bearer ' + ownerToken }
       });
-      const body = await response.json() as any;
+      const body = await response.json() as DiagnosticsResponse;
       expect(response.status).toBe(200);
       expect(body.persisted.states.uncertain).toBe(1);
-      expect(body.process.snapshot.traceCount).toBe(0);
+      expect(body.process.snapshot?.traceCount).toBe(0);
     } finally {
       first?.close();
       reopened?.close();
@@ -297,13 +308,13 @@ describe('S08 and S01 durable send diagnostics integration', () => {
     const diagnostics = new DiagnosticsCore();
     const body = await (await api(store, diagnostics).request('/api/diagnostics', {
       headers: { authorization: 'Bearer ' + ownerToken }
-    })).json() as any;
+    })).json() as DiagnosticsResponse;
     expect(body.persisted.states.queued).toBe(1);
     expect(body.persisted.states.read).toBe(1);
     expect(body.persisted.states.accepted).toBe(0);
     expect(body.persisted.states.uncertain).toBe(0);
     expect(body.persisted.totalIntents).toBe(2);
-    expect(body.process.snapshot.traceCount).toBe(0);
+    expect(body.process.snapshot?.traceCount).toBe(0);
     expect(queued.state).toBe('queued');
   });
 });
