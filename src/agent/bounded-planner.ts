@@ -1,6 +1,7 @@
 import {createHash,randomUUID} from 'node:crypto';
 import type {ChatContent,GeminiClient} from '../ai/gemini-client';
 import type {ActionJournal,ToolRegistry} from './tools';
+import {ConversationCoordinator} from './conversation-coordinator';
 
 export interface PlannerGoal {
  brandId:string;
@@ -28,16 +29,29 @@ export interface PlannerOutcome {
 type PlannerModel=Pick<GeminiClient,'generateContent'>;
 const alias=(name:string)=>name.replace(/[^A-Za-z0-9_]/g,'_').replace(/^([^A-Za-z_])/,'_$1');
 const digest=(s:string)=>createHash('sha256').update(s).digest('hex');
+// Planner instances sharing the same tool runtime must share per-conversation ownership.
+const sharedCoordinators=new WeakMap<ToolRegistry,ConversationCoordinator>();
 /**
  * Model chooses from declarative tool manifests; every action executes through the
  * deterministic, brand-scoped registry. No tool authority is taken from model text.
  * Uncertain writes are never retried without provider reconciliation.
  */
 export class BoundedPlanner {
- constructor(private readonly deps:{model:PlannerModel;registry:ToolRegistry;journal:ActionJournal}){}
+ private readonly coordinator: ConversationCoordinator;
+ constructor(private readonly deps:{model:PlannerModel;registry:ToolRegistry;journal:ActionJournal;coordinator?:ConversationCoordinator}) {
+   if(deps.coordinator) this.coordinator=deps.coordinator;
+   else {
+     let coordinator=sharedCoordinators.get(deps.registry);
+     if(!coordinator){coordinator=new ConversationCoordinator();sharedCoordinators.set(deps.registry,coordinator);}
+     this.coordinator=coordinator;
+   }
+ }
  async run(input:PlannerGoal):Promise<PlannerOutcome>{
    if(!input.brandId?.trim()||!input.contactId?.trim()||!input.goal?.trim())throw new Error('Invalid planner request');
    if(!Array.isArray(input.allowedScopes)||input.allowedScopes.some(s=>typeof s!=='string'))throw new Error('Invalid owner scopes');
+   return this.coordinator.run(input.brandId,input.contactId,()=>this.runTurn(input));
+ }
+ private async runTurn(input:PlannerGoal):Promise<PlannerOutcome>{
    const workflowId=this.deps.journal.createWorkflow({
      brandId:input.brandId,contactId:input.contactId,goal:input.goal,workflowId:input.workflowId??randomUUID()
    });
@@ -103,8 +117,10 @@ export class BoundedPlanner {
          brandId:input.brandId,workflowId,toolName:tool.name,
          input:call.args,idempotencyKey
        });
-     }catch{
-       return end('needs_customer_detail','البيانات المطلوبة لتنفيذ الخدمة غير مكتملة أو غير مصرح بها.');
+     }catch(err){
+       if(err instanceof Error&&/Invalid tool (manifest arguments|arguments)/.test(err.message))
+         return end('needs_customer_detail','البيانات المطلوبة لتنفيذ الخدمة غير مكتملة أو غير مصرح بها.');
+       return end('waiting_provider','تعذر التحقق من نتيجة الخدمة عند المزوّد حاليًا؛ لم يتم تأكيد التنفيذ.');
      }
      if(result.status!=='confirmed')return end('waiting_provider','نتيجة العملية عند المزوّد غير مؤكدة؛ لن نكررها حتى تتم المطابقة مع سجل المزوّد.');
      const output=result.output;

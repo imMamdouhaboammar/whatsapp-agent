@@ -6,6 +6,7 @@ import {ActionJournal,ToolRegistry} from './tools';
 import {GoogleSheetsInventory} from './sheets-inventory';
 import {ConnectorSettings} from './connector-settings';
 import {AutonomousOperator} from './autonomous-operator';
+import {BoundedPlanner} from './bounded-planner';
 import {WebScout} from './web-scout';
 import type {GeminiClient} from '../ai/gemini-client';
 import {CustomerContextStore} from './customer-context';
@@ -42,15 +43,18 @@ export function createCapabilities(dataDir:string,model?:Pick<GeminiClient,'gene
  const registry=new ToolRegistry(journal);
  const webScout=model ? new WebScout(model) : undefined;
  const operator=new AutonomousOperator({knowledge,journal,registry,webScout});
+ const planner=model ? new BoundedPlanner({model,registry,journal}) : undefined;
  const registerSheet=(brandId:string,sheetId:string,gid?:string)=>{
   const provider=new GoogleSheetsInventory({sheetId,gid});
   registry.register(brandId,{name:'inventory.lookup',kind:'read',scope:'inventory:read',
+   description:'Look up available inventory by exact product SKU',
+   parameters:{type:'OBJECT',properties:{sku:{type:'STRING'}},required:['sku']},
    validate:(v):v is {sku:string}=>typeof v==='object' && v!==null && typeof (v as any).sku==='string' && (v as any).sku.length<129,
    execute:async({sku})=>provider.lookup(sku)
   });
  };
  for(const item of connectors.listSheets())registerSheet(item.brandId,item.sheetId,item.gid);
- return {knowledge,journal,connectors,customers,followups,quality,documents,registry,operator,webScout,registerSheet,
+ return {knowledge,journal,connectors,customers,followups,quality,documents,registry,operator,planner,webScout,registerSheet,
   close:()=>{knowledge.close();journal.close();connectors.close();customers.close();followups.close();quality.close();}
  };
 }
@@ -67,6 +71,30 @@ export function registerCapabilityRoutes(app:Hono, capabilities:CapabilityEngine
  app.use('/api/agent/*',auth);
 
  app.get('/api/agent/status',(c)=>c.json({available:true,configuredTools:capabilities.registry.list('default').length}));
+
+ // Owner-authenticated planner runtime. Callers are trusted owners, never inbound WhatsApp contacts.
+ app.post('/api/agent/plan',async(c)=>{
+  const body=await c.req.json().catch(()=>null);
+  if(!body||typeof body!=='object'||Array.isArray(body) ||
+   typeof body.brandId!=='string'||!validBrand(body.brandId)||
+   typeof body.contactId!=='string'||!body.contactId.trim()||body.contactId.length>128||[...body.contactId].some((ch:string)=>ch.charCodeAt(0)<32)||
+   typeof body.goal!=='string'||!body.goal.trim()||body.goal.length>2000||
+   !Array.isArray(body.allowedScopes)||body.allowedScopes.length>64||
+   body.allowedScopes.some((s:unknown)=>typeof s!=='string'||!s.trim()||s.length>128)||
+   (body.workflowId!==undefined&&(typeof body.workflowId!=='string'||! /^[A-Za-z0-9:_-]{1,128}$/.test(body.workflowId)))||
+   (body.maxSteps!==undefined&&(!Number.isInteger(body.maxSteps)||body.maxSteps<1||body.maxSteps>8))||
+   (body.allowWrites!==undefined&&typeof body.allowWrites!=='boolean'))
+    return c.json({error:'Invalid planner request'},400);
+  if(!capabilities.planner)return c.json({error:'Planner model is not configured'},503);
+  try {
+   return c.json(await capabilities.planner.run({brandId:body.brandId,contactId:body.contactId,goal:body.goal,
+    workflowId:body.workflowId,allowedScopes:body.allowedScopes,allowWrites:body.allowWrites===true,maxSteps:body.maxSteps}));
+  }catch(err){
+   if(err instanceof Error&&/Workflow identity conflict|Invalid workflow identity/.test(err.message))
+    return c.json({error:'Workflow identity conflict'},409);
+   return c.json({error:'Planner unavailable'},503);
+  }
+ });
 
  app.get('/api/brands/:brandId/sources',(c)=>{
   const brandId=c.req.param('brandId');if(!validBrand(brandId))return c.json({error:'Invalid brand'},400);
