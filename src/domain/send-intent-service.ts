@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { MemoryStore } from './memory-store';
 import type { ChatMessage } from './types';
-import type { SendIntent, SendIntentInput } from './send-ledger';
+import type { SendIntent, SendIntentInput, SendTemplateIntentInput, SendTemplatePayload } from './send-ledger';
+import { RecipientBindingChangedError } from '../identity/contact-directory';
+import type { ContactIdentityDirectory } from '../identity/contact-directory';
 import type { DiagnosticsCore, DiagnosticStage, DiagnosticOutcome, ReceiptState } from '../observability/diagnostics-core';
 
 export interface SendResult {
@@ -21,6 +23,23 @@ type SendVoice = (
   options?: { replyToMessageId?: string }
 ) => Promise<{ messageId: string }>;
 
+export interface VerifiedTemplateAuthorization {
+  consentRef: string;
+  optedInAtMs: number;
+  approvedTemplate: { name: string; languageCode: string };
+  sourceWorkflowId: string;
+  relevant: true | boolean;
+  relevanceVerifiedAtMs: number;
+  relevanceExpiresAtMs: number;
+  quietHours: { from: number; to: number; timeZone: string };
+}
+
+export interface MetaTemplateTransportRequest {
+  to: string;
+  template: SendTemplatePayload;
+  eligibility: { optedInAtMs: number; approvedTemplate: boolean };
+}
+
 export class SendIntentService {
   private readonly maxAttempts: number;
   private readonly retryBaseMs: number;
@@ -33,6 +52,10 @@ export class SendIntentService {
     sendText: SendText;
     prepareVoice?: (text: string) => Promise<Buffer | Uint8Array>;
     sendVoice?: SendVoice;
+    sendTemplate?: (input: MetaTemplateTransportRequest) => Promise<{ messageId: string }>;
+    verifyTemplateEligibility?: (intent: SendIntent, now: number) => Promise<VerifiedTemplateAuthorization>;
+    recipientDirectory?: Pick<ContactIdentityDirectory, 'bindRecipient' | 'revalidateRecipient'>;
+    brandId?: string;
     maxAttempts?: number;
     retryBaseMs?: number;
     random?: () => number;
@@ -41,13 +64,16 @@ export class SendIntentService {
     this.maxAttempts = Math.max(1, Math.min(10, options.maxAttempts ?? 3));
     this.retryBaseMs = Math.max(1, options.retryBaseMs ?? 1200);
     this.random = options.random ?? Math.random;
+    if (options.recipientDirectory && !options.brandId) {
+      throw new Error('Configured recipient directory requires a trusted brand ID');
+    }
     options.memoryStore.getSendLedger().recoverInterrupted();
   }
 
   async sendText(input: SendIntentInput): Promise<SendResult> {
     if (input.actionKind !== 'text') throw new Error('Text delivery requires a text intent');
     this.requireAutopilotMode(input);
-    const { intent, created } = this.options.memoryStore.getSendLedger().createIntentWithStatus(input);
+    const { intent, created } = this.options.memoryStore.getSendLedger().createIntentWithStatus(this.captureRecipient(input));
     if (created) this.observeCreated(intent);
     return this.dispatch(intent.id);
   }
@@ -55,9 +81,91 @@ export class SendIntentService {
   async sendVoice(input: SendIntentInput): Promise<SendResult> {
     if (input.actionKind !== 'voice') throw new Error('Voice delivery requires a voice intent');
     this.requireAutopilotMode(input);
-    const { intent, created } = this.options.memoryStore.getSendLedger().createIntentWithStatus(input);
+    const { intent, created } = this.options.memoryStore.getSendLedger().createIntentWithStatus(this.captureRecipient(input));
     if (created) this.observeCreated(intent);
     return this.dispatch(intent.id);
+  }
+
+  async sendTemplate(input: SendTemplateIntentInput): Promise<SendResult> {
+    if (input.actionKind !== 'template' || input.sourceKind !== 'autopilot') {
+      throw new Error('Proactive template requires an autopilot template intent');
+    }
+    if (!this.options.recipientDirectory || !this.options.sendTemplate ||
+        !this.options.verifyTemplateEligibility) {
+      throw new Error('Template transport, trusted authorization and recipient directory required');
+    }
+    const { intent, created } = this.options.memoryStore.getSendLedger()
+      .createIntentWithStatus(this.captureRecipient(input));
+    if (created) this.observeCreated(intent);
+    return this.dispatch(intent.id);
+  }
+
+  private captureRecipient(input: SendIntentInput): SendIntentInput {
+    const directory = this.options.recipientDirectory;
+    if (!directory) return input;
+    const binding = directory.bindRecipient({
+      brandId: this.options.brandId!,
+      jid: input.chatId
+    });
+    if (input.recipientBinding &&
+        JSON.stringify(input.recipientBinding) !== JSON.stringify(binding)) {
+      throw new RecipientBindingChangedError();
+    }
+    return { ...input, recipientBinding: binding };
+  }
+
+  private destinationFor(intent: SendIntent): string {
+    const directory = this.options.recipientDirectory;
+    if (!directory) {
+      if (intent.actionKind === 'template') throw new RecipientBindingChangedError();
+      return intent.chatId;
+    }
+    if (!intent.recipientBinding || intent.recipientBinding.brandId !== this.options.brandId ||
+        intent.recipientBinding.jid !== intent.chatId) throw new RecipientBindingChangedError();
+    const jid = directory.revalidateRecipient(intent.recipientBinding);
+    if (jid !== intent.chatId) throw new RecipientBindingChangedError();
+    return jid;
+  }
+
+  private async verifyTemplate(intent: SendIntent, now: number): Promise<VerifiedTemplateAuthorization> {
+    const verify = this.options.verifyTemplateEligibility;
+    if (!verify || !this.options.sendTemplate || !intent.template || !intent.templateEligibility ||
+        !intent.expiresAt || intent.expiresAt <= now) {
+      throw new Error('Template policy or send deadline unavailable');
+    }
+    const proof = await verify(intent, now);
+    // The authority callback is asynchronous; validate its evidence at completion time.
+    const checkedAt = Date.now();
+    const required = intent.templateEligibility;
+    if (!proof || proof.relevant !== true ||
+        proof.consentRef !== required.consentRef ||
+        proof.optedInAtMs !== required.optedInAtMs ||
+        !Number.isSafeInteger(proof.optedInAtMs) || proof.optedInAtMs <= 0 || proof.optedInAtMs > checkedAt ||
+        proof.approvedTemplate?.name !== intent.template.name ||
+        proof.approvedTemplate?.languageCode !== intent.template.languageCode ||
+        proof.sourceWorkflowId !== required.sourceWorkflowId ||
+        !Number.isSafeInteger(proof.relevanceVerifiedAtMs) ||
+        proof.relevanceVerifiedAtMs > checkedAt || proof.relevanceVerifiedAtMs < checkedAt - 5 * 60_000 ||
+        !Number.isSafeInteger(proof.relevanceExpiresAtMs) || proof.relevanceExpiresAtMs <= checkedAt ||
+        intent.expiresAt <= checkedAt) {
+      throw new Error('Trusted template authorization expired or revoked');
+    }
+    const quiet = proof.quietHours;
+    if (!quiet || !Number.isInteger(quiet.from) || !Number.isInteger(quiet.to) ||
+        quiet.from < 0 || quiet.from > 23 || quiet.to < 0 || quiet.to > 24) {
+      throw new Error('Invalid live template quiet hours');
+    }
+    const hourParts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: quiet.timeZone, hour: '2-digit', hourCycle: 'h23'
+    }).formatToParts(new Date(now));
+    const hour = Number(hourParts.find((part) => part.type === 'hour')?.value);
+    const blocked = quiet.from < quiet.to
+      ? hour >= quiet.from && hour < quiet.to
+      : quiet.from > quiet.to
+        ? hour >= quiet.from || hour < quiet.to
+        : false;
+    if (blocked) throw new Error('Brand quiet hours prohibit proactive send');
+    return proof;
   }
 
   private requireAutopilotMode(input: SendIntentInput): void {
@@ -72,7 +180,7 @@ export class SendIntentService {
     if (!current) throw new Error('Send intent does not exist');
     if (current.state !== 'queued') return this.result(current);
 
-    if (current.sourceKind === 'autopilot' && this.options.memoryStore.getChat(current.chatId)?.agentMode !== 'autopilot') {
+    if (current.actionKind !== 'template' && current.sourceKind === 'autopilot' && this.options.memoryStore.getChat(current.chatId)?.agentMode !== 'autopilot') {
       const stopped = ledger.failQueued(id, 'chat_mode_revoked', now);
       if (stopped) this.notify(stopped);
       return this.result(stopped ?? ledger.getIntent(id)!);
@@ -90,17 +198,31 @@ export class SendIntentService {
           throw new Error('Voice adapter is not configured');
         }
         const audio = await this.options.prepareVoice(intent.text);
+        const destination = this.destinationFor(intent);
         ledger.markNetworkStarted(attempt.id);
         this.observeStage(intent, 'sending', 'ok');
         whatsappCallMayHaveStarted = true;
-        sent = await this.options.sendVoice(intent.chatId, audio, {
+        sent = await this.options.sendVoice(destination, audio, {
           replyToMessageId: intent.replyToMessageId
         });
-      } else {
+      } else if (intent.actionKind === 'template') {
+        const policy = await this.verifyTemplate(intent, Date.now());
+        const destination = this.destinationFor(intent);
+        if (!this.options.sendTemplate || !intent.template) throw new Error('Template adapter unavailable');
         ledger.markNetworkStarted(attempt.id);
         this.observeStage(intent, 'sending', 'ok');
         whatsappCallMayHaveStarted = true;
-        sent = await this.options.sendText(intent.chatId, intent.text, {
+        sent = await this.options.sendTemplate({
+          to: destination.slice(0, destination.indexOf('@')),
+          template: intent.template,
+          eligibility: { optedInAtMs: policy.optedInAtMs, approvedTemplate: true }
+        });
+      } else {
+        const destination = this.destinationFor(intent);
+        ledger.markNetworkStarted(attempt.id);
+        this.observeStage(intent, 'sending', 'ok');
+        whatsappCallMayHaveStarted = true;
+        sent = await this.options.sendText(destination, intent.text, {
           replyToMessageId: intent.replyToMessageId,
           simulatedDelayMs: intent.simulatedDelayMs
         });
@@ -115,6 +237,15 @@ export class SendIntentService {
     } catch (error) {
       // Only a failure before the WhatsApp call, or its explicit no-socket error,
       // is eligible for automatic retry. Every other failure is ambiguous.
+      const bindingChanged = error instanceof RecipientBindingChangedError;
+      if (!whatsappCallMayHaveStarted && (bindingChanged || intent.actionKind === 'template')) {
+        const failed = ledger.failAttempt(intent.id, attempt.id,
+          bindingChanged ? 'recipient_binding_changed' : 'template_policy_denied');
+        if (failed) {
+          this.notify(failed);
+          return this.result(failed);
+        }
+      }
       const explicitPreNetwork = !whatsappCallMayHaveStarted ||
         (typeof error === 'object' && error !== null && 'code' in error &&
           error.code === 'WHATSAPP_NOT_CONNECTED');
@@ -171,6 +302,7 @@ export class SendIntentService {
   async retryUncertain(id: string, mutationId: string): Promise<SendResult> {
     const original = this.options.memoryStore.getSendLedger().getIntent(id);
     if (!original || original.state !== 'uncertain') throw new Error('Only uncertain intents can be retried explicitly');
+    if (original.actionKind === 'template') throw new Error('Ambiguous template intent cannot be manually replayed');
     if (!mutationId.trim()) throw new Error('Retry mutation ID required');
     const request: SendIntentInput = {
       sourceKind: 'ui',
@@ -181,7 +313,8 @@ export class SendIntentService {
       chatId: original.chatId,
       text: original.text,
       replyToMessageId: original.replyToMessageId,
-      policyRevision: original.policyRevision
+      policyRevision: original.policyRevision,
+      recipientBinding: original.recipientBinding
     };
     const { intent: retry, created } = this.options.memoryStore.getSendLedger().createRetryIntentWithStatus(request);
     if (created) this.observeCreated(retry);
@@ -190,6 +323,12 @@ export class SendIntentService {
       this.options.memoryStore.updateDraftStatus(original.sourceId, 'sent');
     }
     return result;
+  }
+
+  deliveryFailed(chatId: string, nativeMessageId: string): SendIntent | undefined {
+    const failed = this.options.memoryStore.getSendLedger().deliveryFailed(chatId, nativeMessageId);
+    if (failed) this.notify(failed);
+    return failed;
   }
 
   receipt(chatId: string, nativeMessageId: string, status: 'sent' | 'delivered' | 'read'): SendIntent | undefined {
