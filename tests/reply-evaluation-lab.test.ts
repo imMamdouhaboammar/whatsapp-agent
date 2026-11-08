@@ -139,6 +139,13 @@ describe('S05 offline reply evaluation lab', () => {
     expect(report.inconclusive_case_ids).toEqual(['case-human']);
   });
 
+  it('rejects self-comparison even when both arguments reference the same snapshot', async () => {
+    const snapshot = makeSnapshot('approved-v1');
+    await expect(runEvaluationLab({
+      suite: makeSuite(), approved: snapshot, candidate: snapshot, review: review('approved-v1')
+    })).rejects.toThrow('independent snapshot identifier');
+  });
+
   it('leaves approved baseline immutable after failed candidate evaluation', async () => {
     const approved = makeSnapshot('approved-v1');
     const original = JSON.stringify(approved);

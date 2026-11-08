@@ -116,7 +116,7 @@ function assertValidInputs(suite: EvaluationSuite, approved: EvaluationSnapshot,
       throw new Error('Invalid evaluation snapshot');
     }
   }
-  if (approved.snapshot_id === candidate.snapshot_id && approved !== candidate) {
+  if (approved.snapshot_id === candidate.snapshot_id) {
     throw new Error('Candidate must have an independent snapshot identifier');
   }
 
