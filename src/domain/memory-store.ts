@@ -171,6 +171,10 @@ export class MemoryStore {
     return this.sqlite;
   }
 
+  getSendLedger() {
+    return this.sqlite.getSendLedger();
+  }
+
   close() {
     this.sqlite.close();
   }
