@@ -51,7 +51,7 @@ The response contains `status`, `reply`, `workflowId`, and an `evidence` array; 
 - `bunx tsc --noEmit`: passed
 - `cd ui && bun run build`: passed, existing large bundle warning
 - `bk security scan --profile project --changed-only --fail-on medium .`: zero findings
-- `get-fable` evidence: verified generation 1 equals mutation generation 1
+- `get-fable` evidence: verified generation matches mutation generation at push time
 
 ## Known integration boundaries
 
