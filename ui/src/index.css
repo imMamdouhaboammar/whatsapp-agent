@@ -142,6 +142,15 @@ button, input, textarea { -webkit-tap-highlight-color: transparent; }
 .wa-message-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13.5px; line-height: 1.85; unicode-bidi: plaintext; }
 .wa-message-meta { display: flex; align-items: center; justify-content: flex-end; gap: 5px; margin-top: 4px; color: #64757c; font-size: 11px; direction: ltr; font-variant-numeric: tabular-nums; }
 .wa-message-meta .is-read { color: #027eb5; }
+.wa-delivery-status { display: flex; align-items: flex-start; gap: 8px; margin-top: 8px; padding: 9px; border: 1px solid #cbded8; border-radius: 8px; background: #f0f7f4; color: #275d50; font-size: 12px; }
+.wa-delivery-status.is-uncertain, .wa-delivery-status.is-failed { border-color: #e5c78f; background: var(--wa-warn); color: var(--wa-warn-text); }
+.wa-delivery-status svg { flex: none; margin-top: 1px; }
+.wa-delivery-details { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.wa-delivery-details strong { line-height: 1.5; font-weight: 650; }
+.wa-delivery-details small { font-size: 11px; opacity: .86; }
+.wa-delivery-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.wa-delivery-actions button { border: 1px solid currentColor; background: transparent; color: inherit; padding: 5px 8px; border-radius: 6px; font-size: 11px; font-weight: 650; }
+.wa-delivery-actions button:hover { background: #ffffffa8; }
 .wa-message-reactions { position: absolute; bottom: -15px; inset-inline-end: 11px; background: #fff; border-radius: 999px; display: flex; gap: 2px; padding: 1px 6px; box-shadow: 0 1px 4px #0002; font-size: 12px; }
 .wa-message-actions { position: absolute; top: -17px; inset-inline-start: 8px; padding: 2px 4px; border: 1px solid #e7ecec; background: white; box-shadow: 0 3px 12px #0001; border-radius: 999px; display: flex; gap: 3px; opacity: 0; pointer-events: none; transform: translateY(4px); transition: opacity .15s ease, transform .15s ease; z-index: 3; }
 .wa-message:hover .wa-message-actions, .wa-message:focus-within .wa-message-actions { opacity: 1; pointer-events: auto; transform: translateY(0); }

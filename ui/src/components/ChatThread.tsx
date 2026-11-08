@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowRight, Check, CheckCheck, Clock3, FileText, MessageCircle, Mic, Reply, Send, X } from 'lucide-react';
+import { AlertCircle, ArrowRight, Check, CheckCheck, Clock3, FileText, MessageCircle, Mic, Reply, Send, X } from 'lucide-react';
 import { Gemini } from '@lobehub/icons';
 import { Avatar } from '@lobehub/ui';
 import type { AgentMode, ChatMessage, ChatSummary } from '../api/types';
@@ -8,7 +8,8 @@ import { useLocale, type Language } from '../locale-context';
 interface ChatThreadProps {
   chat?: ChatSummary;
   messages: ChatMessage[];
-  onSendMessage: (text: string, replyToMessageId?: string) => Promise<void>;
+  onSendMessage: (text: string, replyToMessageId?: string, clientMutationId?: string) => Promise<void>;
+  onRetrySendIntent: (intentId: string, clientMutationId: string) => Promise<void>;
   onSendReaction: (messageId: string, emoji: string) => Promise<void>;
   onChangeMode: (mode: AgentMode) => Promise<void>;
   onBack: () => void;
@@ -25,13 +26,17 @@ function messageTime(timestamp: number, language: Language): string {
   return new Date(timestamp).toLocaleTimeString(language === 'ar' ? 'ar-EG' : 'en-US', { hour: 'numeric', minute: '2-digit' });
 }
 
-export function ChatThread({ chat, messages, onSendMessage, onSendReaction, onChangeMode, onBack, onOpenInspector }: ChatThreadProps) {
+export function ChatThread({ chat, messages, onSendMessage, onRetrySendIntent, onSendReaction, onChangeMode, onBack, onOpenInspector }: ChatThreadProps) {
   const { language, tr } = useLocale();
   const [inputText, setInputText] = useState('');
   const [sending, setSending] = useState(false);
   const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
   const [error, setError] = useState('');
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  const [confirmRetryId, setConfirmRetryId] = useState<string | null>(null);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
+  const sendMutationId = useRef(crypto.randomUUID());
+  const retryMutationIds = useRef(new Map<string, string>());
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -44,13 +49,32 @@ export function ChatThread({ chat, messages, onSendMessage, onSendReaction, onCh
     setSending(true);
     setError('');
     try {
-      await onSendMessage(inputText.trim(), replyingTo?.id);
+      await onSendMessage(inputText.trim(), replyingTo?.id, sendMutationId.current);
+      sendMutationId.current = crypto.randomUUID();
       setInputText('');
       setReplyingTo(null);
     } catch {
       setError(tr('تعذّر إرسال الرسالة. حاول مرة تانية', 'Could not send the message. Try again'));
     } finally {
       setSending(false);
+    }
+  };
+
+  const retryIntent = async (intentId: string) => {
+    if (confirmRetryId !== intentId) {
+      retryMutationIds.current.set(intentId, crypto.randomUUID());
+      setConfirmRetryId(intentId);
+      return;
+    }
+    setRetryingId(intentId);
+    setError('');
+    try {
+      await onRetrySendIntent(intentId, retryMutationIds.current.get(intentId)!);
+      setConfirmRetryId(null);
+    } catch {
+      setError(tr('تعذّرت إعادة الإرسال. راجع حالة الرسالة قبل المحاولة مرة تانية', 'Retry failed. Check the message status before trying again'));
+    } finally {
+      setRetryingId(null);
     }
   };
 
@@ -151,6 +175,24 @@ export function ChatThread({ chat, messages, onSendMessage, onSendReaction, onCh
                   {message.type === 'video' && message.mediaUrl && <video className="wa-media-image" src={message.mediaUrl} controls preload="metadata" />}
                   {message.type === 'document' && <div className="wa-document-note"><FileText size={20} /><span>{tr('مستند مرفق', 'Attached document')}</span></div>}
                   {message.type !== 'audio' && message.text && message.text !== '[رسالة]' && <p className="wa-message-text" dir="auto">{message.text}</p>}
+                  {isOutbound && message.deliveryState && (
+                    <div className={'wa-delivery-status is-' + message.deliveryState} role={message.deliveryState === 'uncertain' ? 'alert' : 'status'}>
+                      {message.deliveryState === 'uncertain' || message.deliveryState === 'failed' ? <AlertCircle size={15} aria-hidden="true" /> : <Clock3 size={15} aria-hidden="true" />}
+                      <div className="wa-delivery-details">
+                        <strong>{message.deliveryState === 'queued' ? tr('بانتظار الإرسال', 'Queued for sending') : message.deliveryState === 'attempting' ? tr('جارٍ الإرسال', 'Sending') : message.deliveryState === 'uncertain' ? tr('الإرسال غير مؤكد، راجع واتساب قبل إعادة المحاولة', 'Send unconfirmed. Check WhatsApp before retrying') : tr('تعذّر الإرسال', 'Send failed')}</strong>
+                        {message.lastAttemptAt && <small>{tr('آخر محاولة', 'Last attempt')}: {messageTime(message.lastAttemptAt, language)}</small>}
+                        {message.nativeMessageId && <small dir="auto">ID: {message.nativeMessageId}</small>}
+                        {message.deliveryState === 'uncertain' && message.sendIntentId && (
+                          <div className="wa-delivery-actions">
+                            <button type="button" disabled={retryingId === message.sendIntentId} onClick={() => void retryIntent(message.sendIntentId!)}>
+                              {retryingId === message.sendIntentId ? tr('جارٍ التحقق', 'Processing') : confirmRetryId === message.sendIntentId ? tr('تأكيد إعادة الإرسال', 'Confirm retry') : tr('إعادة الإرسال بعد المراجعة', 'Retry after checking')}
+                            </button>
+                            {confirmRetryId === message.sendIntentId && <button type="button" onClick={() => setConfirmRetryId(null)}>{tr('إلغاء', 'Cancel')}</button>}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   <div className="wa-message-meta">
                     <time dir="auto">{messageTime(message.timestamp, language)}</time>
                     {isOutbound && (message.status === 'pending'
@@ -197,7 +239,7 @@ export function ChatThread({ chat, messages, onSendMessage, onSendReaction, onCh
           <input
             type="text"
             value={inputText}
-            onChange={(event) => setInputText(event.target.value)}
+            onChange={(event) => { setInputText(event.target.value); sendMutationId.current = crypto.randomUUID(); }}
             placeholder={tr('اكتب رسالة...', 'Type a message...')}
             disabled={sending}
             aria-label={tr('نص الرسالة', 'Message text')}
