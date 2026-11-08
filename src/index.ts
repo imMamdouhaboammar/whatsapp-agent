@@ -21,6 +21,7 @@ import { DualMemoryManager } from './domain/learning-memory';
 import { ReflectionEngine } from './ai/reflection-engine';
 import { ReflectionWorker } from './agent/reflection-worker';
 import { PostgresLearningStore } from './persistence/postgres/learning-store';
+import { resolveRuntimeDatastore } from './persistence/postgres/runtime-selection';
 import { join } from 'node:path';
 
 export async function createFableWhatsAppAgent(options: {
@@ -32,6 +33,8 @@ export async function createFableWhatsAppAgent(options: {
   capabilityAutopilotBrandId?: string;
   capabilityModel?: Pick<GeminiClient,'generateContent'>;
 } = {}) {
+  // Fail before constructing a SQLite store if a partial PostgreSQL cutover was requested.
+  resolveRuntimeDatastore();
   const port = options.port ?? Number(process.env.PORT || 3000);
   const dataDir = options.dataDir ?? './data';
 
