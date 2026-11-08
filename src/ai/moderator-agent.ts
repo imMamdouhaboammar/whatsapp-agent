@@ -8,6 +8,9 @@ import { executeWithModelFallback, parseModelChain } from './model-fallback';
 import { formatMemoriesForPrompt } from '../domain/user-memory';
 import { detectConversationStyle, getStylePromptDirective, isExplicitStyleRequest, type ConversationStyle } from './adaptive-style';
 import type { DualMemoryManager } from '../domain/learning-memory';
+import { ContextFoldEngine } from '../domain/context-fold-engine';
+import { buildFoldContext } from '../domain/context-fold-prompt';
+import { createGeminiFoldSummarizer } from './fold-summarizer';
 
 export const DEFAULT_MODERATOR_PERSONA: ModeratorPersona = {
   name: 'ممدوح (الموديرتور الذكي)',
@@ -57,6 +60,7 @@ export class ModeratorAgent {
   private policy: PolicyConfig;
   private rateLimiter: HumanRateLimiter;
   private dualMemoryManager?: DualMemoryManager;
+  private contextFoldEngine?: ContextFoldEngine;
 
   constructor(
     private gemini: GeminiClient,
@@ -66,6 +70,7 @@ export class ModeratorAgent {
       policy?: Partial<PolicyConfig>;
       rateLimiter?: HumanRateLimiter;
       dualMemoryManager?: DualMemoryManager;
+      contextFoldEngine?: ContextFoldEngine;
     } = {}
   ) {
     this.persona = { ...DEFAULT_MODERATOR_PERSONA, ...options.persona };
@@ -75,6 +80,17 @@ export class ModeratorAgent {
       maxDelayMs: this.persona.maxTypingDelayMs
     });
     this.dualMemoryManager = options.dualMemoryManager;
+    this.contextFoldEngine = options.contextFoldEngine ?? (
+      process.env.CONTEXT_FOLD_ENABLED === 'false' ? undefined :
+        new ContextFoldEngine({
+          memoryStore,
+          summarizer: createGeminiFoldSummarizer(gemini, () => this.persona.model)
+        })
+    );
+  }
+
+  getContextFoldEngine(): ContextFoldEngine | undefined {
+    return this.contextFoldEngine;
   }
 
   getDualMemoryManager(): DualMemoryManager | undefined {
@@ -111,6 +127,7 @@ export class ModeratorAgent {
   }> {
     // 1. Fetch conversation history for context
     const history = this.memoryStore.getMessages(message.chatId, 10);
+    const foldContext = buildFoldContext(this.memoryStore, message.chatId);
     const chatSummary = this.memoryStore.getChat(message.chatId);
     const agentMode = chatSummary?.agentMode ?? 'autopilot';
 
@@ -186,8 +203,7 @@ ${commitmentsList}\n`;
       }
     }
 
-    const prompt = `سياق المحادثة السابقة بين الطرفين:
-${historyText}
+    const prompt = `${foldContext ? `${foldContext}\n\n` : ''}سياق المحادثة السابقة بين الطرفين:\n${historyText}
 ${quotedContextPrompt}
 ${dossierPrompt}
 ${memoryPrompt}
@@ -340,6 +356,11 @@ ${notebookPrompt}
       shouldSendImmediately = false;
     } else if (agentMode === 'autopilot' && finalAction === 'reply' && parsedDecision.replyText) {
       shouldSendImmediately = true;
+    }
+
+    // Distillation is fire-and-forget and never blocks the live reply path.
+    if (!options.dryRun && this.contextFoldEngine) {
+      void this.contextFoldEngine.triggerFoldCheck(message.chatId);
     }
 
     return {
