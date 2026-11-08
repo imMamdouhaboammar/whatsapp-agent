@@ -1,0 +1,135 @@
+import { afterEach, describe, expect, it } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const auditScript = fileURLToPath(new URL("../scripts/security-audit.ts", import.meta.url));
+const temporaryDirectories: string[] = [];
+
+function shellQuote(value: string): string {
+  return "'" + value.replaceAll("'", "'\\''") + "'";
+}
+
+function scanWithFakeScanner(stdout: string, scannerStatus = 0, explicitBinary = false, delayed = false) {
+  const dir = mkdtempSync(join(tmpdir(), "whatsapp-osv-audit-"));
+  temporaryDirectories.push(dir);
+  const executable = join(dir, "osv-scanner");
+  writeFileSync(
+    executable,
+    ["#!/bin/sh", ...(delayed ? ["sleep 1"] : []), "printf %s " + shellQuote(stdout), "exit " + scannerStatus, ""].join("\n"),
+  );
+  chmodSync(executable, 0o755);
+
+  const result = spawnSync(process.execPath, [auditScript], {
+    cwd: dir,
+    env: { ...process.env, OSV_SCANNER_BIN: explicitBinary ? executable : "osv-scanner", OSV_SCANNER_TIMEOUT_MS: delayed ? "100" : undefined, PATH: dir + delimiter + (process.env.PATH ?? "") },
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+
+  expect(result.error).toBeUndefined();
+  return result;
+}
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+describe("dependency security audit", () => {
+  it("accepts a valid empty OSV report", () => {
+    const result = scanWithFakeScanner(JSON.stringify({ results: [] }));
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("Security audit passed");
+  });
+
+  it("can use an explicit scanner executable path without assuming the host PATH", () => {
+    expect(scanWithFakeScanner(JSON.stringify({ results: [] }), 0, true).status).toBe(0);
+  });
+
+  it("fails closed if scanner returns empty stdout", () => {
+    expect(scanWithFakeScanner("").status).not.toBe(0);
+  });
+
+  it("fails closed if scanner returns no JSON object", () => {
+    expect(scanWithFakeScanner("an upstream proxy error").status).not.toBe(0);
+  });
+
+  it("fails closed if scanner returns malformed JSON", () => {
+    expect(scanWithFakeScanner("{not valid json").status).not.toBe(0);
+  });
+
+  it("fails closed if scanner output is not a valid OSV results report", () => {
+    expect(scanWithFakeScanner(JSON.stringify({ "experimental_config": {} })).status).not.toBe(0);
+  });
+
+  it("fails closed if scanner exits unsuccessfully despite clean JSON", () => {
+    expect(scanWithFakeScanner(JSON.stringify({ results: [] }), 2).status).not.toBe(0);
+  });
+
+  it("detects HIGH severity labels", () => {
+    const payload = { results: [{ packages: [{ package: { name: "synthetic", version: "1.0.0" }, vulnerabilities: [{ id: "GHSA-TEST-HIGH", database_specific: { severity: "HIGH" } }] }] }] };
+    expect(scanWithFakeScanner(JSON.stringify(payload)).status).not.toBe(0);
+  });
+
+  it("detects numeric CVSS scores at the 7.0 boundary", () => {
+    const payload = { results: [{ packages: [{ package: { name: "synthetic", version: "1.0.0" }, vulnerabilities: [{ id: "GHSA-TEST-CVSS", severity: [{ type: "CVSS_V3", score: "7.0" }] }] }] }] };
+    expect(scanWithFakeScanner(JSON.stringify(payload)).status).not.toBe(0);
+  });
+
+  it("permits known moderate vulnerabilities when OSV exits 1 for findings", () => {
+    const payload = { results: [{ packages: [{ package: { name: "synthetic", version: "1.0.0" }, vulnerabilities: [{ id: "GHSA-TEST-MODERATE", database_specific: { severity: "MODERATE" } }] }] }] };
+    expect(scanWithFakeScanner(JSON.stringify(payload), 1).status).toBe(0);
+  });
+
+  it("fails closed when OSV exits 1 but reports no vulnerabilities", () => {
+    expect(scanWithFakeScanner(JSON.stringify({ results: [] }), 1).status).not.toBe(0);
+  });
+
+  it("fails closed when OSV reports a general scanner error despite valid findings", () => {
+    const payload = { results: [{ packages: [{ package: { name: "synthetic", version: "1.0.0" }, vulnerabilities: [{ id: "GHSA-TEST-MODERATE", database_specific: { severity: "MODERATE" } }] }] }] };
+    expect(scanWithFakeScanner(JSON.stringify(payload), 127).status).not.toBe(0);
+  });
+
+  it("treats a HIGH ecosystem severity as blocking even when database severity says LOW", () => {
+    const payload = { results: [{ packages: [{ package: { name: "synthetic", version: "1.0.0" }, vulnerabilities: [{ id: "GHSA-TEST-CONFLICT", database_specific: { severity: "LOW" }, ecosystem_specific: { severity: "HIGH" } }] }] }] };
+    expect(scanWithFakeScanner(JSON.stringify(payload), 1).status).not.toBe(0);
+  });
+
+  it("rejects malformed vulnerability identities", () => {
+    const payload = { results: [{ packages: [{ package: { name: "synthetic", version: "1.0.0" }, vulnerabilities: [{ database_specific: { severity: "LOW" } }] }] }] };
+    expect(scanWithFakeScanner(JSON.stringify(payload), 1).status).not.toBe(0);
+  });
+
+  it("rejects malformed package identities", () => {
+    const payload = { results: [{ packages: [{ package: { name: "" }, vulnerabilities: [{ id: "GHSA-TEST-PKG", database_specific: { severity: "LOW" } }] }] }] };
+    expect(scanWithFakeScanner(JSON.stringify(payload), 1).status).not.toBe(0);
+  });
+
+  it("rejects malformed severity entries despite a LOW label", () => {
+    const payload = { results: [{ packages: [{ package: { name: "synthetic", version: "1.0.0" }, vulnerabilities: [{ id: "GHSA-TEST-MALFORMED", database_specific: { severity: "LOW" }, severity: "invalid" }] }] }] };
+    expect(scanWithFakeScanner(JSON.stringify(payload), 1).status).not.toBe(0);
+  });
+
+  it("requires review for CVSS vector strings that cannot be safely scored", () => {
+    const payload = { results: [{ packages: [{ package: { name: "synthetic", version: "1.0.0" }, vulnerabilities: [{ id: "GHSA-TEST-VECTOR", database_specific: { severity: "LOW" }, severity: [{ type: "CVSS_V3", score: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" }] }] }] }] };
+    expect(scanWithFakeScanner(JSON.stringify(payload), 1).status).not.toBe(0);
+  });
+
+  it("fails closed when scanner exceeds its bounded timeout", () => {
+    expect(scanWithFakeScanner(JSON.stringify({ results: [] }), 0, false, true).status).not.toBe(0);
+  });
+
+  it("fails closed on a vulnerability without severity evidence", () => {
+    const payload = { results: [{ packages: [{ package: { name: "synthetic", version: "1.0.0" }, vulnerabilities: [{ id: "GHSA-TEST-UNKNOWN" }] }] }] };
+    expect(scanWithFakeScanner(JSON.stringify(payload)).status).not.toBe(0);
+  });
+
+  it("accepts an informational prefix before a valid report", () => {
+    const result = scanWithFakeScanner("scanner notice\\n" + JSON.stringify({ results: [] }));
+    expect(result.status).toBe(0);
+  });
+});
