@@ -136,6 +136,9 @@ export function App() {
                 !oldMsg ||
                 oldMsg.id !== newMsg.id ||
                 oldMsg.status !== newMsg.status ||
+                oldMsg.deliveryState !== newMsg.deliveryState ||
+                oldMsg.lastAttemptAt !== newMsg.lastAttemptAt ||
+                oldMsg.nativeMessageId !== newMsg.nativeMessageId ||
                 (oldMsg.reactions?.length ?? 0) !== (newMsg.reactions?.length ?? 0)
               );
             });
