@@ -10,6 +10,22 @@ export interface QuotedMessageInfo {
   type?: string;
 }
 
+/** Historical epoch or milestone summary. Every folded source retains exact raw-message lineage. */
+export interface ConversationFold {
+  id: string;
+  chatId: string;
+  tier: 1 | 2;
+  topic: string;
+  summary: string;
+  startMessageId: string;
+  endMessageId: string;
+  directMessageIds: string[];
+  sourceFoldIds: string[];
+  messageCount: number;
+  factsExtracted: string[];
+  createdAt: number;
+}
+
 export interface ChatMessage {
   id: string;
   chatId: string;
