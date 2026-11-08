@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteStore } from '../src/domain/db';
+import { BrandKnowledgeStore } from '../src/agent/brand-knowledge';
 import {
   SQLITE_TABLES,
   inspectSqliteSources,
@@ -53,6 +54,13 @@ describe('PostgreSQL migration contract', () => {
       const store = new SqliteStore({dbPath: join(data, 'fable_whatsapp.db')});
       store.saveChat({id:'123@s.whatsapp.net',name:'أحمد',unreadCount:0,isGroup:false,agentMode:'autopilot'});
       store.saveMessage({id:'m-1',chatId:'123@s.whatsapp.net',sender:'123',text:'مرحبا',timestamp:1760000000000,isFromMe:false,type:'text'});
+      store.close();
+      // Exercise the original 16-table importer against its historical source contract.
+      const historical = new Database(join(data, 'fable_whatsapp.db'));
+      for (const name of ['send_intent_events', 'send_attempts', 'send_intents', 'learning_states', 'learning_reflections']) {
+        historical.run(`DROP TABLE ${name}`);
+      }
+      historical.close();
       const first = inspectSqliteSources({ dataDir: data, legacyBrand: 'shop-1' });
       const second = inspectSqliteSources({ dataDir: data, legacyBrand: 'shop-1' });
       expect(first.tables.find(t => t.table === 'chats')?.count).toBe(1);
@@ -72,6 +80,60 @@ describe('PostgreSQL migration contract', () => {
       db.run('CREATE TABLE chats(id TEXT PRIMARY KEY)');
       db.close();
       expect(() => inspectSqliteSources({ dataDir: root, legacyBrand: 'business' })).toThrow(/messages|missing/i);
+    });
+  });
+
+  test('refuses an S01 delivery ledger omitted from the import contract before any PostgreSQL write', async () => {
+    await asyncFixture(async root => {
+      const store = new SqliteStore({ dbPath: join(root, 'fable_whatsapp.db') });
+      store.close();
+      const db = new Database(join(root, 'fable_whatsapp.db'), { readonly: true });
+      const names = new Set((db.query("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map(row => row.name));
+      db.close();
+      expect(['send_intents', 'send_attempts', 'send_intent_events'].every(name => names.has(name))).toBe(true);
+      let postgresTouched = false;
+      await expect(importSqliteToPostgres({
+        dataDir: root, legacyBrand: 'brand-a', apply: true,
+        client: { begin: async () => { postgresTouched = true; throw new Error('PG should remain untouched'); } }
+      })).rejects.toThrow(/unaccounted|send_intents|send_attempts|send_intent_events/i);
+      expect(postgresTouched).toBe(false);
+      expect(() => inspectSqliteSources({ dataDir: root, legacyBrand: 'brand-a' }))
+        .toThrow(/unaccounted|send_intents/i);
+    });
+  });
+
+  test('also rejects unmigrated learning tables even without S01 delivery tables', () => {
+    fixture(root => {
+      const store = new SqliteStore({ dbPath: join(root, 'fable_whatsapp.db') });
+      store.close();
+      const db = new Database(join(root, 'fable_whatsapp.db'));
+      for (const name of ['send_intent_events', 'send_attempts', 'send_intents']) {
+        db.run(`DROP TABLE ${name}`);
+      }
+      db.close();
+      expect(() => inspectSqliteSources({ dataDir: root, legacyBrand: 'brand-a' }))
+        .toThrow(/unaccounted.*learning_reflections.*learning_states/i);
+    });
+  });
+
+  test('accepts derived FTS5 search tables while checking durable knowledge rows', () => {
+    fixture(root => {
+      const store = new BrandKnowledgeStore({ dbPath: join(root, 'agent-knowledge.sqlite') });
+      store.close();
+      const manifest = inspectSqliteSources({ dataDir: root, legacyBrand: 'brand-a' });
+      expect(manifest.sources.find(source => source.file === 'agent-knowledge.sqlite')?.exists).toBe(true);
+      expect(manifest.tables.filter(row => row.table.startsWith('knowledge_fts'))).toHaveLength(0);
+    });
+  });
+
+  test('rejects unaccounted new SQLite database files before calculating import success', () => {
+    fixture(root => {
+      const known = new Database(join(root, 'agent-quality.sqlite'));
+      known.run('CREATE TABLE agent_evaluations(brand_id TEXT,scenario_id TEXT,intent TEXT,resolved INTEGER,supported INTEGER,missing_source TEXT,question_hash TEXT,created_at INTEGER)');
+      known.close();
+      new Database(join(root, 'agent-working-context.sqlite')).close();
+      expect(() => inspectSqliteSources({ dataDir: root, legacyBrand: 'brand-a' }))
+        .toThrow(/unaccounted.*agent-working-context/i);
     });
   });
 

@@ -4,8 +4,10 @@ import { ModeratorAgent } from '../ai/moderator-agent';
 import { MemoryStore } from '../domain/memory-store';
 import { WhatsAppSocketClient } from '../transport/whatsapp-socket';
 import { createWhatsAppMcpServer } from './server';
+import { resolveRuntimeDatastore } from '../persistence/postgres/runtime-selection';
 
 async function main() {
+  resolveRuntimeDatastore();
   const memoryStore = new MemoryStore();
   const geminiClient = new GeminiClient();
   const moderatorAgent = new ModeratorAgent(geminiClient, memoryStore);

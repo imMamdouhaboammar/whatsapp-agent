@@ -3,6 +3,9 @@ export interface VoiceSynthesizerOptions {
   voiceName?: string;
   ssmlGender?: 'MALE' | 'FEMALE';
   speakingRate?: number;
+  /** Server-side test seam; production keeps Google Cloud credentials and global fetch. */
+  authProvider?: () => Promise<{ token: string; project: string }>;
+  fetcher?: typeof fetch;
 }
 
 export class VoiceSynthesizer {
@@ -13,12 +16,16 @@ export class VoiceSynthesizer {
   private accessToken?: string;
   private tokenExpiresAt = 0;
   private project?: string;
+  private readonly authProvider?: () => Promise<{ token: string; project: string }>;
+  private readonly fetcher: typeof fetch;
 
   constructor(options: VoiceSynthesizerOptions = {}) {
     this.languageCode = options.languageCode ?? 'ar-XA';
     this.voiceName = options.voiceName ?? 'kore'; // Default to Gemini 3.8 Flash TTS 'kore'
     this.ssmlGender = options.ssmlGender ?? 'MALE';
     this.speakingRate = options.speakingRate ?? 1.0;
+    this.authProvider = options.authProvider;
+    this.fetcher = options.fetcher ?? fetch;
   }
 
   setVoiceName(name: string) {
@@ -26,6 +33,7 @@ export class VoiceSynthesizer {
   }
 
   private async getAuth(): Promise<{ token: string; project: string }> {
+    if (this.authProvider) return this.authProvider();
     const now = Date.now();
     if (this.accessToken && this.project && now < this.tokenExpiresAt - 60_000) {
       return { token: this.accessToken, project: this.project };
@@ -87,7 +95,7 @@ export class VoiceSynthesizer {
     const normalizedVoice = voiceName.replace(/^ar-XA-Chirp3-HD-/, '').toLowerCase() || 'kore';
 
     const url = `https://aiplatform.googleapis.com/v1/projects/${project}/locations/global/publishers/google/models/gemini-3.8-flash-tts:generateContent`;
-    const res = await fetch(url, {
+    const res = await this.fetcher(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -166,7 +174,7 @@ export class VoiceSynthesizer {
       }
     };
 
-    const response = await fetch('https://texttospeech.googleapis.com/v1/text:synthesize', {
+    const response = await this.fetcher('https://texttospeech.googleapis.com/v1/text:synthesize', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,
