@@ -5,6 +5,7 @@ import type {
   AgentDraft,
   AgentMode,
   ChatMessage,
+  ConversationFold,
   ChatSummary,
   ContactDossier
 } from './types';
@@ -55,6 +56,42 @@ export class MemoryStore {
 
   getMessage(chatId: string, messageId: string): ChatMessage | undefined {
     return this.sqlite.getMessage(chatId, messageId);
+  }
+
+  saveFold(fold: ConversationFold): void {
+    this.sqlite.getFoldRepository().saveFold(fold);
+  }
+
+  getFold(id: string): ConversationFold | undefined {
+    return this.sqlite.getFoldRepository().getFold(id);
+  }
+
+  getFolds(chatId: string, tier?: 1 | 2, limit = 500): ConversationFold[] {
+    return this.sqlite.getFoldRepository().getFolds(chatId, tier, limit);
+  }
+
+  getPendingTier1Folds(chatId: string, limit = 5): ConversationFold[] {
+    return this.sqlite.getFoldRepository().getPendingTier1Folds(chatId, limit);
+  }
+
+  getRecentFolds(chatId: string, tier: 1 | 2, limit = 20): ConversationFold[] {
+    return this.sqlite.getFoldRepository().getRecentFolds(chatId, tier, limit);
+  }
+
+  getFoldMessages(id: string): ChatMessage[] {
+    return this.sqlite.getFoldRepository().getFoldMessages(id);
+  }
+
+  getMessageWindow(chatId: string, messageId: string, radius = 2): ChatMessage[] {
+    return this.sqlite.getFoldRepository().getMessageWindow(chatId, messageId, radius);
+  }
+
+  getUnfoldedMessages(chatId: string, keepRecentCount = 10): ChatMessage[] {
+    return this.sqlite.getFoldRepository().getUnfoldedMessages(chatId, keepRecentCount);
+  }
+
+  searchMemory(chatId: string, query: string, limit = 25) {
+    return this.sqlite.getFoldRepository().searchMemory(chatId, query, limit);
   }
 
   listChats(): ChatSummary[] {

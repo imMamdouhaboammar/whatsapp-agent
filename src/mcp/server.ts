@@ -77,6 +77,43 @@ export function createWhatsAppMcpServer(deps: {
           }
         },
         {
+          name: 'whatsapp_search_chat_memory',
+          description: 'Search a single WhatsApp chat in raw messages and summarized historical folds.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              chatId: { type: 'string', description: 'WhatsApp chat JID' },
+              query: { type: 'string', description: 'Keyword or phrase (max 200 characters)' },
+              limit: { type: 'number', description: 'Maximum results per source (1-50)' }
+            },
+            required: ['chatId', 'query']
+          }
+        },
+        {
+          name: 'whatsapp_get_chat_folds',
+          description: 'List historical session and milestone fold summaries for one chat.',
+          inputSchema: {
+            type: 'object',
+            properties: { chatId: { type: 'string', description: 'WhatsApp chat JID' } },
+            required: ['chatId']
+          }
+        },
+        {
+          name: 'whatsapp_decompress_fold',
+          description: 'Inspect raw messages behind a fold; optionally inspect only a referenced message and two neighbors on each side.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              chatId: { type: 'string', description: 'WhatsApp chat JID' },
+              foldId: { type: 'string', description: 'Fold ID from whatsapp_get_chat_folds' },
+              aroundMessageId: { type: 'string', description: 'Optional raw message ID to view with two neighbors' },
+              offset: { type: 'number', description: 'Pagination offset when viewing a whole fold' },
+              limit: { type: 'number', description: 'Maximum fold messages per page (up to 40)' }
+            },
+            required: ['chatId', 'foldId']
+          }
+        },
+        {
           name: 'whatsapp_send_message',
           description: 'Send a WhatsApp message or reply to a contact as a human moderator with realistic typing delay.',
           inputSchema: {
@@ -288,6 +325,44 @@ export function createWhatsAppMcpServer(deps: {
               )
             }
           ]
+        };
+      }
+
+      case 'whatsapp_search_chat_memory': {
+        const chatId = String(args?.chatId ?? '').trim();
+        const query = String(args?.query ?? '').trim();
+        if (!chatId || !query || query.length > 200) throw new Error('Valid chatId and query are required');
+        const limit = Math.max(1, Math.min(50, Math.floor(Number(args?.limit ?? 25)) || 25));
+        return {
+          content: [{ type: 'text', text: JSON.stringify(deps.memoryStore.searchMemory(chatId, query, limit)) }]
+        };
+      }
+
+      case 'whatsapp_get_chat_folds': {
+        const chatId = String(args?.chatId ?? '').trim();
+        if (!chatId) throw new Error('chatId is required');
+        return {
+          content: [{ type: 'text', text: JSON.stringify(deps.memoryStore.getFolds(chatId)) }]
+        };
+      }
+
+      case 'whatsapp_decompress_fold': {
+        const chatId = String(args?.chatId ?? '').trim();
+        const foldId = String(args?.foldId ?? '').trim();
+        const fold = deps.memoryStore.getFold(foldId);
+        if (!chatId || !fold || fold.chatId !== chatId) throw new Error('Fold not found in chat');
+        const raw = deps.memoryStore.getFoldMessages(foldId);
+        const aroundId = args?.aroundMessageId ? String(args.aroundMessageId) : undefined;
+        if (aroundId && !fold.directMessageIds.includes(aroundId)) throw new Error('Message outside selected fold');
+        const offset = Math.max(0, Math.min(512, Math.floor(Number(args?.offset ?? 0)) || 0));
+        const limit = Math.max(1, Math.min(40, Math.floor(Number(args?.limit ?? 40)) || 40));
+        const messages = aroundId
+          ? deps.memoryStore.getMessageWindow(chatId, aroundId, 2)
+          : raw.slice(offset, offset + limit);
+        return {
+          content: [{ type: 'text', text: JSON.stringify({
+            foldId, chatId, total: raw.length, offset: aroundId ? undefined : offset, messages
+          }) }]
         };
       }
 

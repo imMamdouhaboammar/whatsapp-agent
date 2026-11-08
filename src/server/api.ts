@@ -141,6 +141,26 @@ export function createApiServer(deps: {
     return c.json({ chats });
   });
 
+  app.get('/api/chats/:chatId/folds', async (c) => {
+    let chatId = c.req.param('chatId');
+    if (deps.whatsappClient?.canonicalizeJid) {
+      chatId = await deps.whatsappClient.canonicalizeJid(chatId);
+    }
+    c.header('Cache-Control', 'no-store');
+    return c.json({ chatId, folds: deps.memoryStore.getFolds(chatId) });
+  });
+
+  app.post('/api/chats/:chatId/fold-now', async (c) => {
+    let chatId = c.req.param('chatId');
+    if (deps.whatsappClient?.canonicalizeJid) {
+      chatId = await deps.whatsappClient.canonicalizeJid(chatId);
+    }
+    const engine = deps.moderatorAgent.getContextFoldEngine();
+    if (!engine) return c.json({ error: 'Context folding is disabled' }, 503);
+    void engine.triggerFoldCheck(chatId);
+    return c.json({ chatId, status: 'scheduled' }, 202);
+  });
+
   app.get('/api/chats/:chatId/messages', async (c) => {
     let chatId = c.req.param('chatId');
     if (deps.whatsappClient?.canonicalizeJid) {
