@@ -151,6 +151,12 @@ export class ProactiveEngagementScheduler {
       let observed: ProactiveIntentResult | undefined;
       try { observed = await this.deps.sender.lookup(this.identity(trigger)); }
       catch { /* Leave an ambiguous provider outcome untouched. */ }
+      if (observed?.state === 'failed' &&
+          this.deps.store.reconcileFailed(trigger.triggerId, 'template_policy_denied')) {
+        this.emit('engagement.skipped', trigger.triggerId);
+        results.push({ triggerId: trigger.triggerId, status: 'skipped', reason: 'template_policy_denied' });
+        continue;
+      }
       if (observed?.providerMessageId && ['accepted', 'delivered', 'read'].includes(observed.state)) {
         const changed = this.deps.store.reconcileAccepted(trigger.triggerId, observed.providerMessageId);
         if (changed) {
@@ -193,6 +199,12 @@ export class ProactiveEngagementScheduler {
       this.emit('engagement.trigger.ready', trigger.triggerId);
       const outcome = await this.deps.store.dispatch(trigger.triggerId, context, async (claimed) => {
         const result = await this.deps.sender.submit(this.command(claimed, context));
+        if (result.intentId && result.state === 'failed') {
+          if (this.deps.store.reconcileFailed(claimed.triggerId, 'template_policy_denied')) {
+            this.emit('engagement.skipped', claimed.triggerId);
+          }
+          throw new Error('Terminal S01 template policy failure');
+        }
         if (!result.intentId || !result.providerMessageId ||
             !['accepted', 'delivered', 'read'].includes(result.state)) {
           throw new Error('S01 template intent requires receipt reconciliation');

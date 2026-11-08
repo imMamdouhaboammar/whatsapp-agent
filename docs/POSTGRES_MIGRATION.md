@@ -4,11 +4,11 @@ This document details the PostgreSQL schema migration and **offline data import 
 
 See [Implementation status](IMPLEMENTATION_STATUS.md) for source-code evidence and remaining cutover work.
 
-For the full design and gates, see [Migration plan](./plans/2026-11-06-postgresql-supabase-migration.md).
+For the full design and gates, see [Migration plan](./plans/2026-11-06-postgresql-supabase-migration.md) and [Batch 2 runtime activation](B2_RUNTIME_ACTIVATION.md).
 
 ## Prerequisites
 
-- Bun 1.4+ and access to the seven existing SQLite files in `DATA_DIR`
+- Bun 1.4+ and access to the original seven SQLite files plus any optional B2 identity/planner files in `DATA_DIR`
 - A fresh, empty PostgreSQL database, or an empty Supabase Postgres database to which your server can connect
 - A backend-only PostgreSQL connection URL in `DATABASE_URL`, provided through your shell/secret store. Hosted Supabase connections should use the documented TLS configuration and a direct or supported pooled connection
 - Enough free storage for a separate backup of the source data and the new database
@@ -57,7 +57,7 @@ Do not expose the database URL to the browser. This migration creates tables onl
 
 ## Refusal conditions
 
-- No source database exists, or a present database is incomplete/corrupt
+- No source database exists, a present database is incomplete/corrupt, or any unaccounted B2 table/database file exists. With WCF, S01 or optional identity/planner state present, the historical importer must refuse to run
 - Blank/invalid legacy brand identity
 - Any target table or prior successful import is present
 - SQLite changes while importing, or PostgreSQL row counts/digests do not match

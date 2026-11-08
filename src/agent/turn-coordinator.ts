@@ -2,12 +2,15 @@ import type {ChatMessage} from '../domain/types';
 import type {ModeratorAgent} from '../ai/moderator-agent';
 import type {MemoryStore} from '../domain/memory-store';
 import type {AutonomousOperator} from './autonomous-operator';
+import type {InboundPlanner} from './inbound-planner';
 
 type DecisionResult=Awaited<ReturnType<ModeratorAgent['processInboundMessage']>>;
 type CoordinatorDependencies={
   moderator:Pick<ModeratorAgent,'processInboundMessage'>;
   memory:Pick<MemoryStore,'getChat'>;
   operator:Pick<AutonomousOperator,'resolve'>;
+  /** Explicit owner opt-in supplied by createInboundPlanner. */
+  planner?:Pick<InboundPlanner,'process'>;
   brandId?:string;
   enabled:boolean;
 };
@@ -15,7 +18,11 @@ type CoordinatorDependencies={
 export class AgentTurnCoordinator {
   private active=new Map<string,Promise<void>>();
   constructor(private readonly deps:CoordinatorDependencies){}
-  async processInboundMessage(message:ChatMessage):Promise<DecisionResult>{
+  async processInboundMessage(message:ChatMessage,delivery?:{historical?:boolean;replayed?:boolean}):Promise<DecisionResult>{
+    if(delivery?.historical||delivery?.replayed)return {
+      decision:{action:'ignore',intent:'replay',reasoning:'Historical or replayed inbound message',confidence:1,simulatedDelayMs:0},
+      shouldSendImmediately:false
+    };
     const prior=this.active.get(message.chatId)??Promise.resolve();
     let release!:()=>void;
     const ready=new Promise<void>(resolve=>{release=resolve;});
@@ -30,6 +37,16 @@ export class AgentTurnCoordinator {
   }
   private async process(message:ChatMessage):Promise<DecisionResult>{
     const activeMode=this.deps.memory.getChat(message.chatId)?.agentMode??'autopilot';
+    if(this.deps.planner&&activeMode==='autopilot'&&!message.isFromMe&&message.type==='text'&&
+       !message.chatId.endsWith('@g.us')){
+      try{
+        const planned=await this.deps.planner.process(message);
+        if(planned)return planned;
+      }catch{
+        // A failed durable replay guard may conceal a completed provider write.
+        return {decision:{action:'ignore',intent:'provider_unknown',reasoning:'Inbound planner failed closed',confidence:1,simulatedDelayMs:0},shouldSendImmediately:false};
+      }
+    }
     const validBrand=!!this.deps.brandId && /^[A-Za-z0-9_-]{1,64}$/.test(this.deps.brandId);
     const readOnlyStock=/\bSKU[-_][A-Za-z0-9_-]{1,80}\b/i.test(message.text??'');
     const permitted=this.deps.enabled && validBrand && activeMode==='autopilot' &&

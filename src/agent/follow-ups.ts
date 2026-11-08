@@ -70,6 +70,11 @@ export class FollowUpStore {
   return changed.changes===1;
  }
  /** External intent acceptance is evidence only; no transport is called here. */
+ reconcileFailed(id:string,reason:'template_policy_denied'|'recipient_binding_changed'):boolean {
+  const changed=this.db.query("UPDATE engagement_triggers SET status='cancelled',decision_reason=?,updated_at=? WHERE trigger_id=? AND status IN ('attempting','uncertain')")
+   .run(reason,Date.now(),id);
+  return changed.changes===1;
+ }
  reconcileAccepted(id:string,receiptId:string):boolean {
   if(typeof receiptId!=='string'||!receiptId.trim()||receiptId.length>512)throw new Error('Invalid provider receipt');
   const result=this.db.query("UPDATE engagement_triggers SET status='sent',receipt_id=?,updated_at=? WHERE trigger_id=? AND status IN ('attempting','uncertain')")
@@ -121,7 +126,10 @@ export class FollowUpStore {
    this.db.query("UPDATE engagement_triggers SET status='sent',receipt_id=?,updated_at=? WHERE trigger_id=? AND status='attempting'").run(receipt,Date.now(),id);
    return {status:'sent',receiptId:receipt};
   }catch{
-   this.db.query("UPDATE engagement_triggers SET status='uncertain',updated_at=? WHERE trigger_id=? AND status='attempting'").run(Date.now(),id);
+   const changed=this.db.query("UPDATE engagement_triggers SET status='uncertain',updated_at=? WHERE trigger_id=? AND status='attempting'").run(Date.now(),id);
+   if(changed.changes===0 && this.get(id)?.status==='cancelled'){
+    return {status:'skipped',reason:this.get(id)?.decisionReason??'template_policy_denied'};
+   }
    return {status:'uncertain',reason:'provider_outcome_unknown'};
   }
  }

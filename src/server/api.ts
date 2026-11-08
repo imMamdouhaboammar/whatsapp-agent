@@ -40,6 +40,7 @@ export function createApiServer(deps: {
   reflectionEngine?: ReflectionEngine;
   sendIntents?: SendIntentService;
   diagnostics?: DiagnosticsCore;
+  transportMode?: 'baileys' | 'meta-cloud';
 }): Hono {
   const app = new Hono();
   let delivery = deps.sendIntents;
@@ -113,6 +114,8 @@ export function createApiServer(deps: {
     const pendingDrafts = deps.memoryStore.getPendingDrafts();
     return c.json({
       ...state,
+      transportMode: deps.transportMode ?? 'baileys',
+      metaCloudConfigured: deps.transportMode === 'meta-cloud',
       pendingDraftsCount: pendingDrafts.length
     });
   });
@@ -124,6 +127,9 @@ export function createApiServer(deps: {
   });
 
   app.post('/api/connect', async (c) => {
+    if (deps.transportMode === 'meta-cloud') {
+      return c.json({ error: 'Baileys pairing is disabled in Meta Cloud transport mode' }, 409);
+    }
     const body = await c.req.json().catch(() => ({}));
     const phone = body.pairingPhoneNumber ? String(body.pairingPhoneNumber) : undefined;
     void deps.whatsappClient.start(phone);
@@ -131,6 +137,9 @@ export function createApiServer(deps: {
   });
 
   app.post('/api/disconnect', async (c) => {
+    if (deps.transportMode === 'meta-cloud') {
+      return c.json({ error: 'Baileys disconnect is disabled in Meta Cloud transport mode' }, 409);
+    }
     await deps.whatsappClient.disconnect();
     return c.json({ status: 'disconnected' });
   });

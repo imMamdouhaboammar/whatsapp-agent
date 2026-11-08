@@ -56,8 +56,14 @@ describe('PostgreSQL migration contract', () => {
       store.saveMessage({id:'m-1',chatId:'123@s.whatsapp.net',sender:'123',text:'مرحبا',timestamp:1760000000000,isFromMe:false,type:'text'});
       store.close();
       // Exercise the original 16-table importer against its historical source contract.
+      // Current SQLite also creates S01, learning and WCF tables, all deliberately
+      // excluded from this legacy fixture so the fingerprint assertion stays valid.
       const historical = new Database(join(data, 'fable_whatsapp.db'));
-      for (const name of ['send_intent_events', 'send_attempts', 'send_intents', 'learning_states', 'learning_reflections']) {
+      for (const name of [
+        'send_intent_events', 'send_attempts', 'send_intents',
+        'learning_states', 'learning_reflections',
+        'conversation_fold_messages', 'conversation_fold_sources', 'conversation_folds'
+      ]) {
         historical.run(`DROP TABLE ${name}`);
       }
       historical.close();
@@ -71,6 +77,21 @@ describe('PostgreSQL migration contract', () => {
       expect(getImportFingerprint(first)).toBe(getImportFingerprint(second));
       expect(() => inspectSqliteSources({ dataDir: data, legacyBrand: 'shop-2' })).not.toThrow();
       expect(getImportFingerprint(first)).not.toBe(getImportFingerprint(inspectSqliteSources({ dataDir: data, legacyBrand: 'shop-2' })));
+    });
+  });
+
+  test('refuses WCF fold tables until they are included in a complete PostgreSQL import', () => {
+    fixture(root => {
+      const store = new SqliteStore({ dbPath: join(root, 'fable_whatsapp.db') });
+      store.close();
+      const db = new Database(join(root, 'fable_whatsapp.db'));
+      for (const name of [
+        'send_intent_events', 'send_attempts', 'send_intents',
+        'learning_states', 'learning_reflections'
+      ]) db.run(`DROP TABLE ${name}`);
+      db.close();
+      expect(() => inspectSqliteSources({ dataDir: root, legacyBrand: 'brand-a' }))
+        .toThrow(/unaccounted.*conversation_fold_messages.*conversation_fold_sources.*conversation_folds/i);
     });
   });
 
