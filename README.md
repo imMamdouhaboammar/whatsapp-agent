@@ -1,6 +1,8 @@
 # Fable Agentic WhatsApp
 
-> Browserless WhatsApp copilot and autonomous moderator with real-time SSE streaming, multi-model fallback, SQLite WAL and Supabase persistence, and Model Context Protocol (MCP) support.
+> Browserless WhatsApp copilot and autonomous moderator with SSE streaming, multi-model fallback, SQLite WAL runtime storage, optional PostgreSQL learning-memory integration, PostgreSQL migration tooling, and MCP support.
+
+For an evidence-based breakdown of what is implemented, partial, and planned, see [Implementation status](docs/IMPLEMENTATION_STATUS.md). A source-code implementation or green unit test does not by itself establish live WhatsApp delivery or production readiness.
 
 ## Core capabilities
 
@@ -14,16 +16,16 @@
   - *Copilot*: Draft preparation with confidence scores and reasoning traces for one-click human approval.
   - *Human*: Silent observation with manual operator control.
 - **Model Context Protocol (MCP)**: Native stdio and HTTP MCP server exposing 10 tools for Claude Desktop, Gemini CLI, Cursor, and custom agent integrations.
-- **Dual persistence tiers**: Authoritative production persistence in Supabase PostgreSQL (with dual IPv4 session and transaction pooling, 15 active extensions including pgvector and pgmq); standalone offline caching and test fixtures in SQLite WAL.
+- **Persistence and migration**: Chat, draft and capability runtime stores currently use SQLite WAL. PostgreSQL migration/import tooling and an optional PostgreSQL-backed learning-memory store exist; the complete runtime cutover is pending. See [Implementation status](docs/IMPLEMENTATION_STATUS.md).
 - **Web cockpit**: React 19 interface with Tailwind CSS, bilingual layout (Arabic RTL and English LTR), real-time Server-Sent Events (SSE), Brand Brain manager, and token-gated access.
 
 ## Quick start
 
 ### Prerequisites
 
-- [Bun](https://bun.sh) (v1.2.0 or later)
+- [Bun](https://bun.sh) (v1.3.0 or later, matching `package.json`)
 - Google Cloud SDK authenticated (`gcloud auth login`) or a `GEMINI_API_KEY`
-- Supabase PostgreSQL database URL for production persistence (or local SQLite for standalone offline development)
+- Writable SQLite storage for the current chat/draft/capability runtime; a PostgreSQL URL is optional for learning memory and migration operations
 - Optional: Python 3.9+ for bounded document extraction (`workers/media-python`)
 
 ### Installation
@@ -221,7 +223,7 @@ bun .agents/skills/unslop-preflight/bin/cli.js audit
 
 ## Migration and enterprise storage
 
-The application uses Supabase PostgreSQL as its production persistence tier and SQLite with write-ahead logging for standalone developer caching:
+The repository has an offline import path to Supabase PostgreSQL, but the current chat, draft and capability runtime writers still use SQLite WAL. Only learning memory switches to PostgreSQL when configured; completing the runtime cutover requires further implementation and verification:
 
 - Run schema migrations: `bun run db:postgres --schema`
 - Perform offline migration from SQLite: `bun run db:postgres --import --apply --data-dir ./data --legacy-brand <brand-id>`

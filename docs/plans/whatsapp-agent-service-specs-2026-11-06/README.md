@@ -2,6 +2,8 @@
 
 Research-backed capability specifications | 2026-11-06 | Planning deliverable
 
+For the later, code-verified inventory at main `0e1c19b`, see [Implementation status](../../IMPLEMENTATION_STATUS.md). Some capability slices described here have since been implemented; this historical planning document is not a live release status report.
+
 ## Product thesis
 
 The owner links a brand WhatsApp account, teaches the agent about the business, connects operational tools, sets an autonomy profile once and activates it. The agent then owns the full customer-conversation lifecycle: discovering intent, answering accurately, taking actions in business software, starting eligible conversations, making follow-ups, resolving requests and learning from outcomes.

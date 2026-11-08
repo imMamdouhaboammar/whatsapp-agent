@@ -1,6 +1,8 @@
 # PostgreSQL / Supabase offline data migration
 
-This document details the schema migration and offline data import tooling for WhatsApp Agent. In production deployments, Supabase PostgreSQL is the authoritative persistence tier, while SQLite WAL remains available for offline development and local caching.
+This document details the PostgreSQL schema migration and **offline data import tooling** for WhatsApp Agent. It is not an online cutover procedure. At the 2026-11-08 baseline, runtime chat, drafts and capability stores still use SQLite WAL; only the learning-memory path can use PostgreSQL when configured. Importing legacy rows does not change these runtime writers.
+
+See [Implementation status](IMPLEMENTATION_STATUS.md) for source-code evidence and remaining cutover work.
 
 For the full design and gates, see [Migration plan](./plans/2026-11-06-postgresql-supabase-migration.md).
 
@@ -44,7 +46,7 @@ Do not expose the database URL to the browser. This migration creates tables onl
    ```
 
 8. The import runs inside one PostgreSQL transaction, checks that all 16 target tables are empty, inserts every legacy row with parameterized SQL, rechecks the source fingerprints, compares row counts and fingerprints in PostgreSQL, and records its success. Any failed check aborts the transaction
-9. Verify results independently on a **disposable** destination and rehearse a PostgreSQL backup/restore. In production, live state persists directly to Supabase PostgreSQL, while legacy SQLite source files are preserved for offline testing and historical verification.
+9. Verify results independently on a **disposable** destination and rehearse a PostgreSQL backup/restore. The imported PostgreSQL rows are a migration snapshot: as of the stated baseline, chat, draft and capability runtime writes remain in SQLite. Keep the source files unchanged and the application stopped until an explicitly implemented PostgreSQL runtime cutover is proven. The optional PostgreSQL learning store has separate wiring.
 
 ## Data mapping
 
