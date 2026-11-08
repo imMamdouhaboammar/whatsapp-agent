@@ -176,6 +176,7 @@ export class DiagnosticsCore {
     if (trace.receipt && RECEIPT_RANK[trace.receipt] >= RECEIPT_RANK[input.state]) return undefined;
     const event = this.appendEvent(input.traceId, "receipt_updated", "ok", input.state);
     trace.receipt = input.state;
+    trace.uncertainAt = undefined;
     return event;
   }
 
@@ -312,8 +313,11 @@ export class DiagnosticsCore {
     if (outcome === "ok" && trace.firstSuccessfulStageAt[stage] === undefined) {
       trace.firstSuccessfulStageAt[stage] = at;
     }
-    if (stage === "sending") trace.uncertainAt = outcome === "uncertain" ? at : undefined;
-    if (stage === "accepted") {
+    // An ambiguous network attempt remains unresolved until affirmative evidence.
+    if (stage === "sending" && outcome === "uncertain" && trace.uncertainAt === undefined) {
+      trace.uncertainAt = at;
+    }
+    if (stage === "accepted" && outcome === "ok") {
       trace.uncertainAt = undefined;
       if (!trace.receipt) trace.receipt = "accepted";
     }

@@ -173,4 +173,38 @@ describe("S08 diagnostics core", () => {
     core.recordStage({ traceId, stage: "accepted" });
     expect(core.snapshot().metrics.receiptStates).toEqual({ accepted: 0, delivered: 0, read: 1 });
   });
+
+  test("keeps an earlier uncertain attempt unresolved through later sending or failed acceptance", () => {
+    let current = 1_000;
+    const core = new DiagnosticsCore({ now: () => current });
+    const traceId = core.startTrace();
+    core.recordStage({ traceId, stage: "sending", outcome: "uncertain" });
+
+    current = 2_000;
+    core.recordStage({ traceId, stage: "sending", outcome: "ok" });
+    current = 3_000;
+    core.recordStage({ traceId, stage: "sending", outcome: "failed" });
+    core.recordStage({ traceId, stage: "accepted", outcome: "failed" });
+    expect(core.snapshot().metrics.uncertainSends).toEqual({ count: 1, oldestAgeMs: 2_000 });
+    expect(core.snapshot().metrics.receiptStates).toEqual({ accepted: 0, delivered: 0, read: 0 });
+
+    current = 3_500;
+    core.recordReceipt({ traceId, state: "delivered" });
+    expect(core.snapshot().metrics.uncertainSends).toEqual({ count: 0, oldestAgeMs: 0 });
+    expect(core.snapshot().metrics.receiptStates).toEqual({ accepted: 0, delivered: 1, read: 0 });
+  });
+
+  test("does not reset age when duplicate uncertain attempts arrive", () => {
+    let current = 1_000;
+    const core = new DiagnosticsCore({ now: () => current });
+    const traceId = core.startTrace();
+    core.recordStage({ traceId, stage: "sending", outcome: "uncertain" });
+    current = 2_000;
+    core.recordStage({ traceId, stage: "sending", outcome: "uncertain" });
+    current = 4_000;
+    expect(core.snapshot().metrics.uncertainSends).toEqual({ count: 1, oldestAgeMs: 3_000 });
+    core.recordStage({ traceId, stage: "accepted", outcome: "ok" });
+    expect(core.snapshot().metrics.uncertainSends).toEqual({ count: 0, oldestAgeMs: 0 });
+    expect(core.snapshot().metrics.receiptStates.accepted).toBe(1);
+  });
 });
