@@ -2,6 +2,8 @@ import { serveStatic } from 'hono/bun';
 import { createCapabilities, registerCapabilityRoutes } from './agent/capabilities-api';
 import { AgentTurnCoordinator } from './agent/turn-coordinator';
 import { createInboundPlanner } from './agent/inbound-planner';
+import { ProactiveEngagementScheduler, type ProactiveEligibility, type ProactiveTemplateIntentCommand } from './agent/proactive-scheduler';
+import type { FollowUpTrigger } from './agent/follow-ups';
 import { AudioTranscriber } from './ai/audio-transcriber';
 import { GeminiClient } from './ai/gemini-client';
 import { ModeratorAgent } from './ai/moderator-agent';
@@ -9,7 +11,8 @@ import { VoiceSynthesizer } from './ai/voice-synthesizer';
 import { BurstAccumulator, type FusedBurst } from './domain/burst-accumulator';
 import { MessageSplitter } from './domain/message-splitter';
 import { MemoryStore } from './domain/memory-store';
-import { SendIntentService } from './domain/send-intent-service';
+import { SendIntentService, type VerifiedTemplateAuthorization } from './domain/send-intent-service';
+import type { SendIntent } from './domain/send-ledger';
 import { DiagnosticsCore } from './observability/diagnostics-core';
 import { HumanRateLimiter } from './domain/rate-limiter';
 import type { ChatMessage } from './domain/types';
@@ -39,6 +42,8 @@ export async function createFableWhatsAppAgent(options: {
   transport?: 'baileys' | 'meta-cloud';
   metaCloud?: { config: MetaCloudApiConfig; fetch?: typeof fetch; now?: () => number };
   plannerEnv?: Readonly<Record<string, string | undefined>>;
+  /** Trusted owner/business data source. No proactive sends when absent. */
+  proactiveEligibility?: (trigger: FollowUpTrigger, now: number) => Promise<ProactiveEligibility>;
 } = {}) {
   // Fail before constructing a SQLite store if a partial PostgreSQL cutover was requested.
   resolveRuntimeDatastore();
@@ -132,6 +137,7 @@ export async function createFableWhatsAppAgent(options: {
 
   let whatsappClient: WhatsAppSocketClient;
   let sendIntents: SendIntentService;
+  let proactiveScheduler: ProactiveEngagementScheduler | undefined;
 
   // Burst Accumulator: fuses multi-line rapid messages before calling Gemini
   const burstAccumulator = new BurstAccumulator({
@@ -251,7 +257,8 @@ export async function createFableWhatsAppAgent(options: {
     if (memoryStore.getMessage(msg.chatId, msg.id)) return;
 
     if (!msg.isFromMe && recipientDirectory && brandId) {
-      recipientDirectory.observeAlias({ brandId, jid: msg.chatId });
+      const identity = recipientDirectory.observeAlias({ brandId, jid: msg.chatId });
+      proactiveScheduler?.onCustomerMessage({ brandId, contactId: identity.contactId, text: msg.text });
     }
     const persistedMessage = memoryStore.addMessage(msg);
     sse.broadcast('new_message', persistedMessage);
@@ -315,7 +322,7 @@ export async function createFableWhatsAppAgent(options: {
       }
       return;
     }
-    // S01 will attach a terminal failed-receipt transition once its bridge lands.
+    sendIntents.deliveryFailed(event.chatId, event.nativeMessageId);
     sse.broadcast('message_delivery_failed', {
       chatId: event.chatId, messageId: event.nativeMessageId
     });
@@ -330,9 +337,64 @@ export async function createFableWhatsAppAgent(options: {
     })
     : undefined;
 
+  // The template ledger rechecks fresh owner evidence after the durable intent is claimed.
+  // A scheduled trigger, including its original consent reference, never proves eligibility.
+  const verifyProactiveTemplateAuthorization = async (
+    intent: SendIntent, now: number
+  ): Promise<VerifiedTemplateAuthorization> => {
+    const source = intent.sourceId.match(/^a08:([a-f0-9]{64})$/);
+    if (!source || intent.sourceKind !== 'autopilot' || intent.sourceRevision !== 1 ||
+        intent.actionKind !== 'template' || !options.proactiveEligibility ||
+        !recipientDirectory || !brandId || !intent.template || !intent.templateEligibility) {
+      throw new Error('Trusted proactive template authorization is unavailable');
+    }
+    const trigger = capabilities.followups.get(source[1]!);
+    const alias = recipientDirectory.resolve({ brandId, jid: intent.chatId });
+    if (!trigger || trigger.status !== 'attempting' || trigger.brandId !== brandId ||
+        !alias || alias.kind !== 'direct' || alias.contactId !== trigger.contactId ||
+        trigger.consentRef !== intent.templateEligibility.consentRef ||
+        trigger.sourceWorkflowId !== intent.templateEligibility.sourceWorkflowId ||
+        trigger.templateRef !== intent.template.name) {
+      throw new Error('Proactive source or recipient identity changed');
+    }
+    const live = await options.proactiveEligibility(trigger, now);
+    if (live.channel !== 'meta-cloud' || live.optIn !== true ||
+        live.templateApproved !== true || live.contactJid !== intent.chatId ||
+        live.optedInAtMs !== intent.templateEligibility.optedInAtMs ||
+        live.template?.name !== intent.template.name ||
+        live.template?.languageCode !== intent.template.languageCode ||
+        live.relevance?.relevant !== true ||
+        live.relevance.sourceWorkflowId !== trigger.sourceWorkflowId) {
+      throw new Error('Proactive consent, recipient or template authorization revoked');
+    }
+    return {
+      consentRef: trigger.consentRef!,
+      optedInAtMs: live.optedInAtMs,
+      approvedTemplate: {
+        name: live.template.name,
+        languageCode: live.template.languageCode
+      },
+      sourceWorkflowId: trigger.sourceWorkflowId,
+      relevant: true,
+      relevanceVerifiedAtMs: live.relevance.verifiedAtMs,
+      relevanceExpiresAtMs: live.relevance.expiresAtMs,
+      quietHours: {
+        from: live.quietHours.from,
+        to: live.quietHours.to,
+        timeZone: live.timeZone
+      }
+    };
+  };
+
   sendIntents = new SendIntentService({
     memoryStore,
     diagnostics,
+    brandId: recipientDirectory ? brandId : undefined,
+    recipientDirectory,
+    sendTemplate: metaClient ? (request) => metaClient.sendTemplate(request) : undefined,
+    verifyTemplateEligibility: metaClient && options.proactiveEligibility
+      ? verifyProactiveTemplateAuthorization
+      : undefined,
     sendText: (chatId, text, sendOptions) => {
       if (!metaClient) return whatsappClient.sendMessage(chatId, text, sendOptions);
       const lastInboundAtMs = memoryStore.getMessages(chatId, 100)
@@ -350,6 +412,69 @@ export async function createFableWhatsAppAgent(options: {
       : undefined,
     publish: (event, data) => sse.broadcast(event, data)
   });
+
+  // Proactive delivery is opt-in at runtime: a trusted source must provide live
+  // consent, template approval and workflow relevance for every actual send.
+  if (metaClient && recipientDirectory && brandId && options.proactiveEligibility) {
+    proactiveScheduler = new ProactiveEngagementScheduler({
+      store: capabilities.followups,
+      eligibility: options.proactiveEligibility,
+      sender: {
+        submit: async (command: ProactiveTemplateIntentCommand) => {
+          const trigger = capabilities.followups.get(command.triggerId);
+          const alias = recipientDirectory.resolve({ brandId, jid: command.contactJid });
+          if (!trigger || trigger.status !== 'attempting' ||
+              command.brandId !== brandId || trigger.brandId !== brandId ||
+              trigger.contactId !== command.contactId ||
+              trigger.sourceWorkflowId !== command.sourceWorkflowId ||
+              trigger.consentRef !== command.consentRef ||
+              trigger.templateRef !== command.templateRef ||
+              !alias || alias.kind !== 'direct' || alias.contactId !== trigger.contactId ||
+              command.sourceId !== `a08:${trigger.triggerId}` ||
+              command.template.name !== trigger.templateRef) {
+            throw new Error('Proactive trigger or recipient does not match trusted identity');
+          }
+          const result = await sendIntents.sendTemplate({
+            sourceKind: 'autopilot',
+            sourceId: command.sourceId,
+            sourceRevision: command.sourceRevision,
+            actionKind: 'template',
+            chatId: alias.jid,
+            text: '',
+            policyRevision: moderatorAgent.getPolicy().version,
+            expiresAt: command.expiresAtMs,
+            template: command.template,
+            templateEligibility: {
+              consentRef: command.consentRef,
+              optedInAtMs: command.optedInAtMs,
+              sourceWorkflowId: command.sourceWorkflowId,
+              relevanceVerifiedAtMs: command.relevanceVerifiedAtMs,
+              quietHours: command.quietHours
+            }
+          });
+          return {
+            intentId: result.intent.id,
+            state: result.intent.state,
+            providerMessageId: result.intent.nativeMessageId
+          };
+        },
+        lookup: async (identity) => {
+          if (identity.brandId !== brandId) return undefined;
+          const saved = memoryStore.getSendLedger().getBySource({
+            sourceKind: identity.sourceKind,
+            sourceId: identity.sourceId,
+            sourceRevision: identity.sourceRevision,
+            actionKind: 'template'
+          });
+          return saved ? {
+            intentId: saved.id,
+            state: saved.state,
+            providerMessageId: saved.nativeMessageId
+          } : undefined;
+        }
+      }
+    });
+  }
 
   // Initialize Scatter-Gather Funnel Engine
   const funnelEngine = new FableFunnelEngine({
@@ -400,6 +525,13 @@ export async function createFableWhatsAppAgent(options: {
   app.use('/*', serveStatic({ root: './ui/dist' }));
   app.get('*', serveStatic({ path: './ui/dist/index.html' }));
 
+  const proactiveAbort = options.autoConnect && proactiveScheduler ? new AbortController() : undefined;
+  if (proactiveAbort && proactiveScheduler) {
+    void proactiveScheduler.start({
+      signal: proactiveAbort.signal,
+      onError: (error) => console.warn('[Proactive] Scheduler tick failed:', error)
+    });
+  }
   if (options.autoConnect) {
     setInterval(() => {
       if (metaClient || whatsappClient.getState().state === 'connected') {
@@ -420,6 +552,8 @@ export async function createFableWhatsAppAgent(options: {
     moderatorAgent,
     coordinator,
     inboundPlanner,
+    proactiveScheduler,
+    stopProactiveScheduler: () => proactiveAbort?.abort(),
     burstAccumulator,
     sse,
     capabilities,
