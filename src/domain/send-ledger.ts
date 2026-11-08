@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Database } from 'bun:sqlite';
+import type { RecipientBinding } from '../identity/contact-directory';
 
 export type SendIntentState = 'queued' | 'attempting' | 'accepted' | 'delivered' | 'read' | 'uncertain' | 'failed';
 
@@ -10,7 +11,26 @@ export interface PersistedSendSummary {
   states: Record<SendIntentState, number>;
   oldestUncertainAgeMs: number;
 }
-export type SendActionKind = 'text' | 'voice';
+export type SendActionKind = 'text' | 'voice' | 'template';
+
+export interface SendTemplateComponent {
+  type: 'header' | 'body';
+  parameters: Array<{ type: 'text'; text: string }>;
+}
+
+export interface SendTemplatePayload {
+  name: string;
+  languageCode: string;
+  components?: SendTemplateComponent[];
+}
+
+export interface SendTemplateEligibility {
+  consentRef: string;
+  optedInAtMs: number;
+  sourceWorkflowId: string;
+  relevanceVerifiedAtMs: number;
+  quietHours: { from: number; to: number; timeZone: string };
+}
 
 export interface SendIntentInput {
   sourceKind: 'ui' | 'mcp' | 'autopilot' | 'draft';
@@ -24,6 +44,16 @@ export interface SendIntentInput {
   simulatedDelayMs?: number;
   policyRevision: number;
   expiresAt?: number;
+  recipientBinding?: RecipientBinding;
+  template?: SendTemplatePayload;
+  templateEligibility?: SendTemplateEligibility;
+}
+
+export interface SendTemplateIntentInput extends SendIntentInput {
+  actionKind: 'template';
+  template: SendTemplatePayload;
+  templateEligibility: SendTemplateEligibility;
+  expiresAt: number;
 }
 
 export interface SendIntent extends SendIntentInput {
@@ -72,12 +102,55 @@ export class SendIntentConflictError extends Error {
   }
 }
 
-const payloadHash = (input: SendIntentInput): string => createHash('sha256')
-  .update(JSON.stringify([
+const MAX_TEMPLATE_TTL_MS = 60 * 60_000;
+const MAX_TEMPLATE_EVIDENCE_AGE_MS = 5 * 60_000;
+
+function validateTemplateIntent(input: SendIntentInput, now: number): void {
+  const template = input.template;
+  const eligibility = input.templateEligibility;
+  if (!input.recipientBinding || !/^[0-9]{5,20}@s\.whatsapp\.net$/.test(input.chatId)) {
+    throw new Error('Template requires a captured direct-phone recipient binding');
+  }
+  if (!template || typeof template.name !== 'string' || !/^[a-z][a-z0-9_]*$/.test(template.name) ||
+      typeof template.languageCode !== 'string' || !/^[a-z]{2}(?:_[A-Z]{2})?$/.test(template.languageCode) ||
+      (template.components !== undefined && (!Array.isArray(template.components) ||
+        !template.components.every((part) => part &&
+          (part.type === 'header' || part.type === 'body') &&
+          Array.isArray(part.parameters) && part.parameters.every((param) =>
+            param && param.type === 'text' && typeof param.text === 'string'))))) {
+    throw new Error('Invalid approved template payload');
+  }
+  if (!eligibility || !eligibility.consentRef?.trim() || !eligibility.sourceWorkflowId?.trim() ||
+      !Number.isSafeInteger(eligibility.optedInAtMs) || eligibility.optedInAtMs < 1 || eligibility.optedInAtMs > now ||
+      !Number.isSafeInteger(eligibility.relevanceVerifiedAtMs) ||
+      eligibility.relevanceVerifiedAtMs > now ||
+      eligibility.relevanceVerifiedAtMs < now - MAX_TEMPLATE_EVIDENCE_AGE_MS ||
+      !Number.isSafeInteger(input.expiresAt) || input.expiresAt! <= now ||
+      input.expiresAt! > now + MAX_TEMPLATE_TTL_MS) {
+    throw new Error('Invalid or stale template eligibility evidence');
+  }
+  const quiet = eligibility.quietHours;
+  if (!quiet || !Number.isInteger(quiet.from) || !Number.isInteger(quiet.to) ||
+      quiet.from < 0 || quiet.from > 23 || quiet.to < 0 || quiet.to > 24 ||
+      typeof quiet.timeZone !== 'string') {
+    throw new Error('Invalid template quiet hours');
+  }
+  try { new Intl.DateTimeFormat('en-GB', { timeZone: quiet.timeZone }).format(now); }
+  catch { throw new Error('Invalid template timezone'); }
+}
+
+const payloadHash = (input: SendIntentInput): string => {
+  const parts: unknown[] = [
     input.chatId, input.actionKind, input.text, input.replyToMessageId ?? null,
     input.policyRevision, input.parentIntentId ?? null
-  ]))
-  .digest('hex');
+  ];
+  // Preserve the hash of historical text/voice intents created before recipient binding.
+  if (input.recipientBinding || input.actionKind === 'template') {
+    parts.push(input.recipientBinding ?? null, input.template ?? null,
+      input.templateEligibility ?? null, input.expiresAt ?? null);
+  }
+  return createHash('sha256').update(JSON.stringify(parts)).digest('hex');
+};
 
 export class SendLedger {
   constructor(private readonly db: Database) {
@@ -151,7 +224,14 @@ export class SendLedger {
   }
 
   private rowToIntent(row: any): SendIntent {
-    const data = JSON.parse(row.payload_json) as { text: string; replyToMessageId?: string; simulatedDelayMs?: number };
+    const data = JSON.parse(row.payload_json) as {
+      text: string;
+      replyToMessageId?: string;
+      simulatedDelayMs?: number;
+      recipientBinding?: RecipientBinding;
+      template?: SendTemplatePayload;
+      templateEligibility?: SendTemplateEligibility;
+    };
     return {
       id: row.id,
       sourceKind: row.source_kind,
@@ -163,6 +243,9 @@ export class SendLedger {
       text: data.text,
       replyToMessageId: data.replyToMessageId,
       simulatedDelayMs: data.simulatedDelayMs,
+      recipientBinding: data.recipientBinding,
+      template: data.template,
+      templateEligibility: data.templateEligibility,
       policyRevision: row.policy_revision,
       expiresAt: row.expires_at ?? undefined,
       payloadHash: row.payload_hash,
@@ -195,8 +278,18 @@ export class SendLedger {
       return existing;
     }
     const validJid = /^[0-9A-Za-z._:\-]+@(s\.whatsapp\.net|g\.us|lid)$/.test(input.chatId);
-    if (!input.sourceId.trim() || !input.text.trim() || !validJid) {
+    if (!input.sourceId.trim() || (input.actionKind !== 'template' && !input.text.trim()) || !validJid) {
       throw new Error('Invalid send intent identity, recipient, or text');
+    }
+    if (!['text', 'voice', 'template'].includes(input.actionKind)) throw new Error('Unsupported send action');
+    if (input.recipientBinding && (input.recipientBinding.jid !== input.chatId ||
+        !input.recipientBinding.brandId || !input.recipientBinding.contactId ||
+        !input.recipientBinding.aliasId || !Number.isSafeInteger(input.recipientBinding.identityVersion) ||
+        input.recipientBinding.identityVersion < 1)) throw new Error('Invalid recipient binding');
+    if (input.actionKind === 'template') {
+      validateTemplateIntent(input, now);
+    } else if (input.template || input.templateEligibility) {
+      throw new Error('Template data requires a template intent');
     }
     if (!Number.isSafeInteger(input.sourceRevision) || !Number.isSafeInteger(input.policyRevision)) {
       throw new Error('Invalid send intent revision');
@@ -211,7 +304,13 @@ export class SendLedger {
     `).run(
       id, input.sourceKind, input.sourceId, input.sourceRevision, input.parentIntentId ?? null, input.actionKind,
       input.chatId, payloadHash(input),
-      JSON.stringify({ text: input.text, replyToMessageId: input.replyToMessageId, simulatedDelayMs: input.simulatedDelayMs }),
+      JSON.stringify({
+        text: input.text, replyToMessageId: input.replyToMessageId,
+        simulatedDelayMs: input.simulatedDelayMs,
+        recipientBinding: input.recipientBinding,
+        template: input.template,
+        templateEligibility: input.templateEligibility
+      }),
       input.policyRevision, now, now, input.expiresAt ?? null
     );
     this.event(id, undefined, 'queued', 'intent_created', now);
@@ -327,6 +426,11 @@ export class SendLedger {
     return this.transitionAttempt(id, attemptId, 'uncertain', 'uncertain', reason, now);
   }
 
+  /** Terminal pre-network policy refusal; a stale recipient must never be retried. */
+  failAttempt(id: string, attemptId: string, reason: string, now = Date.now()): SendIntent | undefined {
+    return this.transitionAttempt(id, attemptId, 'failed', 'pre_send_failed', reason, now);
+  }
+
   preSendFailure(id: string, attemptId: string, retryAt: number, maxAttempts: number, now = Date.now()): SendIntent | undefined {
     const intent = this.getIntent(id);
     if (!intent || intent.state !== 'attempting') return undefined;
@@ -366,6 +470,26 @@ export class SendLedger {
     return rows.map((r) => this.rowToIntent(r));
   }
 
+  /** Provider failure is terminal only for a correlated, not-yet-read native message. */
+  deliveryFailed(chatId: string, nativeMessageId: string, now = Date.now()): SendIntent | undefined {
+    if (!chatId || !nativeMessageId) return undefined;
+    return this.atomic(() => {
+      const row = this.db.prepare(`
+        SELECT * FROM send_intents WHERE chat_id=? AND native_message_id=?
+        ORDER BY created_at DESC LIMIT 1
+      `).get(chatId, nativeMessageId);
+      if (!row) return undefined;
+      const intent = this.rowToIntent(row);
+      if (intent.state !== 'accepted' && intent.state !== 'delivered') return undefined;
+      const updated = this.db.prepare(
+        "UPDATE send_intents SET state='failed',updated_at=? WHERE id=? AND state IN ('accepted','delivered')"
+      ).run(now, intent.id);
+      if (updated.changes !== 1) return undefined;
+      this.event(intent.id, intent.state, 'failed', 'provider_delivery_failed', now);
+      return this.getIntent(intent.id);
+    });
+  }
+
   advanceReceipt(chatId: string, nativeMessageId: string, status: 'sent' | 'delivered' | 'read', now = Date.now()): SendIntent | undefined {
     return this.atomic(() => {
       const row = this.db.prepare(`
@@ -384,14 +508,18 @@ export class SendLedger {
     });
   }
 
-  approveDraft(draftId: string, text: string, policyRevision: number, now = Date.now(), actionKind: SendActionKind = 'text'): { created: boolean; intent?: SendIntent } {
+  approveDraft(
+    draftId: string, text: string, policyRevision: number, now = Date.now(),
+    actionKind: SendActionKind = 'text', recipientBinding?: RecipientBinding
+  ): { created: boolean; intent?: SendIntent } {
     return this.atomic(() => {
       const row = this.db.prepare('SELECT * FROM drafts WHERE id=?').get(draftId) as any;
       if (!row) return { created: false };
       const identity: SendIntentInput = {
         sourceKind: 'draft', sourceId: draftId, sourceRevision: 1,
         actionKind, chatId: row.chat_id,
-        text, replyToMessageId: row.incoming_message_id, policyRevision
+        text, replyToMessageId: row.incoming_message_id, policyRevision,
+        recipientBinding
       };
       if (row.status !== 'pending') {
         return { created: false, intent: this.getBySource(identity) };
