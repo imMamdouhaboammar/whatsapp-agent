@@ -4,12 +4,12 @@
 - **Truth State:** Confirmed root cause
 - **Enforcement Rung:** Structure (`~/.agent-kernel/service-accounts.json` & `agent-kernel env push`)
 - **Primary Source:** `~/.agent-kernel/service-accounts.json`, `.agent-kernel/skills/agent-kernel-ops/SKILL.md`
-- **Quote:** `"بعد ما تخلص اربطه ب agent-kernel vault ب الايميل : dohazezz3@gmail.com"` - User Prompt
+- **Quote:** `"بعد ما تخلص اربطه ب agent-kernel vault ب الايميل : user@example.com"` - User Prompt
 
 ---
 
 ## 1. Problem Description & Symptoms
-When attempting to execute the documented constitutional instruction to register a third-party service account email using `agent-kernel env set-account supabase dohazezz3@gmail.com`, the command immediately exited with error:
+When attempting to execute the documented constitutional instruction to register a third-party service account email using `agent-kernel env set-account supabase user@example.com`, the command immediately exited with error:
 ```text
 Unknown Environment Vault command: set-account
 ```
@@ -29,8 +29,8 @@ Subsequent vault status inspections via `agent-kernel env status` also reported 
    - Updated `~/.agent-kernel/service-accounts.json` directly with both service-level and project-namespaced keys:
      ```json
      {
-       "supabase:whatsapp-agent": "dohazezz3@gmail.com",
-       "supabase:fqnuoomndmjdoqqkeugd": "dohazezz3@gmail.com"
+       "supabase:whatsapp-agent": "user@example.com",
+       "supabase:fqnuoomndmjdoqqkeugd": "user@example.com"
      }
      ```
 2. **Project Vault Linking:**

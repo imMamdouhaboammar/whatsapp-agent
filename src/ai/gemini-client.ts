@@ -57,7 +57,7 @@ export class GeminiClient {
         this.project = (await new Response(proc.stdout).text()).trim() || 'project-3a53318f-795c-46b9-888';
       }
 
-      // Fetch access token via gcloud CLI (active user: mohammedkhaledopuus@gmail.com)
+      // Fetch access token via gcloud CLI (active session)
       const tokenProc = Bun.spawn(['gcloud', 'auth', 'print-access-token'], { stdout: 'pipe' });
       const token = (await new Response(tokenProc.stdout).text()).trim();
 

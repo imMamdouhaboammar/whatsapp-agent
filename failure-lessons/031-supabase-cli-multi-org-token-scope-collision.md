@@ -21,7 +21,7 @@ Target: project fqnuoomndmjdoqqkeugd
 
 ## 2. Root Cause Analysis
 - **Stored Global CLI Token Mismatch:** The developer machine's Supabase CLI held a cached personal access token from an earlier session associated with a different organization (`mdvdmjpzbcngrutngcre` owning `Oh-my-x-tweet` and `TEOLA`).
-- **Authorization Boundary Failure:** When `supabase link` queried the Supabase Management API using the globally cached token to inspect project `fqnuoomndmjdoqqkeugd` (which belongs to user `dohazezz3@gmail.com`), the API rejected the request with HTTP 403 Forbidden.
+- **Authorization Boundary Failure:** When `supabase link` queried the Supabase Management API using the globally cached token to inspect project `fqnuoomndmjdoqqkeugd` (which belongs to user `user@example.com`), the API rejected the request with HTTP 403 Forbidden.
 - **Fragile Coupling:** Tying local repository database configuration directly to external interactive CLI session tokens creates fragile workflows in multi-account environments.
 
 ## 3. Smart Solution & Architectural Rectification
