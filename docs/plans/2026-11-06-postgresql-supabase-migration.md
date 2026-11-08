@@ -29,7 +29,15 @@ Move all persistent data from seven Bun SQLite databases into a private PostgreS
 | `agent-followups.sqlite` | engagement_triggers, engagement_optouts | Atomic scheduling/claiming, consent, channel restrictions |
 | `agent-quality.sqlite` | agent_evaluations | Brand-scoped assessment records |
 
-Total: 16 persisted tables. `knowledge_fts` is a derived SQLite index, not a source table; PostgreSQL uses its own GIN lexical index.
+Total at the original S0 audit: 16 persisted tables. `knowledge_fts` is a derived SQLite index, not a source table; PostgreSQL uses its own GIN lexical index.
+
+### Post-S01 inventory correction (2026-11-08)
+
+The 16-table S0 inventory was incomplete. `fable_whatsapp.db` also contains **two existing learning tables**, `learning_states` and `learning_reflections`, created by `SqliteStore` and covered by PostgreSQL schema migration `002_learning_memory.sql`, but **not by the offline SQLite importer**. S01 Reliable Delivery introduced **three more durable tables** in the same file: `send_intents`, `send_attempts`, and `send_intent_events`, which are absent from both the PostgreSQL schema and importer. The base checkout therefore contains **at least 21 source tables** across seven identified SQLite files, while the importer handles only the original 16. This is a dated B2 baseline, not a final count: any new B2 SQLite tables/files must be inventoried again.
+
+The importer now fails closed on unaccounted SQLite tables or additional database files before opening PostgreSQL or issuing an import receipt. The five known missing import contracts and any newly landed B2 tables require schema alignment, a version-aware historical import decision, strict row-count/digest parity, and a rollback rehearsal. The S01 ledger must preserve foreign keys, idempotency, attempts and append-only event history. Historical rows may never be silently invented or omitted.
+
+A first asynchronous PostgreSQL `PostgresActionJournal` slice now has an injectable transaction contract and isolated tests, including brand/workflow ownership, terminal-state claim refusal, JSON-safe credential redaction, and receipt reconciliation. New PostgreSQL claim hashes are canonical JSON `v2:` digests; existing unversioned SQLite hashes are accepted for exact legacy payload replay, but reordered legacy object payloads remain order-sensitive and need migration-specific handling before cutover. The app's live `ActionJournal` and every other operational writer still use SQLite. `DATASTORE=postgres` deliberately rejects startup until all operational stores, including the S01 ledger, support one PostgreSQL writer with proven feature parity. A configured `DATABASE_URL` may still serve the separate learning/reflection persistence feature in the current SQLite-default runtime.
 
 ## Target design
 
