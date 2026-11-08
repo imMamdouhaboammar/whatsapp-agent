@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto';
-import { afterEach, describe, expect, test } from 'bun:test';
+import { describe, expect, test } from 'bun:test';
 import { MetaCloudApi, type MetaCloudApiConfig, type MetaCloudWebhookEvent } from '../src/transport/meta-cloud-api';
 import { MemoryStore } from '../src/domain/memory-store';
 import { SendIntentService } from '../src/domain/send-intent-service';

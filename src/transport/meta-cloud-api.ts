@@ -52,7 +52,7 @@ const TEMPLATE_NAME = /^[a-z][a-z0-9_]{0,511}$/;
 const TEMPLATE_LANGUAGE = /^[a-z]{2,3}(?:_[A-Z]{2})?$/;
 
 function recipientNumber(value: string): string {
-  const fromJid = CLOUD_JID.exec(value);
+  const fromJid = value.match(CLOUD_JID);
   const phone = fromJid?.[1] ?? value;
   if (!PHONE_NUMBER.test(phone)) throw new TypeError('Meta recipient must be a verified direct phone number');
   return phone;
