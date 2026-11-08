@@ -120,7 +120,7 @@ export function StickerStudioModal({ isOpen, onClose, selectedChatId, onSendStic
             type="file"
             accept="image/png,image/jpeg,image/webp,image/gif"
             onChange={handleFileChange}
-            className="text-sm text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-emerald-600 file:text-white hover:file:bg-emerald-500 cursor-pointer"
+            className="text-sm text-emerald-100 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-emerald-600 file:text-white hover:file:bg-emerald-500 cursor-pointer"
           />
         </div>
 

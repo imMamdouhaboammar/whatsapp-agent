@@ -282,25 +282,29 @@ export function ModeratorDrawer({
                   <div className="wa-memory-group-heading">
                     <span><SlidersHorizontal size={15} /> {tr('نبرة وأسلوب المحادثة', 'Conversation style')}</span>
                   </div>
-                  <div className="flex flex-wrap gap-1.5 p-2 bg-slate-900/60 rounded-lg border border-slate-800">
-                    {(['casual', 'professional', 'playful', 'assertive', 'empathetic'] as const).map((st) => (
-                      <button
-                        key={st}
-                        type="button"
-                        onClick={() => void handleStyleChange(st)}
-                        className={`px-2.5 py-1 text-xs rounded-md transition font-medium ${
-                          chatStyle === st
-                            ? 'bg-emerald-600 text-white'
-                            : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                        }`}
-                      >
-                        {st === 'casual' ? tr('عادي / ودود', 'Casual') :
-                         st === 'professional' ? tr('رسمي / مهني', 'Professional') :
-                         st === 'playful' ? tr('مرح / فكاهي', 'Playful') :
-                         st === 'assertive' ? tr('حاسم / مباشر', 'Assertive') :
-                         tr('داعم / متعاطف', 'Empathetic')}
-                      </button>
-                    ))}
+                  <div className="flex flex-wrap gap-1.5 pt-1" role="group" aria-label={tr('نبرة وأسلوب المحادثة', 'Conversation style')}>
+                    {(['casual', 'professional', 'playful', 'assertive', 'empathetic'] as const).map((st) => {
+                      const active = chatStyle === st;
+                      return (
+                        <button
+                          key={st}
+                          type="button"
+                          onClick={() => void handleStyleChange(st)}
+                          aria-pressed={active}
+                          className={`px-3 py-1.5 text-xs rounded-full font-medium transition-colors ${
+                            active
+                              ? 'bg-[#006b57] text-white shadow-xs'
+                              : 'bg-[#f0f4f2] text-[#42555b] hover:bg-[#e4ece9] hover:text-[#1d353b]'
+                          }`}
+                        >
+                          {st === 'casual' ? tr('عادي / ودود', 'Casual') :
+                           st === 'professional' ? tr('رسمي / مهني', 'Professional') :
+                           st === 'playful' ? tr('مرح / فكاهي', 'Playful') :
+                           st === 'assertive' ? tr('حاسم / مباشر', 'Assertive') :
+                           tr('داعم / متعاطف', 'Empathetic')}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
 
@@ -308,7 +312,7 @@ export function ModeratorDrawer({
                 <div className="wa-memory-group">
                   <div className="wa-memory-group-heading">
                     <span title={tr('ذاكرة مؤمنة لا تقبل كلمات المرور أو الأسرار', 'Secured memory rejecting credentials')}>
-                      <ShieldAlert size={15} className="text-emerald-400" /> {tr('ذكريات مفضلة (مؤمنة)', 'Explicit memories')}
+                      <ShieldAlert size={15} className="text-[#008069]" /> {tr('ذكريات مفضلة (مؤمنة)', 'Explicit memories')}
                     </span>
                     <button type="button" onClick={() => setAddingMemory(!addingMemory)} aria-label={tr('إضافة تفضيل', 'Add memory')}>
                       <Plus size={16} /> {tr('إضافة', 'Add')}
@@ -320,7 +324,7 @@ export function ModeratorDrawer({
                       <button
                         type="button"
                         onClick={() => void deleteMemoryEntry(m.id)}
-                        className="opacity-60 hover:opacity-100 p-1 text-red-400 hover:text-red-300 transition"
+                        className="opacity-70 hover:opacity-100 p-1 text-[#b4342a] hover:text-[#8f271f] transition-colors"
                         title={tr('حذف', 'Delete')}
                       >
                         <Trash2 size={13} />
