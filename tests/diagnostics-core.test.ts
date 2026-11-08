@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { DiagnosticsCore } from "../src/observability/diagnostics-core";
+import { DIAGNOSTIC_STAGES, DiagnosticsCore } from "../src/observability/diagnostics-core";
 
 describe("S08 diagnostics core", () => {
   test("creates opaque trace and event IDs without persisting raw conversation identifiers or supplied metadata", () => {
@@ -206,5 +206,111 @@ describe("S08 diagnostics core", () => {
     core.recordStage({ traceId, stage: "accepted", outcome: "ok" });
     expect(core.snapshot().metrics.uncertainSends).toEqual({ count: 0, oldestAgeMs: 0 });
     expect(core.snapshot().metrics.receiptStates.accepted).toBe(1);
+  });
+
+  test("ignores delayed uncertain send reports after acceptance and positive receipts", () => {
+    let current = 1_000;
+    const core = new DiagnosticsCore({ now: () => current });
+    const traceId = core.startTrace();
+    core.recordStage({ traceId, stage: "sending", outcome: "uncertain" });
+    current = 2_000;
+    core.recordStage({ traceId, stage: "accepted", outcome: "ok" });
+    current = 3_000;
+    core.recordStage({ traceId, stage: "sending", outcome: "uncertain" });
+    expect(core.snapshot().metrics.uncertainSends).toEqual({ count: 0, oldestAgeMs: 0 });
+    core.recordReceipt({ traceId, state: "read" });
+    current = 4_000;
+    core.recordStage({ traceId, stage: "sending", outcome: "uncertain" });
+    expect(core.snapshot().metrics.uncertainSends).toEqual({ count: 0, oldestAgeMs: 0 });
+    expect(core.snapshot().metrics.receiptStates.read).toBe(1);
+  });
+
+  test("canonicalizes the same UUID regardless of caller casing across all operations", () => {
+    const core = new DiagnosticsCore();
+    const upperCaseId = crypto.randomUUID().toUpperCase();
+    const canonicalId = upperCaseId.toLowerCase();
+    expect(core.startTrace({ traceId: upperCaseId })).toBe(canonicalId);
+    expect(core.startTrace({ traceId: canonicalId })).toBe(canonicalId);
+    const event = core.recordStage({ traceId: upperCaseId, stage: "received" });
+    expect(event.traceId).toBe(canonicalId);
+    core.recordReceipt({ traceId: upperCaseId, state: "delivered" });
+    expect(core.getTrace(canonicalId)).toHaveLength(2);
+    expect(core.getTrace(upperCaseId)).toHaveLength(2);
+    expect(core.snapshot().traceCount).toBe(1);
+  });
+
+  test("evicts least-recently-active traces rather than the first created", () => {
+    let current = 100;
+    const core = new DiagnosticsCore({ now: () => current, maxTraces: 2 });
+    const active = core.startTrace();
+    current = 200;
+    const dormant = core.startTrace();
+    current = 300;
+    core.recordStage({ traceId: active, stage: "persisted" });
+    current = 400;
+    const newest = core.startTrace();
+    expect(core.getTrace(active)).toHaveLength(1);
+    expect(core.getTrace(dormant)).toEqual([]);
+    expect(core.getTrace(newest)).toEqual([]);
+    expect(core.snapshot().historyTruncated.tracesEvicted).toBe(1);
+  });
+
+  test("preserves incidents after bounded trace/event eviction and discloses truncated history", () => {
+    let current = 100;
+    const core = new DiagnosticsCore({
+      now: () => current,
+      maxTraces: 1,
+      maxEventsPerTrace: 1,
+      maxIncidents: 2,
+    });
+    const original = core.startTrace({ conversationId: "chat:private" });
+    core.recordStage({ traceId: original, stage: "evaluated", outcome: "failed" });
+    current = 200;
+    core.recordStage({ traceId: original, stage: "media_inspection" });
+    current = 300;
+    const next = core.startTrace({ conversationId: "chat:other" });
+
+    expect(core.getTrace(original)).toEqual([]);
+    const snapshot = core.snapshot();
+    expect(snapshot.incidents).toContainEqual({
+      at: 100,
+      traceId: original,
+      stage: "evaluated",
+      outcome: "failed",
+    });
+    expect(snapshot.historyTruncated).toMatchObject({
+      incomplete: true,
+      tracesEvicted: 1,
+      eventsEvicted: 1,
+      incidentsEvicted: 0,
+    });
+
+    core.recordStage({ traceId: next, stage: "sending", outcome: "uncertain" });
+    current = 400;
+    core.recordStage({ traceId: next, stage: "sending", outcome: "failed" });
+    const bounded = core.snapshot();
+    expect(bounded.incidents).toHaveLength(2);
+    expect(bounded.incidents.some((incident) => incident.traceId === original)).toBe(false);
+    expect(bounded.historyTruncated.incidentsEvicted).toBe(1);
+  });
+
+  test("erases old conversation incidents even after their trace was evicted", () => {
+    let current = 100;
+    const core = new DiagnosticsCore({ now: () => current, maxTraces: 1 });
+    const traceId = core.startTrace({ conversationId: "chat:private" });
+    core.recordStage({ traceId, stage: "evaluated", outcome: "failed" });
+    current = 200;
+    core.startTrace({ conversationId: "chat:other" });
+    expect(core.snapshot().incidents.some((incident) => incident.traceId === traceId)).toBe(true);
+    core.forgetConversation("chat:private");
+    expect(core.snapshot().incidents.some((incident) => incident.traceId === traceId)).toBe(false);
+  });
+
+  test("does not allow downstream JavaScript callers to mutate the stage vocabulary", () => {
+    const stages = DIAGNOSTIC_STAGES as unknown as string[];
+    expect(() => stages.push("raw-private-message")).toThrow();
+    const core = new DiagnosticsCore();
+    const traceId = core.startTrace();
+    expect(() => core.recordStage({ traceId, stage: "raw-private-message" as "received" })).toThrow();
   });
 });

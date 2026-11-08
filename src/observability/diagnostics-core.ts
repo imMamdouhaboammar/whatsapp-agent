@@ -5,7 +5,7 @@ import { createHmac, randomBytes, randomUUID } from "node:crypto";
  * status values and keeps no message bodies, phone numbers or arbitrary labels.
  * A durable storage adapter and live send hooks are a separate integration step.
  */
-export const DIAGNOSTIC_STAGES = [
+export const DIAGNOSTIC_STAGES = Object.freeze([
   "received",
   "persisted",
   "grouped",
@@ -19,7 +19,7 @@ export const DIAGNOSTIC_STAGES = [
   "memory_retrieval",
   "approval_requested",
   "approval_resolved",
-] as const;
+] as const);
 
 export type DiagnosticStage = (typeof DIAGNOSTIC_STAGES)[number];
 export type DiagnosticOutcome = "ok" | "failed" | "timeout" | "rejected" | "uncertain" | "skipped";
@@ -50,6 +50,12 @@ export interface DiagnosticsSnapshot {
   eventCount: number;
   workers: Array<{ kind: WorkerKind; state: WorkerState | "disabled"; at: number }>;
   incidents: DiagnosticIncident[];
+  historyTruncated: {
+    incomplete: boolean;
+    tracesEvicted: number;
+    eventsEvicted: number;
+    incidentsEvicted: number;
+  };
   metrics: {
     inboundDecisionLatencyMs: LatencySummary;
     sendQueueLatencyMs: LatencySummary;
@@ -62,6 +68,10 @@ interface LatencySummary {
   samples: number;
   averageMs: number;
   maxMs: number;
+}
+
+interface StoredIncident extends DiagnosticIncident {
+  conversationDigest?: string;
 }
 
 interface TraceRecord {
@@ -96,6 +106,8 @@ function latencySummary(values: number[]): LatencySummary {
 
 export class DiagnosticsCore {
   private readonly traces = new Map<string, TraceRecord>();
+  private readonly incidentHistory: StoredIncident[] = [];
+  private readonly truncation = { tracesEvicted: 0, eventsEvicted: 0, incidentsEvicted: 0 };
   private readonly workers = new Map<WorkerKind, { state: WorkerState | "disabled"; at: number }>();
   private readonly digestSecret = randomBytes(32);
   private readonly now: () => number;
@@ -129,8 +141,7 @@ export class DiagnosticsCore {
   /** Call once per inbound turn or send intent; reuse the same ID on retries. */
   startTrace(input: { traceId?: string; conversationId?: string } = {}): string {
     this.purgeExpired();
-    const traceId = input.traceId ?? randomUUID();
-    this.assertTraceId(traceId);
+    const traceId = this.normalizedTraceId(input.traceId ?? randomUUID());
     const conversationDigest = input.conversationId === undefined
       ? undefined
       : this.conversationDigest(input.conversationId);
@@ -144,9 +155,17 @@ export class DiagnosticsCore {
     }
 
     while (this.traces.size >= this.maxTraces) {
-      const oldest = this.traces.keys().next().value;
-      if (!oldest) break;
-      this.traces.delete(oldest);
+      let oldestId: string | undefined;
+      let oldestActivity = Number.POSITIVE_INFINITY;
+      for (const [candidateId, candidate] of this.traces) {
+        if (candidate.updatedAt < oldestActivity) {
+          oldestId = candidateId;
+          oldestActivity = candidate.updatedAt;
+        }
+      }
+      if (!oldestId) break;
+      this.traces.delete(oldestId);
+      this.truncation.tracesEvicted++;
     }
     this.traces.set(traceId, {
       updatedAt: this.timestamp(),
@@ -192,9 +211,9 @@ export class DiagnosticsCore {
   }
 
   getTrace(traceId: string): DiagnosticEvent[] {
-    this.assertTraceId(traceId);
+    const canonicalId = this.normalizedTraceId(traceId);
     this.purgeExpired();
-    return (this.traces.get(traceId)?.events ?? []).map((event) => ({ ...event }));
+    return (this.traces.get(canonicalId)?.events ?? []).map((event) => ({ ...event }));
   }
 
   /** A conversation deletion is reflected in trace metadata immediately. */
@@ -205,6 +224,11 @@ export class DiagnosticsCore {
       if (trace.conversationDigest === digest) {
         this.traces.delete(traceId);
         removed++;
+      }
+    }
+    for (let index = this.incidentHistory.length - 1; index >= 0; index--) {
+      if (this.incidentHistory[index]?.conversationDigest === digest) {
+        this.incidentHistory.splice(index, 1);
       }
     }
     return removed;
@@ -219,6 +243,11 @@ export class DiagnosticsCore {
         removed++;
       }
     }
+    for (let index = this.incidentHistory.length - 1; index >= 0; index--) {
+      if (now - this.incidentHistory[index]!.at > this.retentionMs) {
+        this.incidentHistory.splice(index, 1);
+      }
+    }
     return removed;
   }
 
@@ -228,7 +257,12 @@ export class DiagnosticsCore {
     const decisionLatencies: number[] = [];
     const sendLatencies: number[] = [];
     const receiptStates: Record<ReceiptState, number> = { accepted: 0, delivered: 0, read: 0 };
-    const incidents: DiagnosticIncident[] = [];
+    const incidents: DiagnosticIncident[] = this.incidentHistory.map(({ at, traceId, stage, outcome }) => ({
+      at,
+      traceId,
+      stage,
+      outcome,
+    }));
     let uncertainCount = 0;
     let oldestAgeMs = 0;
     let eventCount = 0;
@@ -248,16 +282,6 @@ export class DiagnosticsCore {
       }
 
       if (trace.receipt) receiptStates[trace.receipt]++;
-      for (const event of trace.events) {
-        if (INCIDENT_OUTCOMES.has(event.outcome)) {
-          incidents.push({
-            at: event.at,
-            traceId,
-            stage: event.stage,
-            outcome: event.outcome as DiagnosticIncident["outcome"],
-          });
-        }
-      }
       if (trace.uncertainAt !== undefined) {
         uncertainCount++;
         oldestAgeMs = Math.max(oldestAgeMs, Math.max(0, now - trace.uncertainAt));
@@ -284,6 +308,10 @@ export class DiagnosticsCore {
       eventCount,
       workers,
       incidents: incidents.slice(-this.maxIncidents),
+      historyTruncated: {
+        incomplete: Object.values(this.truncation).some((count) => count > 0),
+        ...this.truncation,
+      },
       metrics: {
         inboundDecisionLatencyMs: latencySummary(decisionLatencies),
         sendQueueLatencyMs: latencySummary(sendLatencies),
@@ -299,11 +327,12 @@ export class DiagnosticsCore {
     outcome: DiagnosticOutcome,
     receiptState?: ReceiptState,
   ): DiagnosticEvent {
-    const trace = this.requireTrace(traceId);
+    const canonicalId = this.normalizedTraceId(traceId);
+    const trace = this.requireTrace(canonicalId);
     const at = this.timestamp();
     const event: DiagnosticEvent = {
       eventId: randomUUID(),
-      traceId,
+      traceId: canonicalId,
       stage,
       outcome,
       at,
@@ -314,24 +343,40 @@ export class DiagnosticsCore {
       trace.firstSuccessfulStageAt[stage] = at;
     }
     // An ambiguous network attempt remains unresolved until affirmative evidence.
-    if (stage === "sending" && outcome === "uncertain" && trace.uncertainAt === undefined) {
+    if (stage === "sending" && outcome === "uncertain" && !trace.receipt && trace.uncertainAt === undefined) {
       trace.uncertainAt = at;
     }
     if (stage === "accepted" && outcome === "ok") {
       trace.uncertainAt = undefined;
       if (!trace.receipt) trace.receipt = "accepted";
     }
+    if (INCIDENT_OUTCOMES.has(outcome)) {
+      this.incidentHistory.push({
+        at,
+        traceId: canonicalId,
+        stage,
+        outcome: outcome as DiagnosticIncident["outcome"],
+        conversationDigest: trace.conversationDigest,
+      });
+      if (this.incidentHistory.length > this.maxIncidents) {
+        const discarded = this.incidentHistory.length - this.maxIncidents;
+        this.incidentHistory.splice(0, discarded);
+        this.truncation.incidentsEvicted += discarded;
+      }
+    }
     if (trace.events.length > this.maxEventsPerTrace) {
-      trace.events.splice(0, trace.events.length - this.maxEventsPerTrace);
+      const discarded = trace.events.length - this.maxEventsPerTrace;
+      trace.events.splice(0, discarded);
+      this.truncation.eventsEvicted += discarded;
     }
     trace.updatedAt = at;
     return { ...event };
   }
 
   private requireTrace(traceId: string): TraceRecord {
-    this.assertTraceId(traceId);
+    const canonicalId = this.normalizedTraceId(traceId);
     this.purgeExpired();
-    const trace = this.traces.get(traceId);
+    const trace = this.traces.get(canonicalId);
     if (!trace) throw new Error("Unknown or expired trace");
     return trace;
   }
@@ -343,10 +388,11 @@ export class DiagnosticsCore {
     return createHmac("sha256", this.digestSecret).update(conversationId).digest("hex");
   }
 
-  private assertTraceId(traceId: string): void {
+  private normalizedTraceId(traceId: string): string {
     if (typeof traceId !== "string" || !TRACE_ID.test(traceId)) {
       throw new TypeError("Trace IDs must be opaque UUIDs");
     }
+    return traceId.toLowerCase();
   }
 
   private timestamp(): number {
