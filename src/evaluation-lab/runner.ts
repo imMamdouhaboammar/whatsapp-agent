@@ -6,6 +6,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { ModeratorAgent, DEFAULT_MODERATOR_PERSONA } from '../ai/moderator-agent';
+import type { GeminiClient } from '../ai/gemini-client';
 import { MemoryStore } from '../domain/memory-store';
 import { evaluatePermission } from '../domain/permission-engine';
 import type { AgentMode, AutonomyAction, ChatMessage, PolicyConfig } from '../domain/types';
@@ -199,7 +200,7 @@ async function observe(testCase: EvaluationCase, snapshot: EvaluationSnapshot, t
         return { text: JSON.stringify(recording.value) };
       }
     };
-    const moderator = new ModeratorAgent(model as any, memory, {
+    const moderator = new ModeratorAgent(model as unknown as GeminiClient, memory, {
       policy: structuredClone(snapshot.policy),
       persona: { ...DEFAULT_MODERATOR_PERSONA, language: testCase.locale,
         model: snapshot.model_id, simulateTypingDelay: false }
