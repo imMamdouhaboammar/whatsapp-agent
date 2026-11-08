@@ -91,11 +91,12 @@ export class PostgresActionJournal implements AsyncActionJournal {
         ON CONFLICT (workflow_id) DO NOTHING RETURNING workflow_id
       `, [workflowId, input.brandId, input.contactId, goal, 'received', now, now]);
       const rows = await tx.unsafe(
-        'SELECT brand_id FROM wa_agent.agent_workflows WHERE workflow_id=$1',
-        [workflowId]
+        'SELECT brand_id, contact_id, goal FROM wa_agent.agent_workflows WHERE workflow_id=$1 AND brand_id=$2',
+        [workflowId, input.brandId]
       );
-      if (rows.length !== 1 || rows[0]?.brand_id !== input.brandId) {
-        throw new Error('Workflow owner brand conflict');
+      if (rows.length !== 1) throw new Error('Workflow owner brand conflict');
+      if (rows[0]?.contact_id !== input.contactId || rows[0]?.goal !== goal) {
+        throw new Error('Workflow identity conflict');
       }
       return workflowId;
     });

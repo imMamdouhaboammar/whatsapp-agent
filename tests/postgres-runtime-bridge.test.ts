@@ -32,9 +32,10 @@ class FakePg implements PgClient {
         workflows.set(String(workflow_id), { workflow_id, brand_id, contact_id, goal, state, created_at, updated_at });
         return [{ workflow_id }];
       }
-      if (sql.startsWith('SELECT brand_id FROM wa_agent.agent_workflows')) {
+      if (sql.startsWith('SELECT brand_id, contact_id, goal FROM wa_agent.agent_workflows')) {
         const row = workflows.get(String(params[0]));
-        return row ? [{ brand_id: row.brand_id }] : [];
+        return row && row.brand_id === params[1]
+          ? [{ brand_id: row.brand_id, contact_id: row.contact_id, goal: row.goal }] : [];
       }
       if (sql.startsWith('UPDATE wa_agent.agent_workflows')) {
         const [state, updatedAt, brandId, workflowId] = params;
@@ -95,6 +96,15 @@ describe('PostgreSQL S3 action-journal runtime contract', () => {
     await expect(journal.createWorkflow({
       brandId: 'brand-b', contactId: 'contact-b', goal: 'Different order', workflowId: 'workflow-1'
     })).rejects.toThrow(/owner|brand/i);
+    await expect(journal.createWorkflow({
+      brandId: 'brand-a', contactId: 'different-contact', goal: 'Restock item', workflowId: 'workflow-1'
+    })).rejects.toThrow(/conflict/i);
+    await expect(journal.createWorkflow({
+      brandId: 'brand-a', contactId: 'contact-a', goal: 'Changed goal', workflowId: 'workflow-1'
+    })).rejects.toThrow(/conflict/i);
+    await expect(journal.createWorkflow({
+      brandId: 'brand-a', contactId: 'contact-a', goal: 'Restock item', workflowId: 'workflow-1'
+    })).resolves.toBe('workflow-1');
     await expect(journal.updateWorkflow('brand-b', 'workflow-1', 'completed')).rejects.toThrow(/not found/i);
     await journal.updateWorkflow('brand-a', 'workflow-1', 'gathering_evidence');
     expect(pg.workflows.get('workflow-1')?.state).toBe('gathering_evidence');
