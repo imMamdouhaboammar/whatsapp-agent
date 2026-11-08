@@ -51,7 +51,7 @@ After an authorized human review, the baseline snapshot must include an `approva
 
 ## Fixture policy
 
-The checked-in suite contains only synthetic content in ar-EG, ar-SA, and English. Every case includes a reason for its presence, an expected action and send/draft disposition, a policy revision, evidence IDs, and forbidden effects. Cases cover privacy and consent, financial/medical/legal uncertainty, prompt injection in text and OCR-like input, quoted content, recipient confusion, dialect and Arabizi ambiguity, memory uncertainty, long replies, model fallback, spam, and Human/Co-Pilot/Auto-Pilot behavior.
+The checked-in suite contains only synthetic content in ar-EG, ar-SA, and English. The runner screens complete suites, recordings, and review manifests with the repository's `scrubCredentials` helper and rejects credential-bearing input before any fixture reaches replay memory or a report. Every case includes a reason for its presence, an expected action and send/draft disposition, a policy revision, evidence IDs, and forbidden effects. Cases cover privacy and consent, financial/medical/legal uncertainty, prompt injection in text and OCR-like input, quoted content, recipient confusion, dialect and Arabizi ambiguity, memory uncertainty, long replies, model fallback, spam, and Human/Co-Pilot/Auto-Pilot behavior.
 
 Changes to a reviewed golden require normal code review; do not update expected outcomes just because a new model produced something else.
 

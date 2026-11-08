@@ -194,6 +194,38 @@ describe('S05 offline reply evaluation lab', () => {
     expect(report.results[0]?.reason).toBe('invalid_model_decision');
   });
 
+  it('rejects credential-bearing conversation fixtures before creating replay memory', async () => {
+    const dummy = ['sk', 'a'.repeat(25)].join('-');
+    const suite = makeSuite({
+      inbound_turns: [{ sender: 'contact', text: `Please store ${dummy}` }]
+    });
+    await expect(runEvaluationLab({
+      suite, approved: makeSnapshot('approved-v1'), candidate: makeSnapshot('candidate-v2')
+    })).rejects.toThrow('Sensitive fixture content');
+  });
+
+  it('fails closed on oversized or deeply nested fixture structures', async () => {
+    const suite = makeSuite();
+    (suite as EvaluationSuite & { unexpected?: unknown }).unexpected = Array(10_001).fill('synthetic');
+    await expect(runEvaluationLab({
+      suite, approved: makeSnapshot('approved-v1'), candidate: makeSnapshot('candidate-v2')
+    })).rejects.toThrow('Fixture safety scan limit exceeded');
+  });
+
+  it('rejects credential-bearing dossier facts and recorded model output', async () => {
+    const dummy = ['sk', 'b'.repeat(25)].join('-');
+    await expect(runEvaluationLab({
+      suite: makeSuite({ dossier_facts: [`Password: ${dummy}`] }),
+      approved: makeSnapshot('approved-v1'), candidate: makeSnapshot('candidate-v2')
+    })).rejects.toThrow('Sensitive fixture content');
+    await expect(runEvaluationLab({
+      suite: makeSuite(), approved: makeSnapshot('approved-v1'),
+      candidate: makeSnapshot('candidate-v2', {
+        action: 'reply', intent: 'greeting', confidence: 0.95, replyText: `API: ${dummy}`
+      })
+    })).rejects.toThrow('Sensitive fixture content');
+  });
+
   it('blocks a made-up memory citation and preserves the claimed ids for human review', async () => {
     const candidate = makeSnapshot('candidate-v2', {
       action: 'reply', intent: 'greeting', confidence: 0.99, replyText: 'Hi',

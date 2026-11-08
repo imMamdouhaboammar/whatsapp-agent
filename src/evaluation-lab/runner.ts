@@ -8,6 +8,7 @@ import { performance } from 'node:perf_hooks';
 import { ModeratorAgent, DEFAULT_MODERATOR_PERSONA } from '../ai/moderator-agent';
 import type { GeminiClient } from '../ai/gemini-client';
 import { MemoryStore } from '../domain/memory-store';
+import { scrubCredentials } from '../domain/learning-memory';
 import { evaluatePermission } from '../domain/permission-engine';
 import type { AgentMode, AutonomyAction, ChatMessage, PolicyConfig } from '../domain/types';
 
@@ -103,7 +104,34 @@ const ALLOWED_MODES: readonly AgentMode[] = ['autopilot', 'copilot', 'human'];
 const ALLOWED_ACTIONS: readonly AutonomyAction[] = ['reply', 'draft', 'human', 'ignore', 'act'];
 const MAX_TIMEOUT_MS = 120_000;
 
-function assertValidInputs(suite: EvaluationSuite, approved: EvaluationSnapshot, candidate: EvaluationSnapshot) {
+/** Fail-closed, bounded credential screening before replay memory and report writes. */
+function assertSafeFixtureContent(value: unknown): void {
+  const pending: unknown[] = [value];
+  const seen = new WeakSet<object>();
+  const maxEntries = 10_000;
+  let inspected = 0;
+
+  while (pending.length > 0) {
+    if (++inspected > maxEntries) throw new Error('Fixture safety scan limit exceeded');
+    const item = pending.pop();
+    if (typeof item === 'string') {
+      if (scrubCredentials(item) !== item) {
+        throw new Error('Sensitive fixture content: redact credentials before offline replay');
+      }
+      continue;
+    }
+    if (!item || typeof item !== 'object' || seen.has(item)) continue;
+    seen.add(item);
+    const children = Object.values(item);
+    if (children.length + pending.length > maxEntries) {
+      throw new Error('Fixture safety scan limit exceeded');
+    }
+    for (const child of children) pending.push(child);
+  }
+}
+
+function assertValidInputs(suite: EvaluationSuite, approved: EvaluationSnapshot, candidate: EvaluationSnapshot, review?: HumanReview) {
+  for (const input of [suite, approved, candidate, review]) assertSafeFixtureContent(input);
   if (!suite || !Array.isArray(suite.cases) || suite.cases.length === 0 ||
       !Number.isInteger(suite.version) || typeof suite.suite_id !== 'string' || !suite.suite_id.trim()) {
     throw new Error('Evaluation suite must have a version, identifier and nonempty cases');
@@ -273,7 +301,7 @@ function verdict(testCase: EvaluationCase, observed: ReplayObservation): { outco
 /** Independent goldens remain untouched even when the candidate fails. */
 export async function runEvaluationLab(options: EvaluationOptions): Promise<EvaluationReport> {
   const { suite, approved, candidate, review } = options;
-  assertValidInputs(suite, approved, candidate);
+  assertValidInputs(suite, approved, candidate, review);
   const timeoutMs = options.timeoutMs ?? 5_000;
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMEOUT_MS) {
     throw new Error('timeoutMs must be between 1 and 120000');
