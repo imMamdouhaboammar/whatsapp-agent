@@ -2,6 +2,9 @@ import { GeminiClient } from './ai/gemini-client';
 import { ModeratorAgent } from './ai/moderator-agent';
 import { MemoryStore } from './domain/memory-store';
 import { WhatsAppSocketClient } from './transport/whatsapp-socket';
+import { resolveRuntimeDatastore } from './persistence/postgres/runtime-selection';
+
+resolveRuntimeDatastore();
 
 const [command, ...args] = process.argv.slice(2);
 

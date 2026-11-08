@@ -29,13 +29,49 @@ function requireIdentity(value: string, label: string): void {
   if (typeof value !== 'string' || !value.trim() || value.length > 256) {
     throw new Error(`Invalid ${label}`);
   }
+  if (scrubCredentials(value) !== value) {
+    throw new Error(`Credential-like value rejected in ${label}`);
+  }
 }
 
-function inputHash(input: ToolInvocation): string {
-  return createHash('sha256')
-    .update(JSON.stringify({ toolName: input.toolName, input: input.input }))
-    .digest('hex');
+const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+
+function canonicalJson(value: unknown): string {
+  const normalized = JSON.parse(JSON.stringify(value)) as unknown;
+  const ordered = (item: unknown): unknown => {
+    if (Array.isArray(item)) return item.map(ordered);
+    if (item !== null && typeof item === 'object') {
+      return Object.fromEntries(Object.entries(item).sort(([a], [b]) =>
+        a < b ? -1 : a > b ? 1 : 0
+      ).map(([key, entry]) => [key, ordered(entry)]));
+    }
+    return item;
+  };
+  return JSON.stringify(ordered(normalized));
 }
+
+function inputHashes(input: ToolInvocation): { current: string; legacy: string } {
+  const payload = { toolName: input.toolName, input: input.input };
+  // v2 is deterministic for JSON-equivalent object key order. Legacy hash
+  // remains readable so historical SQLite action claims can be reconciled.
+  return { current: 'v2:' + hash(canonicalJson(payload)), legacy: hash(JSON.stringify(payload)) };
+}
+
+const SENSITIVE_RECEIPT_KEY = /(?:pass(?:word|phrase)?|passwd|secret|token|api[_-]?key|auth(?:orization)?|otp|credential|private[_-]?key|cookie|session[_-]?key)/i;
+function receiptJson(output: unknown): string {
+  const serialized = JSON.stringify(output, (key, value: unknown) => {
+    if (key && SENSITIVE_RECEIPT_KEY.test(key)) return '[REDACTED_CREDENTIAL]';
+    if (typeof value === 'string' && scrubCredentials(value) !== value) return '[REDACTED_CREDENTIAL]';
+    return value;
+  });
+  if (typeof serialized !== 'string') throw new Error('Tool output is not JSON-serializable');
+  return serialized;
+}
+
+const TERMINAL_WORKFLOW_STATES = new Set([
+  'completed', 'exceptional_escalation', 'needs_customer_detail',
+  'waiting_provider', 'cancelled', 'canceled', 'failed'
+]);
 
 function normalizeRun(row: Record<string, unknown>): PostgresActionRun {
   const status = String(row.status);
@@ -61,9 +97,11 @@ function normalizeRun(row: Record<string, unknown>): PostgresActionRun {
  */
 export class PostgresActionJournal implements AsyncActionJournal {
   private readonly now: () => number;
+  private readonly ownsClient: boolean;
 
-  constructor(private readonly client: PgClient, options: { now?: () => number } = {}) {
+  constructor(private readonly client: PgClient, options: { now?: () => number; ownsClient?: boolean } = {}) {
     this.now = options.now ?? Date.now;
+    this.ownsClient = options.ownsClient ?? false;
   }
 
   private timestamp(): number {
@@ -77,7 +115,9 @@ export class PostgresActionJournal implements AsyncActionJournal {
   }): Promise<string> {
     requireIdentity(input.brandId, 'brand');
     requireIdentity(input.contactId, 'contact');
-    requireIdentity(input.goal, 'workflow goal');
+    if (typeof input.goal !== 'string' || !input.goal.trim()) {
+      throw new Error('Invalid workflow goal');
+    }
     const workflowId = input.workflowId ?? randomUUID();
     requireIdentity(workflowId, 'workflow ID');
     const goal = scrubCredentials(input.goal);
@@ -132,14 +172,26 @@ export class PostgresActionJournal implements AsyncActionJournal {
     requireIdentity(input.workflowId, 'workflow ID');
     requireIdentity(input.toolName, 'tool name');
     requireIdentity(input.idempotencyKey, 'idempotency key');
-    const hash = inputHash(input);
+    const hashes = inputHashes(input);
     const now = this.timestamp();
     return this.client.begin(async tx => {
       const workflow = await tx.unsafe(`
-        SELECT workflow_id FROM wa_agent.agent_workflows
-        WHERE brand_id=$1 AND workflow_id=$2 LIMIT 1
+        SELECT workflow_id, state FROM wa_agent.agent_workflows
+        WHERE brand_id=$1 AND workflow_id=$2 FOR UPDATE
       `, [input.brandId, input.workflowId]);
       if (workflow.length !== 1) throw new Error('Workflow not found for brand');
+      // A terminal workflow may replay its old claim for reconciliation, but
+      // cannot create another provider action. FOR UPDATE orders this check
+      // against an updateWorkflow completion transaction.
+      if (TERMINAL_WORKFLOW_STATES.has(String(workflow[0]?.state))) {
+        const prior = await this.getRunTx(tx, input.brandId, input.idempotencyKey);
+        if (!prior) throw new Error('Terminal workflow rejects new action claims');
+        if (prior.workflow_id !== input.workflowId || prior.tool_name !== input.toolName ||
+            (prior.input_hash !== hashes.current && prior.input_hash !== hashes.legacy)) {
+          throw new Error('Idempotency key conflict');
+        }
+        return { isNew: false, row: prior };
+      }
       const inserted = await tx.unsafe(`
         INSERT INTO wa_agent.agent_tool_runs
           (brand_id, "key", workflow_id, tool_name, input_hash, status, created_at, updated_at)
@@ -147,11 +199,12 @@ export class PostgresActionJournal implements AsyncActionJournal {
         ON CONFLICT (brand_id, "key") DO NOTHING RETURNING brand_id
       `, [
         input.brandId, input.idempotencyKey, input.workflowId, input.toolName,
-        hash, 'attempting', now, now
+        hashes.current, 'attempting', now, now
       ]);
       const row = await this.getRunTx(tx, input.brandId, input.idempotencyKey);
       if (!row) throw new Error('PostgreSQL tool claim not persisted');
-      if (row.workflow_id !== input.workflowId || row.tool_name !== input.toolName || row.input_hash !== hash) {
+      if (row.workflow_id !== input.workflowId || row.tool_name !== input.toolName ||
+          (row.input_hash !== hashes.current && row.input_hash !== hashes.legacy)) {
         throw new Error('Idempotency key conflict');
       }
       return { isNew: inserted.length === 1, row };
@@ -164,7 +217,7 @@ export class PostgresActionJournal implements AsyncActionJournal {
     requireIdentity(brandId, 'brand');
     requireIdentity(key, 'idempotency key');
     if (status !== 'confirmed' && status !== 'uncertain') throw new Error('Invalid tool completion state');
-    const serialized = output === undefined ? null : scrubCredentials(JSON.stringify(output));
+    const serialized = output === undefined ? null : receiptJson(output);
     await this.client.begin(async tx => {
       // Confirmed receipts are immutable. Reconciliation may advance uncertain to confirmed.
       // The predicate is evaluated by PostgreSQL after any competing row lock is released.
@@ -185,6 +238,6 @@ export class PostgresActionJournal implements AsyncActionJournal {
   }
 
   async close(): Promise<void> {
-    await this.client.close?.();
+    if (this.ownsClient) await this.client.close?.();
   }
 }

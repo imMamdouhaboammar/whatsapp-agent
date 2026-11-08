@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,6 +15,8 @@ class FakePg implements PgClient {
   workflows = new Map<string, Row>();
   runs = new Map<string, Row>();
   transactionCount = 0;
+  closeCount = 0;
+  async close() { this.closeCount++; }
   private tail: Promise<void> = Promise.resolve();
 
   async begin<T>(run: (tx: PgTransaction) => Promise<T>): Promise<T> {
@@ -44,9 +47,9 @@ class FakePg implements PgClient {
         workflows.set(String(workflowId), { ...row, state, updated_at: updatedAt });
         return [{ workflow_id: workflowId }];
       }
-      if (sql.startsWith('SELECT workflow_id FROM wa_agent.agent_workflows')) {
+      if (sql.startsWith('SELECT workflow_id, state FROM wa_agent.agent_workflows')) {
         const row = workflows.get(String(params[1]));
-        return row && row.brand_id === params[0] ? [{ workflow_id: row.workflow_id }] : [];
+        return row && row.brand_id === params[0] ? [{ workflow_id: row.workflow_id, state: row.state }] : [];
       }
       if (sql.startsWith('INSERT INTO wa_agent.agent_tool_runs')) {
         const [brand_id, key, workflow_id, tool_name, input_hash, status, created_at, updated_at] = params;
@@ -109,6 +112,11 @@ describe('PostgreSQL S3 action-journal runtime contract', () => {
     await journal.updateWorkflow('brand-a', 'workflow-1', 'gathering_evidence');
     expect(pg.workflows.get('workflow-1')?.state).toBe('gathering_evidence');
     expect(pg.workflows.get('workflow-1')?.brand_id).toBe('brand-a');
+    const longGoal = 'Review customer context '.repeat(20);
+    await expect(journal.createWorkflow({
+      brandId: 'brand-a', contactId: 'contact-a', goal: longGoal, workflowId: 'long-goal-workflow'
+    })).resolves.toBe('long-goal-workflow');
+    expect(pg.workflows.get('long-goal-workflow')?.goal).toBe(longGoal);
   });
 
   test('serial concurrent claims yield one new write and preserve idempotency', async () => {
@@ -174,6 +182,87 @@ describe('PostgreSQL S3 action-journal runtime contract', () => {
       .toEqual({ transaction: 'receipt-7' });
   });
 
+  test('redacts nested credentials without invalidating replay JSON', async () => {
+    const pg = new FakePg();
+    const journal = new PostgresActionJournal(pg);
+    await journal.createWorkflow({ brandId: 'brand-a', contactId: 'contact-a', goal: 'Send receipt', workflowId: 'workflow-1' });
+    await journal.begin(invocation('brand-a'));
+    const credential = ['sk', 'x'.repeat(28)].join('-');
+    const output = { token: 'readable-value', nested: { password: 'unsafe', note: `Bearer ${credential}` }, ok: true };
+    await journal.finish('brand-a', 'same-key', 'confirmed', output);
+    const receipt = (await journal.getRun('brand-a', 'same-key'))?.output_json ?? '{}';
+    expect(receipt).not.toContain('readable-value');
+    expect(receipt).not.toContain('unsafe');
+    expect(receipt).not.toContain(credential);
+    expect(JSON.parse(receipt)).toEqual({
+      token: '[REDACTED_CREDENTIAL]',
+      nested: { password: '[REDACTED_CREDENTIAL]', note: '[REDACTED_CREDENTIAL]' },
+      ok: true
+    });
+  });
+
+  test('terminal workflow blocks fresh claims while preserving previous replay', async () => {
+    const pg = new FakePg();
+    const journal = new PostgresActionJournal(pg);
+    await journal.createWorkflow({ brandId: 'brand-a', contactId: 'contact-a', goal: 'Process order', workflowId: 'workflow-1' });
+    await journal.begin(invocation('brand-a'));
+    await journal.finish('brand-a', 'same-key', 'confirmed', { receipt: 'done' });
+    await journal.updateWorkflow('brand-a', 'workflow-1', 'completed');
+    await expect(journal.begin(invocation('brand-a', 'new-action'))).rejects.toThrow(/terminal|completed/i);
+    const replay = await journal.begin(invocation('brand-a'));
+    expect(replay.isNew).toBe(false);
+    expect(replay.row.status).toBe('confirmed');
+    expect(pg.runs.size).toBe(1);
+  });
+
+  test('canonical input hashes accept reordered objects but legacy hashes remain replayable', async () => {
+    const pg = new FakePg();
+    const journal = new PostgresActionJournal(pg);
+    await journal.createWorkflow({ brandId: 'brand-a', contactId: 'contact-a', goal: 'Adjust stock', workflowId: 'workflow-1' });
+    const first = { ...invocation('brand-a', 'canonical'), input: { sku: 'A', meta: { a: 1, b: 2 } } };
+    const reordered = { ...first, input: { meta: { b: 2, a: 1 }, sku: 'A' } };
+    await journal.begin(first);
+    const replay = await journal.begin(reordered);
+    expect(replay.isNew).toBe(false);
+    expect(replay.row.input_hash).toMatch(/^v2:[a-f0-9]{64}$/);
+    const legacy = invocation('brand-a', 'legacy');
+    const legacyHash = createHash('sha256')
+      .update(JSON.stringify({ toolName: legacy.toolName, input: legacy.input })).digest('hex');
+    pg.runs.set(keyFor('brand-a', 'legacy'), {
+      brand_id: 'brand-a', key: 'legacy', workflow_id: 'workflow-1', tool_name: legacy.toolName,
+      input_hash: legacyHash, status: 'confirmed', output_json: '{}', created_at: Date.now(), updated_at: Date.now()
+    });
+    const legacyReplay = await journal.begin(legacy);
+    expect(legacyReplay.isNew).toBe(false);
+    expect(legacyReplay.row.input_hash).toBe(legacyHash);
+  });
+
+  test('borrowed PostgreSQL client remains open after journal close', async () => {
+    const pg = new FakePg();
+    const borrowed = new PostgresActionJournal(pg);
+    await borrowed.close();
+    expect(pg.closeCount).toBe(0);
+    const owned = new PostgresActionJournal(pg, { ownsClient: true });
+    await owned.close();
+    expect(pg.closeCount).toBe(1);
+  });
+
+  test('credential-like journal identifiers, state, and tool metadata fail closed', async () => {
+    const pg = new FakePg();
+    const journal = new PostgresActionJournal(pg);
+    const credential = ['Bearer', 'x'.repeat(28)].join(' ');
+    await expect(journal.createWorkflow({
+      brandId: 'brand-a', contactId: credential, goal: 'Check item', workflowId: 'workflow-1'
+    })).rejects.toThrow(/credential/i);
+    await journal.createWorkflow({
+      brandId: 'brand-a', contactId: 'contact-a', goal: 'Check item', workflowId: 'workflow-1'
+    });
+    await expect(journal.updateWorkflow('brand-a', 'workflow-1', credential)).rejects.toThrow(/credential/i);
+    await expect(journal.begin({ ...invocation('brand-a'), toolName: credential })).rejects.toThrow(/credential/i);
+    await expect(journal.begin({ ...invocation('brand-a'), idempotencyKey: credential })).rejects.toThrow(/credential/i);
+    expect(pg.runs.size).toBe(0);
+  });
+
   test('invalid identities and missing records fail closed, never create orphan writes', async () => {
     const pg = new FakePg();
     const journal = new PostgresActionJournal(pg);
@@ -219,6 +308,36 @@ describe('PostgreSQL cutover protection', () => {
       });
       expect(child.exitCode).toBe(0);
       expect(existsSync(dataDir)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('standalone CLI and MCP reject postgres before writing SQLite data', async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'wa-pg-entrypoints-'));
+    try {
+      for (const [relative, args] of [
+        ['src/cli.ts', ['simulate', 'hello']],
+        ['src/mcp/cli.ts', []]
+      ] as const) {
+        const entrypoint = join(process.cwd(), relative);
+        const child = Bun.spawn([process.execPath, entrypoint, ...args], {
+          cwd: tempRoot,
+          env: { ...process.env, DATASTORE: 'postgres' },
+          stdin: 'ignore', stdout: 'pipe', stderr: 'pipe'
+        });
+        const guard = setTimeout(() => child.kill(), 3000);
+        try {
+          const code = await child.exited;
+          const diagnostic = await new Response(child.stderr).text();
+          expect(code).not.toBe(0);
+          expect(diagnostic).toContain('PostgreSQL runtime cutover is not yet available');
+          expect(existsSync(join(tempRoot, 'data'))).toBe(false);
+        } finally {
+          clearTimeout(guard);
+          if (child.exitCode === null) child.kill();
+        }
+      }
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }
