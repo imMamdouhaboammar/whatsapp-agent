@@ -1,68 +1,142 @@
 import { spawnSync } from "node:child_process";
 
-console.log("🔍 Running dependency vulnerability audit powered by GitHub Advisory / OSV Database...");
-
-const osv = spawnSync("osv-scanner", ["scan", "-r", ".", "--format", "json"], {
-  encoding: "utf-8",
-  maxBuffer: 20 * 1024 * 1024,
-});
-
-if (osv.error) {
-  console.error("❌ Failed to execute osv-scanner:", osv.error.message);
-  process.exit(1);
+interface OsvSeverity {
+  score?: unknown;
 }
 
-let hasHighOrCritical = false;
-let totalVulns = 0;
+interface OsvVulnerability {
+  id?: unknown;
+  database_specific?: { severity?: unknown };
+  ecosystem_specific?: { severity?: unknown };
+  severity?: OsvSeverity[];
+}
 
-try {
-  const stdout = osv.stdout || "";
-  const jsonStart = stdout.indexOf("{");
-  if (jsonStart === -1) {
-    console.log("✅ No vulnerability report returned (clean).");
-    process.exit(0);
+interface OsvPackage {
+  package?: { name?: unknown; version?: unknown };
+  vulnerabilities?: OsvVulnerability[];
+}
+
+interface OsvResult {
+  packages?: OsvPackage[];
+}
+
+interface AuditFinding {
+  id: string;
+  packageName: string;
+  version: string;
+  label: string;
+  isHighOrCritical: boolean;
+  severityKnown: boolean;
+}
+
+const KNOWN_LOWER_SEVERITIES = new Set(["LOW", "MODERATE", "MEDIUM", "NEGLIGIBLE", "INFO", "INFORMATIONAL"]);
+const HIGH_SEVERITIES = new Set(["HIGH", "CRITICAL"]);
+
+function objectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseReport(output: string): OsvResult[] {
+  const jsonStart = output.indexOf("{");
+  if (jsonStart < 0) {
+    throw new Error("OSV scanner did not return a JSON report");
   }
 
-  const data = JSON.parse(stdout.slice(jsonStart));
-  const results = data.results || [];
+  const parsed: unknown = JSON.parse(output.slice(jsonStart));
+  if (!objectRecord(parsed) || !Array.isArray(parsed.results)) {
+    throw new Error("OSV scanner report is missing a valid results array");
+  }
 
-  for (const res of results) {
-    for (const pkg of res.packages || []) {
-      for (const vuln of pkg.vulnerabilities || []) {
-        totalVulns++;
-        const id = vuln.id || "UNKNOWN";
-        const pkgName = pkg.package?.name || "unknown";
-        const version = pkg.package?.version || "unknown";
-        const dbSeverity = String(vuln.database_specific?.severity || "").toUpperCase();
-
-        let isHighOrCritical = dbSeverity === "HIGH" || dbSeverity === "CRITICAL";
-
-        if (Array.isArray(vuln.severity)) {
-          for (const s of vuln.severity) {
-            const score = parseFloat(s.score);
-            if (!isNaN(score) && score >= 7.0) {
-              isHighOrCritical = true;
-            }
-          }
-        }
-
-        console.log(`• [${dbSeverity || "SCORE"}] ${id} in ${pkgName}@${version}`);
-        if (isHighOrCritical) {
-          console.error(`🚨 HIGH or CRITICAL severity advisory detected: ${id} (${pkgName}@${version})`);
-          hasHighOrCritical = true;
+  for (const result of parsed.results) {
+    if (!objectRecord(result) || !Array.isArray(result.packages)) {
+      throw new Error("OSV scanner report contains a malformed result");
+    }
+    for (const pkg of result.packages) {
+      if (!objectRecord(pkg) || !Array.isArray(pkg.vulnerabilities)) {
+        throw new Error("OSV scanner report contains a malformed package");
+      }
+      for (const vuln of pkg.vulnerabilities) {
+        if (!objectRecord(vuln)) {
+          throw new Error("OSV scanner report contains a malformed vulnerability");
         }
       }
     }
   }
-} catch (err) {
-  console.error("❌ Error parsing osv-scanner output:", err);
-  process.exit(1);
+
+  return parsed.results as OsvResult[];
 }
 
-if (hasHighOrCritical) {
-  console.error("\n❌ Security audit failed: High or Critical vulnerabilities detected.");
-  process.exit(1);
+function describeVulnerability(vuln: OsvVulnerability, pkg: OsvPackage): AuditFinding {
+  const label = [vuln.database_specific?.severity, vuln.ecosystem_specific?.severity]
+    .find((value) => typeof value === "string" && value.trim().length > 0);
+  const normalizedLabel = typeof label === "string" ? label.trim().toUpperCase() : "";
+  const scores = Array.isArray(vuln.severity) ? vuln.severity.map((entry) => {
+    const raw = entry?.score;
+    if (typeof raw === "number") return raw;
+    if (typeof raw !== "string" || !/^(?:10(?:\.0+)?|[0-9](?:\.\d+)?)$/.test(raw.trim())) {
+      return Number.NaN;
+    }
+    return Number(raw.trim());
+  }) : [];
+  const validScores = scores.filter((score) => Number.isFinite(score) && score >= 0 && score <= 10);
+
+  return {
+    id: typeof vuln.id === "string" ? vuln.id : "UNKNOWN",
+    packageName: typeof pkg.package?.name === "string" ? pkg.package.name : "unknown",
+    version: typeof pkg.package?.version === "string" ? pkg.package.version : "unknown",
+    label: normalizedLabel || (validScores.length > 0 ? "CVSS" : "UNRATED"),
+    isHighOrCritical: HIGH_SEVERITIES.has(normalizedLabel) || validScores.some((score) => score >= 7),
+    severityKnown: HIGH_SEVERITIES.has(normalizedLabel) || KNOWN_LOWER_SEVERITIES.has(normalizedLabel) || validScores.length > 0,
+  };
 }
 
-console.log(`\n✅ Security audit passed: ${totalVulns} total vulnerabilities, 0 High/Critical.`);
-process.exit(0);
+function executeScanner() {
+  const binary = process.env.OSV_SCANNER_BIN?.trim() || "osv-scanner";
+  return spawnSync(binary, ["scan", "-r", ".", "--format", "json"], {
+    encoding: "utf8",
+    maxBuffer: 20 * 1024 * 1024,
+  });
+}
+
+console.log("🔍 Running dependency vulnerability audit powered by GitHub Advisory / OSV Database...");
+
+try {
+  const scan = executeScanner();
+  if (scan.error) {
+    throw new Error("Failed to execute osv-scanner: " + scan.error.message);
+  }
+  if (scan.signal) {
+    throw new Error("osv-scanner terminated with signal " + scan.signal);
+  }
+
+  const findings = parseReport(scan.stdout || "").flatMap((result) =>
+    (result.packages || []).flatMap((pkg) =>
+      (pkg.vulnerabilities || []).map((vuln) => describeVulnerability(vuln, pkg)),
+    ),
+  );
+
+  for (const finding of findings) {
+    const summary = finding.id + " in " + finding.packageName + "@" + finding.version;
+    console.log("• [" + finding.label + "] " + summary);
+    if (finding.isHighOrCritical) {
+      console.error("🚨 HIGH or CRITICAL severity advisory detected: " + summary);
+    } else if (!finding.severityKnown) {
+      console.error("⚠️ Advisory with unknown severity requires review: " + summary);
+    }
+  }
+
+  if (scan.status !== 0) {
+    throw new Error("osv-scanner exited unsuccessfully (status " + String(scan.status) + ")");
+  }
+  if (findings.some((finding) => finding.isHighOrCritical)) {
+    throw new Error("Security audit failed: High or Critical vulnerabilities detected");
+  }
+  if (findings.some((finding) => !finding.severityKnown)) {
+    throw new Error("Security audit failed: advisory severity could not be verified");
+  }
+
+  console.log("\n✅ Security audit passed: " + findings.length + " total vulnerabilities, 0 High/Critical.");
+} catch (error) {
+  console.error("❌ " + (error instanceof Error ? error.message : String(error)));
+  process.exitCode = 1;
+}
