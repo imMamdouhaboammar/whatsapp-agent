@@ -219,10 +219,26 @@ export class SendLedger {
   }
 
   createIntent(input: SendIntentInput, now = Date.now()): SendIntent {
-    return this.atomic(() => this.insertIntent(input, now));
+    return this.createIntentWithStatus(input, now).intent;
+  }
+
+  /** Reports genuine first insertion inside the same SQLite transaction as idempotency. */
+  createIntentWithStatus(input: SendIntentInput, now = Date.now()): { intent: SendIntent; created: boolean } {
+    return this.atomic(() => {
+      const existing = this.getBySource(input);
+      if (existing) {
+        if (existing.payloadHash !== payloadHash(input)) throw new SendIntentConflictError();
+        return { intent: existing, created: false };
+      }
+      return { intent: this.insertIntent(input, now), created: true };
+    });
   }
 
   createRetryIntent(input: SendIntentInput, now = Date.now()): SendIntent {
+    return this.createRetryIntentWithStatus(input, now).intent;
+  }
+
+  createRetryIntentWithStatus(input: SendIntentInput, now = Date.now()): { intent: SendIntent; created: boolean } {
     const parentIntentId = input.parentIntentId;
     if (!parentIntentId) throw new Error('Retry must reference its original send intent');
     return this.atomic(() => {
@@ -230,8 +246,8 @@ export class SendLedger {
       if (!parent || parent.state !== 'uncertain') throw new Error('Retry parent is not uncertain');
       const existing = this.db.prepare('SELECT * FROM send_intents WHERE parent_intent_id=? LIMIT 1')
         .get(parentIntentId);
-      if (existing) return this.rowToIntent(existing);
-      return this.insertIntent(input, now);
+      if (existing) return { intent: this.rowToIntent(existing), created: false };
+      return { intent: this.insertIntent(input, now), created: true };
     });
   }
 
@@ -403,25 +419,29 @@ export class SendLedger {
 
   /** Read-only aggregate with no message, recipient, source or native IDs. */
   getDiagnosticsSummary(now = Date.now()): PersistedSendSummary {
-    const states: PersistedSendSummary['states'] = {
-      queued: 0, attempting: 0, accepted: 0, delivered: 0,
-      read: 0, uncertain: 0, failed: 0
-    };
-    const rows = this.db.prepare('SELECT state, COUNT(*) AS count FROM send_intents GROUP BY state')
-      .all() as Array<{ state: SendIntentState; count: number }>;
-    for (const row of rows) {
-      if (Object.prototype.hasOwnProperty.call(states, row.state)) {
-        states[row.state] = row.count;
+    // BEGIN DEFERRED shares one read snapshot across both aggregates while
+    // allowing WAL writers on other connections to continue independently.
+    return this.db.transaction(() => {
+      const states: PersistedSendSummary['states'] = {
+        queued: 0, attempting: 0, accepted: 0, delivered: 0,
+        read: 0, uncertain: 0, failed: 0
+      };
+      const rows = this.db.prepare('SELECT state, COUNT(*) AS count FROM send_intents GROUP BY state')
+        .all() as Array<{ state: SendIntentState; count: number }>;
+      for (const row of rows) {
+        if (Object.prototype.hasOwnProperty.call(states, row.state)) {
+          states[row.state] = row.count;
+        }
       }
-    }
-    const oldest = this.db.prepare("SELECT MIN(updated_at) AS at FROM send_intents WHERE state='uncertain'")
-      .get() as { at: number | null };
-    return {
-      source: 'sqlite_send_ledger',
-      totalIntents: Object.values(states).reduce((total, count) => total + count, 0),
-      states,
-      oldestUncertainAgeMs: oldest.at === null ? 0 : Math.max(0, now - oldest.at)
-    };
+      const oldest = this.db.prepare("SELECT MIN(updated_at) AS at FROM send_intents WHERE state='uncertain'")
+        .get() as { at: number | null };
+      return {
+        source: 'sqlite_send_ledger',
+        totalIntents: Object.values(states).reduce((total, count) => total + count, 0),
+        states,
+        oldestUncertainAgeMs: oldest.at === null ? 0 : Math.max(0, now - oldest.at)
+      };
+    }).deferred() as unknown as PersistedSendSummary;
   }
 
   getAttempts(id: string): SendAttempt[] {

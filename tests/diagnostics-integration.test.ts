@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { MemoryStore } from '../src/domain/memory-store';
 import type { ModeratorAgent } from '../src/ai/moderator-agent';
 import type { WhatsAppSocketClient } from '../src/transport/whatsapp-socket';
@@ -6,7 +7,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SendIntentService } from '../src/domain/send-intent-service';
-import type { PersistedSendSummary, SendIntentInput } from '../src/domain/send-ledger';
+import { SendLedger, type PersistedSendSummary, type SendIntentInput } from '../src/domain/send-ledger';
 import { DiagnosticsCore, type DiagnosticsSnapshot } from '../src/observability/diagnostics-core';
 import { createApiServer } from '../src/server/api';
 import { SSEBroadcaster } from '../src/server/sse';
@@ -81,6 +82,46 @@ describe('S08 and S01 durable send diagnostics integration', () => {
     ]);
     expect(diagnostics.snapshot().metrics.receiptStates.accepted).toBe(1);
     expect(diagnostics.snapshot().metrics.sendQueueLatencyMs.samples).toBe(1);
+  });
+
+  test('replaying a queued intent from an earlier process never invents a fresh creation timestamp', async () => {
+    const store = memory();
+    const previous = store.getSendLedger().createIntent(intent(), Date.now() - 60_000);
+    const diagnostics = new DiagnosticsCore();
+    const service = new SendIntentService({
+      memoryStore: store,
+      diagnostics,
+      sendText: async () => ({ messageId: nativeId })
+    });
+    const result = await service.sendText(intent());
+    expect(result.intent.id).toBe(previous.id);
+    expect(result.intent.state).toBe('accepted');
+    expect(diagnostics.getTrace(previous.id).map(event => event.stage)).toEqual(['sending', 'accepted']);
+    expect(diagnostics.snapshot().metrics.sendQueueLatencyMs.samples).toBe(0);
+  });
+
+  test('replaying a previously queued explicit retry does not restart its creation clock', async () => {
+    const store = memory();
+    const ledger = store.getSendLedger();
+    const original = ledger.createIntent(intent());
+    const claim = ledger.claim(original.id, 'prior-process-worker', Date.now());
+    expect(claim).toBeDefined();
+    ledger.uncertain(original.id, claim!.attempt.id);
+    const retry = ledger.createRetryIntent(intent({
+      parentIntentId: original.id,
+      sourceId: `retry:${original.id}:owner-retry`
+    }));
+    const diagnostics = new DiagnosticsCore();
+    const service = new SendIntentService({
+      memoryStore: store,
+      diagnostics,
+      sendText: async () => ({ messageId: nativeId })
+    });
+    const result = await service.retryUncertain(original.id, 'owner-retry');
+    expect(result.intent.id).toBe(retry.id);
+    expect(result.intent.state).toBe('accepted');
+    expect(diagnostics.getTrace(retry.id).map(event => event.stage)).toEqual(['sending', 'accepted']);
+    expect(diagnostics.snapshot().metrics.sendQueueLatencyMs.samples).toBe(0);
   });
 
   test('ambiguous network outcomes remain uncertain through repeat requests, without any replay', async () => {
@@ -290,6 +331,52 @@ describe('S08 and S01 durable send diagnostics integration', () => {
     } finally {
       first?.close();
       reopened?.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('SQLite diagnostic counts and oldest uncertainty come from one read snapshot during concurrent writes', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'wa-diagnostics-snapshot-'));
+    const dbPath = join(directory, 'ledger.sqlite');
+    const raw = new Database(dbPath);
+    const writer = new Database(dbPath);
+    try {
+      raw.run('PRAGMA journal_mode=WAL');
+      writer.run('PRAGMA journal_mode=WAL');
+      let raced = false;
+      let targetId = '';
+      const prepare = raw.prepare.bind(raw);
+      const db = {
+        run: raw.run.bind(raw),
+        transaction: raw.transaction.bind(raw),
+        prepare: (sql: string) => {
+          const statement = prepare(sql);
+          if (!sql.includes('SELECT state, COUNT(*) AS count FROM send_intents')) return statement;
+          return {
+            all: () => {
+              const counts = statement.all();
+              if (!raced) {
+                raced = true;
+                writer.prepare("UPDATE send_intents SET state='read' WHERE id=?").run(targetId);
+              }
+              return counts;
+            }
+          };
+        }
+      } as unknown as Database;
+      const ledger = new SendLedger(db);
+      const entry = ledger.createIntent(intent(), 100);
+      targetId = entry.id;
+      const claim = ledger.claim(entry.id, 'worker', 500);
+      ledger.uncertain(entry.id, claim!.attempt.id, 'ambiguous', 1_000);
+      const summary = ledger.getDiagnosticsSummary(60_000);
+      expect(raced).toBe(true);
+      expect(summary.states.uncertain).toBe(1);
+      expect(summary.oldestUncertainAgeMs).toBe(59_000);
+      expect(writer.prepare('SELECT state FROM send_intents WHERE id=?').get(entry.id)).toMatchObject({ state: 'read' });
+    } finally {
+      writer.close();
+      raw.close();
       rmSync(directory, { recursive: true, force: true });
     }
   });

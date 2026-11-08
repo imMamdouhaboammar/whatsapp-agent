@@ -47,16 +47,16 @@ export class SendIntentService {
   async sendText(input: SendIntentInput): Promise<SendResult> {
     if (input.actionKind !== 'text') throw new Error('Text delivery requires a text intent');
     this.requireAutopilotMode(input);
-    const intent = this.options.memoryStore.getSendLedger().createIntent(input);
-    this.observeCreated(intent);
+    const { intent, created } = this.options.memoryStore.getSendLedger().createIntentWithStatus(input);
+    if (created) this.observeCreated(intent);
     return this.dispatch(intent.id);
   }
 
   async sendVoice(input: SendIntentInput): Promise<SendResult> {
     if (input.actionKind !== 'voice') throw new Error('Voice delivery requires a voice intent');
     this.requireAutopilotMode(input);
-    const intent = this.options.memoryStore.getSendLedger().createIntent(input);
-    this.observeCreated(intent);
+    const { intent, created } = this.options.memoryStore.getSendLedger().createIntentWithStatus(input);
+    if (created) this.observeCreated(intent);
     return this.dispatch(intent.id);
   }
 
@@ -183,8 +183,8 @@ export class SendIntentService {
       replyToMessageId: original.replyToMessageId,
       policyRevision: original.policyRevision
     };
-    const retry = this.options.memoryStore.getSendLedger().createRetryIntent(request);
-    this.observeCreated(retry);
+    const { intent: retry, created } = this.options.memoryStore.getSendLedger().createRetryIntentWithStatus(request);
+    if (created) this.observeCreated(retry);
     const result = await this.dispatch(retry.id);
     if (['accepted', 'delivered', 'read'].includes(result.intent.state) && original.sourceKind === 'draft') {
       this.options.memoryStore.updateDraftStatus(original.sourceId, 'sent');
