@@ -17,6 +17,7 @@ import { handleGitHubWebhook } from './github-webhook';
 import type { DualMemoryManager } from '../domain/learning-memory';
 import type { ReflectionWorker } from '../agent/reflection-worker';
 import type { ReflectionEngine } from '../ai/reflection-engine';
+import type { DiagnosticsCore } from '../observability/diagnostics-core';
 
 const allowedOrigins = new Set(['http://localhost:3000','http://127.0.0.1:3000','http://localhost:5173','http://127.0.0.1:5173',...((process.env.AGENT_ALLOWED_ORIGINS??'').split(',').map(v=>v.trim()).filter(Boolean))]);
 const trustedOrigin=(origin:string)=>allowedOrigins.has(origin);
@@ -38,11 +39,13 @@ export function createApiServer(deps: {
   reflectionWorker?: ReflectionWorker;
   reflectionEngine?: ReflectionEngine;
   sendIntents?: SendIntentService;
+  diagnostics?: DiagnosticsCore;
 }): Hono {
   const app = new Hono();
   let delivery = deps.sendIntents;
   const getDelivery = () => delivery ??= new SendIntentService({
     memoryStore: deps.memoryStore,
+    diagnostics: deps.diagnostics,
     sendText: (chatId, text, options) => deps.whatsappClient.sendMessage(chatId, text, options),
     prepareVoice: deps.voiceSynthesizer
       ? (text) => deps.voiceSynthesizer!.synthesizeVoice(text, deps.moderatorAgent.getPersona().voiceName)
@@ -84,6 +87,25 @@ export function createApiServer(deps: {
   });
   app.use('*', cors({origin:(origin)=>trustedOrigin(origin)?origin:''}));
   registerDashboardAuth(app, deps.dashboardToken ?? '');
+
+  // Both scopes are explicit: persisted SQLite counts survive restarts; traces do not.
+  app.get('/api/diagnostics', (c) => {
+    c.header('Cache-Control', 'no-store');
+    let snapshot = null as ReturnType<DiagnosticsCore['snapshot']> | null;
+    try {
+      snapshot = deps.diagnostics?.snapshot() ?? null;
+    } catch {
+      // A failed in-memory collector cannot hide durable delivery statistics.
+    }
+    return c.json({
+      persisted: deps.memoryStore.getSendLedger().getDiagnosticsSummary(),
+      process: {
+        scope: 'current_process',
+        status: snapshot ? 'available' : 'unavailable',
+        snapshot
+      }
+    });
+  });
 
   // Status & Connection
   app.get('/api/status', (c) => {

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { MemoryStore } from './memory-store';
 import type { ChatMessage } from './types';
 import type { SendIntent, SendIntentInput } from './send-ledger';
+import type { DiagnosticsCore, DiagnosticStage, DiagnosticOutcome, ReceiptState } from '../observability/diagnostics-core';
 
 export interface SendResult {
   intent: SendIntent;
@@ -28,6 +29,7 @@ export class SendIntentService {
 
   constructor(private readonly options: {
     memoryStore: MemoryStore;
+    diagnostics?: DiagnosticsCore;
     sendText: SendText;
     prepareVoice?: (text: string) => Promise<Buffer | Uint8Array>;
     sendVoice?: SendVoice;
@@ -45,14 +47,16 @@ export class SendIntentService {
   async sendText(input: SendIntentInput): Promise<SendResult> {
     if (input.actionKind !== 'text') throw new Error('Text delivery requires a text intent');
     this.requireAutopilotMode(input);
-    const intent = this.options.memoryStore.getSendLedger().createIntent(input);
+    const { intent, created } = this.options.memoryStore.getSendLedger().createIntentWithStatus(input);
+    if (created) this.observeCreated(intent);
     return this.dispatch(intent.id);
   }
 
   async sendVoice(input: SendIntentInput): Promise<SendResult> {
     if (input.actionKind !== 'voice') throw new Error('Voice delivery requires a voice intent');
     this.requireAutopilotMode(input);
-    const intent = this.options.memoryStore.getSendLedger().createIntent(input);
+    const { intent, created } = this.options.memoryStore.getSendLedger().createIntentWithStatus(input);
+    if (created) this.observeCreated(intent);
     return this.dispatch(intent.id);
   }
 
@@ -87,12 +91,14 @@ export class SendIntentService {
         }
         const audio = await this.options.prepareVoice(intent.text);
         ledger.markNetworkStarted(attempt.id);
+        this.observeStage(intent, 'sending', 'ok');
         whatsappCallMayHaveStarted = true;
         sent = await this.options.sendVoice(intent.chatId, audio, {
           replyToMessageId: intent.replyToMessageId
         });
       } else {
         ledger.markNetworkStarted(attempt.id);
+        this.observeStage(intent, 'sending', 'ok');
         whatsappCallMayHaveStarted = true;
         sent = await this.options.sendText(intent.chatId, intent.text, {
           replyToMessageId: intent.replyToMessageId,
@@ -102,6 +108,7 @@ export class SendIntentService {
       if (!sent.messageId) throw new Error('Transport acceptance did not include a native message ID');
       const accepted = ledger.accepted(intent.id, attempt.id, sent.messageId);
       if (!accepted) throw new Error('Send attempt state changed before acceptance could be persisted');
+      this.observeStage(accepted, 'accepted', 'ok');
       if (accepted.sourceKind === 'draft') this.options.memoryStore.updateDraftStatus(accepted.sourceId, 'sent');
       this.notify(accepted);
       return this.result(accepted);
@@ -127,6 +134,7 @@ export class SendIntentService {
           ? 'missing_native_message_id' : 'ambiguous_transport_failure'
       );
       if (uncertain) {
+        this.observeStage(uncertain, 'sending', 'uncertain');
         this.notify(uncertain);
         return this.result(uncertain);
       }
@@ -154,6 +162,7 @@ export class SendIntentService {
     );
     if (!claim.intent) return { created: false };
     if (!claim.created) return { created: false, result: this.result(claim.intent) };
+    this.observeCreated(claim.intent);
     const result = await this.dispatch(claim.intent.id);
     if (result.intent.state === 'accepted') this.options.memoryStore.updateDraftStatus(draftId, 'sent');
     return { created: true, result };
@@ -174,7 +183,8 @@ export class SendIntentService {
       replyToMessageId: original.replyToMessageId,
       policyRevision: original.policyRevision
     };
-    const retry = this.options.memoryStore.getSendLedger().createRetryIntent(request);
+    const { intent: retry, created } = this.options.memoryStore.getSendLedger().createRetryIntentWithStatus(request);
+    if (created) this.observeCreated(retry);
     const result = await this.dispatch(retry.id);
     if (['accepted', 'delivered', 'read'].includes(result.intent.state) && original.sourceKind === 'draft') {
       this.options.memoryStore.updateDraftStatus(original.sourceId, 'sent');
@@ -184,7 +194,10 @@ export class SendIntentService {
 
   receipt(chatId: string, nativeMessageId: string, status: 'sent' | 'delivered' | 'read'): SendIntent | undefined {
     const intent = this.options.memoryStore.getSendLedger().advanceReceipt(chatId, nativeMessageId, status);
-    if (intent) this.notify(intent);
+    if (intent) {
+      this.observeReceipt(intent, status === 'sent' ? 'accepted' : status);
+      this.notify(intent);
+    }
     return intent;
   }
 
@@ -209,8 +222,40 @@ export class SendIntentService {
     const caughtUp = message.status === 'delivered' || message.status === 'read'
       ? this.options.memoryStore.getSendLedger().advanceReceipt(intent.chatId, intent.nativeMessageId, message.status)
       : undefined;
-    if (caughtUp) this.notify(caughtUp);
+    if (caughtUp) {
+      this.observeReceipt(caughtUp, caughtUp.state === 'read' ? 'read' : 'delivered');
+      this.notify(caughtUp);
+    }
     return { intent: caughtUp ?? intent, message };
+  }
+
+  /** Metrics are advisory and must never change the persisted send result. */
+  private observe(intent: SendIntent, record: (diagnostics: DiagnosticsCore) => void): void {
+    const diagnostics = this.options.diagnostics;
+    if (!diagnostics) return;
+    try {
+      diagnostics.startTrace({ traceId: intent.id, conversationId: intent.chatId });
+      record(diagnostics);
+    } catch {
+      // Intent and receipt persistence are authoritative even when telemetry fails.
+    }
+  }
+
+  private observeCreated(intent: SendIntent): void {
+    if (intent.state !== 'queued' || intent.attemptCount !== 0) return;
+    this.observe(intent, diagnostics => {
+      if (!diagnostics.getTrace(intent.id).some(event => event.stage === 'intent_created')) {
+        diagnostics.recordStage({ traceId: intent.id, stage: 'intent_created' });
+      }
+    });
+  }
+
+  private observeStage(intent: SendIntent, stage: DiagnosticStage, outcome: DiagnosticOutcome): void {
+    this.observe(intent, diagnostics => diagnostics.recordStage({ traceId: intent.id, stage, outcome }));
+  }
+
+  private observeReceipt(intent: SendIntent, state: ReceiptState): void {
+    this.observe(intent, diagnostics => diagnostics.recordReceipt({ traceId: intent.id, state }));
   }
 
   private notify(intent: SendIntent): void {
