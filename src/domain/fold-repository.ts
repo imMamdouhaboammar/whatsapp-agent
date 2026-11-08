@@ -74,6 +74,14 @@ export class FoldRepository {
       );
     `);
     this.db.run('CREATE INDEX IF NOT EXISTS idx_fold_messages_chat ON conversation_fold_messages(chat_id, message_id);');
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS conversation_fold_sources (
+        tier_two_fold_id TEXT NOT NULL REFERENCES conversation_folds(id),
+        source_fold_id TEXT NOT NULL UNIQUE REFERENCES conversation_folds(id),
+        PRIMARY KEY(tier_two_fold_id, source_fold_id)
+      );
+    `);
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_fold_source_lookup ON conversation_fold_sources(source_fold_id);');
   }
 
   saveFold(input: ConversationFold): void {
@@ -115,10 +123,11 @@ export class FoldRepository {
         }
         const expanded = sources.flatMap(source => source!.directMessageIds);
         if (JSON.stringify(expanded) !== JSON.stringify(ids)) throw new Error('Tier-two lineage mismatch');
-        const alreadyCoalesced = this.db.query('SELECT source_fold_ids FROM conversation_folds WHERE chat_id = ? AND tier = 2').all(input.chatId) as { source_fold_ids: string }[];
-        if (alreadyCoalesced.some(row => (JSON.parse(row.source_fold_ids) as string[]).some(id => input.sourceFoldIds.includes(id)))) {
-          throw new Error('Source fold already coalesced');
-        }
+        const alreadyCoalesced = this.db.query(`
+          SELECT 1 FROM conversation_fold_sources
+          WHERE source_fold_id IN (${input.sourceFoldIds.map(() => '?').join(',')}) LIMIT 1
+        `).get(...input.sourceFoldIds);
+        if (alreadyCoalesced) throw new Error('Source fold already coalesced');
       }
       const topic = ensureBounds(input.topic, 200, 'topic');
       const summary = ensureBounds(input.summary, 8000, 'summary');
@@ -140,19 +149,41 @@ export class FoldRepository {
         VALUES (?, ?, ?, ?)
       `);
       ids.forEach((id, index) => membership.run(input.id, input.chatId, id, index));
+      if (input.tier === 2) {
+        const relation = this.db.prepare(`
+          INSERT INTO conversation_fold_sources (tier_two_fold_id, source_fold_id) VALUES (?, ?)
+        `);
+        input.sourceFoldIds.forEach(id => relation.run(input.id, id));
+      }
     })();
   }
 
   getFold(id: string): ConversationFold | undefined {
-    const row = this.db.query('SELECT * FROM conversation_folds WHERE id = ?').get(id) as FoldRow | null;
+    const row = this.db.query('SELECT * FROM conversation_folds WHERE id = ? LIMIT 1').get(id) as FoldRow | null;
     return row ? asFold(row) : undefined;
   }
 
-  getFolds(chatId: string, tier?: 1 | 2): ConversationFold[] {
+  getFolds(chatId: string, tier?: 1 | 2, limit = 500): ConversationFold[] {
+    const capped = Math.max(1, Math.min(500, Math.floor(limit) || 500));
     const rows = tier
-      ? this.db.query('SELECT * FROM conversation_folds WHERE chat_id = ? AND tier = ? ORDER BY created_at, rowid').all(chatId, tier)
-      : this.db.query('SELECT * FROM conversation_folds WHERE chat_id = ? ORDER BY tier DESC, created_at, rowid').all(chatId);
-    return (rows as FoldRow[]).map(asFold);
+      ? this.db.query(`SELECT * FROM conversation_folds WHERE chat_id = ? AND tier = ?
+          ORDER BY created_at DESC, rowid DESC LIMIT ?`).all(chatId, tier, capped)
+      : this.db.query(`SELECT * FROM conversation_folds WHERE chat_id = ?
+          ORDER BY created_at DESC, rowid DESC LIMIT ?`).all(chatId, capped);
+    return (rows as FoldRow[]).reverse().map(asFold);
+  }
+
+  getPendingTier1Folds(chatId: string, limit = 5): ConversationFold[] {
+    const capped = Math.max(2, Math.min(10, Math.floor(limit) || 5));
+    const rows = this.db.query(`
+      SELECT f.* FROM conversation_folds f
+      WHERE f.chat_id = ? AND f.tier = 1
+        AND NOT EXISTS (
+          SELECT 1 FROM conversation_fold_sources s WHERE s.source_fold_id = f.id
+        )
+      ORDER BY f.created_at ASC, f.rowid ASC LIMIT ?
+    `).all(chatId, capped) as FoldRow[];
+    return rows.map(asFold);
   }
 
   getRecentFolds(chatId: string, tier: 1 | 2, limit = 20): ConversationFold[] {
@@ -175,7 +206,7 @@ export class FoldRepository {
 
   getMessageWindow(chatId: string, messageId: string, radius = 2): ChatMessage[] {
     const boundedRadius = Math.max(0, Math.min(10, Math.floor(radius) || 0));
-    const anchor = this.db.query('SELECT timestamp, rowid FROM messages WHERE chat_id = ? AND id = ?').get(chatId, messageId) as
+    const anchor = this.db.query('SELECT timestamp, rowid FROM messages WHERE chat_id = ? AND id = ? LIMIT 1').get(chatId, messageId) as
       | { timestamp: number; rowid: number } | null;
     if (!anchor) return [];
     const preceding = this.db.query(`

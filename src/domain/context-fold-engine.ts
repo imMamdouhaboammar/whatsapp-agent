@@ -112,9 +112,7 @@ export class ContextFoldEngine {
   }
 
   async coalesceTier1Folds(chatId: string): Promise<ConversationFold | null> {
-    const source = this.options.memoryStore.getFolds(chatId, 1);
-    const used = new Set(this.options.memoryStore.getFolds(chatId, 2).flatMap(item => item.sourceFoldIds));
-    const pending = source.filter(item => !used.has(item.id));
+    const pending = this.options.memoryStore.getPendingTier1Folds(chatId, this.tier2Threshold);
     if (pending.length < this.tier2Threshold) return null;
     // Created timestamps can be identical in tests; sort by canonical message timestamps.
     const byOrder = pending.map(item => ({

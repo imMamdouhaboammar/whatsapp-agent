@@ -66,8 +66,12 @@ export class MemoryStore {
     return this.sqlite.getFoldRepository().getFold(id);
   }
 
-  getFolds(chatId: string, tier?: 1 | 2): ConversationFold[] {
-    return this.sqlite.getFoldRepository().getFolds(chatId, tier);
+  getFolds(chatId: string, tier?: 1 | 2, limit = 500): ConversationFold[] {
+    return this.sqlite.getFoldRepository().getFolds(chatId, tier, limit);
+  }
+
+  getPendingTier1Folds(chatId: string, limit = 5): ConversationFold[] {
+    return this.sqlite.getFoldRepository().getPendingTier1Folds(chatId, limit);
   }
 
   getRecentFolds(chatId: string, tier: 1 | 2, limit = 20): ConversationFold[] {

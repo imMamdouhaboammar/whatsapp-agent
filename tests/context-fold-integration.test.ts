@@ -113,6 +113,9 @@ describe('Fold prompt assembly and lineage safety', () => {
     expect(reads).toBeLessThanOrEqual(52);
     expect(memory.getRecentFolds(chatId, 1, 4).map(item => item.id))
       .toEqual(['historical-fold-116', 'historical-fold-117', 'historical-fold-118', 'historical-fold-119']);
+    expect(memory.getFolds(chatId, 1, 20)).toHaveLength(20);
+    expect(memory.getPendingTier1Folds(chatId, 3).map(item => item.id))
+      .toEqual(['historical-fold-0', 'historical-fold-1', 'historical-fold-2']);
   });
 
   test('caps background summarization concurrency at two jobs across chats', async () => {
