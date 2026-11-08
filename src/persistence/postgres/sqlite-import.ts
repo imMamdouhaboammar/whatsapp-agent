@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createPgClient, migratePostgres, type PgClient, type PgTransaction } from './migrate';
 
@@ -164,8 +164,20 @@ function assertSourceTables(db: Database, filename: string): void {
   const found = new Set(
     (db.query("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{name: string}>).map(r => r.name)
   );
-  for (const spec of SQLITE_TABLES.filter(t => t.databaseFile === filename)) {
-    if (!found.has(spec.table)) throw new Error(`Missing expected SQLite table ${filename} / ${spec.table}`);
+  const known = new Set(SQLITE_TABLES.filter(t => t.databaseFile === filename).map(t => t.table));
+  for (const expected of known) {
+    if (!found.has(expected)) throw new Error(`Missing expected SQLite table ${filename} / ${expected}`);
+  }
+  // An import receipt must account for every durable source table, even a
+  // newly introduced one that has zero rows. Only SQLite bookkeeping and the
+  // rebuildable knowledge FTS5 virtual table/shadow tables are exempt.
+  const unknown = [...found].filter(name =>
+    !known.has(name) && !name.startsWith('sqlite_') &&
+    !(filename === 'agent-knowledge.sqlite' &&
+      (name === 'knowledge_fts' || name.startsWith('knowledge_fts_')))
+  );
+  if (unknown.length) {
+    throw new Error(`Unaccounted SQLite tables in ${filename}: ${unknown.sort().join(', ')}; extend the PostgreSQL schema and importer before migration`);
   }
 }
 const SOURCE_ALIASES: Record<string, string> = {
@@ -185,6 +197,13 @@ export function inspectSqliteSources({ dataDir, legacyBrand }: {dataDir: string;
   requireBrand(legacyBrand);
   const directory = resolve(dataDir);
   const files = [...new Set(SQLITE_TABLES.map(t => t.databaseFile))];
+  const knownFilenames = new Set([...files, ...Object.values(SOURCE_ALIASES)]);
+  const unknownFiles = readdirSync(directory).filter(filename =>
+    /\.(?:db|sqlite)$/i.test(filename) && !knownFilenames.has(filename)
+  );
+  if (unknownFiles.length) {
+    throw new Error(`Unaccounted SQLite source files: ${unknownFiles.sort().join(', ')}; extend the importer before migration`);
+  }
   const sources = files.map(file => resolveSource(directory, file));
   if (!sources.some(source => source.exists)) throw new Error('No existing SQLite source databases found');
   const summaries: ImportManifest['tables'] = [];
