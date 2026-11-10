@@ -11,54 +11,46 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const baileys = join(__dirname, 'node_modules', '@whiskeysockets', 'baileys', 'lib');
 
-function normalizeWs(s) {
-  return s.replace(/\r\n/g, '\n').replace(/[ \t]+/g, ' ');
-}
-
-function patch(file, find, replace, label) {
-  const path = join(baileys, file);
-  let src;
-  try {
-    src = readFileSync(path, 'utf8');
-  } catch (err) {
-    if (err && typeof err === 'object' && err.code === 'ENOENT') {
-      console.log(`  skip: ${file} not found`);
-      return;
-    }
-    throw err;
+function patch(src, find, replace, applied, label) {
+  const matches = [...src.matchAll(find)];
+  if (matches.length === 0) {
+    if (applied.test(src)) return { source: src, status: 'ok: ' + label + ' (already patched)' };
+    throw new Error(label + ' target not found');
+  }
+  if (matches.length !== 1) {
+    throw new Error(label + ' matched ' + matches.length + ' locations');
   }
 
-  if (src.includes(replace)) {
-    console.log(`  ok: ${label} (already patched)`);
-    return;
+  const updated = src.replace(find, replace);
+  if (updated === src || find.test(updated) || !applied.test(updated)) {
+    throw new Error(label + ' replacement verification failed');
   }
-  if (!src.includes(find)) {
-    const normalizedFind = normalizeWs(find);
-    if (!normalizeWs(src).includes(normalizedFind)) {
-      console.log(`  warn: ${label} target not found in ${file}`);
-      return;
-    }
-  }
-  src = src.replaceAll(find, replace);
-  writeFileSync(path, src, 'utf8');
-  console.log(`  patched: ${label}`);
+  return { source: updated, status: 'patched: ' + label };
 }
 
 try {
   console.log('[Fable Agent] Patching Baileys connection validator...');
-  patch(
-    'Utils/validate-connection.js',
-    'passive: true,\n        pull: true,',
+  const path = join(baileys, 'Utils/validate-connection.js');
+  const original = readFileSync(path, 'utf8');
+  const passive = patch(
+    original,
+    /passive:\s*true,\s*pull:\s*true,/g,
     'passive: false,\n        pull: true,',
+    /passive:\s*false,\s*pull:\s*true,/,
     'passive flag'
   );
-  patch(
-    'Utils/validate-connection.js',
-    'lidDbMigrated: false',
+  const lid = patch(
+    passive.source,
+    /lidDbMigrated:\s*false/g,
     '/* lidDbMigrated removed */',
+    /\/\*\s*lidDbMigrated removed\s*\*\//,
     'lidDbMigrated'
   );
+  if (lid.source !== original) writeFileSync(path, lid.source, 'utf8');
+  console.log('  ' + passive.status);
+  console.log('  ' + lid.status);
   console.log('[Fable Agent] Baileys patch complete.');
 } catch (err) {
-  console.warn('[Fable Agent] Baileys patch skipped or errored:', err instanceof Error ? err.message : err);
+  console.error('[Fable Agent] Required Baileys patch failed:', err instanceof Error ? err.message : err);
+  process.exitCode = 1;
 }
