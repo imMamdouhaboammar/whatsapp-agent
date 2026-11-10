@@ -11,6 +11,30 @@ import { MemoryStore } from '../src/domain/memory-store';
 import type { ChatMessage } from '../src/domain/types';
 
 import type { GeminiClient } from '../src/ai/gemini-client';
+function providerChoice(choice: 'trivial' | 'standard' | 'complex', confidence: number) {
+  return {
+    model: 'jev-latest',
+    answers: {
+      route: {
+        type: 'choice',
+        choice,
+        confidence,
+        probabilities: {
+          trivial: choice === 'trivial' ? 1 : 0,
+          standard: choice === 'standard' ? 1 : 0,
+          complex: choice === 'complex' ? 1 : 0
+        }
+      },
+      action_risk: {
+        type: 'choice',
+        choice: 'routine',
+        confidence: 0.96,
+        probabilities: { routine: 0.96, consequential: 0.04 }
+      }
+    }
+  };
+}
+
 
 describe('Jev Model Router Layer', () => {
   it('routes high-confidence trivial Arabic greetings to gemini-3.8-flash', async () => {
@@ -19,11 +43,7 @@ describe('Jev Model Router Layer', () => {
     const mockFetch = (async (_url: string | URL | Request, init?: RequestInit) => {
       capturedBody = JSON.parse(init?.body as string) as Record<string, unknown>;
       return new Response(
-        JSON.stringify({
-          label: 'trivial',
-          confidence: 0.96,
-          reason: 'Simple Arabic greeting without complex inquiries'
-        }),
+        JSON.stringify(providerChoice('trivial', 0.96)),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
     }) as unknown as typeof fetch;
@@ -31,6 +51,7 @@ describe('Jev Model Router Layer', () => {
     const decision = await routeTurnModel({
       message: 'السلام عليكم ورحمة الله وبركاته، صباح الخير',
       apiKey: 'test-typesafe-key',
+      externalRoutingAllowed: true,
       fetchFn: mockFetch
     });
 
@@ -38,17 +59,13 @@ describe('Jev Model Router Layer', () => {
     expect(decision.tier).toBe('trivial');
     expect(decision.confidence).toBe(0.96);
     expect(decision.bypassed).toBe(false);
-    expect(capturedBody.input).toBe('السلام عليكم ورحمة الله وبركاته، صباح الخير');
+    expect(capturedBody!.state).toBe('السلام عليكم ورحمة الله وبركاته، صباح الخير');
   });
 
   it('routes high-confidence standard product/pricing queries to gemini-3.8-flash', async () => {
     const mockFetch = (async () => {
       return new Response(
-        JSON.stringify({
-          tier: 'standard',
-          confidence: 0.89,
-          reasoning: 'Standard course pricing inquiry'
-        }),
+        JSON.stringify(providerChoice('standard', 0.89)),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
     }) as unknown as typeof fetch;
@@ -56,6 +73,7 @@ describe('Jev Model Router Layer', () => {
     const decision = await routeTurnModel({
       message: 'بكام كورس الذكاء الاصطناعي ومواعيده إمتى؟',
       apiKey: 'test-typesafe-key',
+      externalRoutingAllowed: true,
       fetchFn: mockFetch
     });
 
@@ -71,11 +89,7 @@ describe('Jev Model Router Layer', () => {
     const mockFetch = (async (_url: string | URL | Request, init?: RequestInit) => {
       capturedBody = JSON.parse(init?.body as string) as Record<string, unknown>;
       return new Response(
-        JSON.stringify({
-          label: 'complex',
-          confidence: 0.94,
-          reason: 'Escalated customer refund dispute requiring nuanced reasoning'
-        }),
+        JSON.stringify(providerChoice('complex', 0.94)),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
     }) as unknown as typeof fetch;
@@ -84,6 +98,7 @@ describe('Jev Model Router Layer', () => {
       message: 'الخدمة سيئة جداً ومحدش بيرد عليا وعايز أسترجع فلوسي فوراً وإلا هشتكي في حماية المستهلك!',
       threadContext: ['تم الدفع أمس برقم إيصال 4882'],
       apiKey: 'test-typesafe-key',
+      externalRoutingAllowed: true,
       fetchFn: mockFetch
     });
 
@@ -91,17 +106,13 @@ describe('Jev Model Router Layer', () => {
     expect(decision.tier).toBe('complex');
     expect(decision.confidence).toBe(0.94);
     expect(decision.bypassed).toBe(false);
-    expect(capturedBody.context).toEqual(['تم الدفع أمس برقم إيصال 4882']);
+    expect(capturedBody).not.toHaveProperty('context');
   });
 
   it('overrides decision to gemini-3.8-flash when confidence is below threshold (< 0.75)', async () => {
     const mockFetch = (async () => {
       return new Response(
-        JSON.stringify({
-          label: 'complex',
-          confidence: 0.62,
-          reason: 'Ambiguous request with weak signal'
-        }),
+        JSON.stringify(providerChoice('complex', 0.62)),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
     }) as unknown as typeof fetch;
@@ -109,6 +120,7 @@ describe('Jev Model Router Layer', () => {
     const decision = await routeTurnModel({
       message: 'مش عارف أقرر، محتاج مساعدة عامة',
       apiKey: 'test-typesafe-key',
+      externalRoutingAllowed: true,
       confidenceThreshold: 0.75,
       fetchFn: mockFetch
     });
@@ -138,7 +150,7 @@ describe('Jev Model Router Layer', () => {
     expect(fetchCalled).toBe(false);
     expect(decision.selectedModel).toBe(DEFAULT_BYPASS_MODEL);
     expect(decision.tier).toBe('standard');
-    expect(decision.confidence).toBe(1.0);
+    expect(decision.confidence).toBe(0);
     expect(decision.routerLatencyMs).toBe(0);
     expect(decision.bypassed).toBe(true);
   });
@@ -154,6 +166,7 @@ describe('Jev Model Router Layer', () => {
     const timeoutDecision = await routeTurnModel({
       message: 'رسالة أثناء انقطاع الشبكة',
       apiKey: 'test-typesafe-key',
+      externalRoutingAllowed: true,
       timeoutMs: 50,
       fetchFn: mockTimeoutFetch
     });
@@ -171,6 +184,7 @@ describe('Jev Model Router Layer', () => {
     const errorDecision = await routeTurnModel({
       message: 'رسالة أثناء عطل السيرفر',
       apiKey: 'test-typesafe-key',
+      externalRoutingAllowed: true,
       fetchFn: mock500Fetch
     });
 
@@ -186,7 +200,7 @@ describe('Jev Model Router Layer', () => {
     const mockFetch = (async (_url: string | URL | Request, init?: RequestInit) => {
       capturedBody = JSON.parse(init?.body as string) as Record<string, unknown>;
       return new Response(
-        JSON.stringify({ label: 'trivial', confidence: 0.99 }),
+        JSON.stringify(providerChoice('trivial', 0.99)),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
     }) as unknown as typeof fetch;
@@ -198,25 +212,27 @@ describe('Jev Model Router Layer', () => {
     await routeTurnModel({
       message: testMessage,
       apiKey: 'test-typesafe-key',
+      externalRoutingAllowed: true,
       fetchFn: mockFetch
     });
 
     expect(capturedBody).toBeDefined();
-    expect(capturedBody.input).not.toContain(dummyKey);
-    expect(capturedBody.input).not.toContain('mySecretPass123');
-    expect(capturedBody.input).toContain('[REDACTED_CREDENTIAL]');
+    expect(capturedBody!.state).not.toContain(dummyKey);
+    expect(capturedBody!.state).not.toContain('mySecretPass123');
+    expect(capturedBody!.state).toContain('[REDACTED_CREDENTIAL]');
   });
 
   it('supports JevModelRouter class instance and default options', async () => {
     const mockFetch = (async () => {
       return new Response(
-        JSON.stringify({ label: 'trivial', confidence: 0.92 }),
+        JSON.stringify(providerChoice('trivial', 0.92)),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
     }) as unknown as typeof fetch;
 
     const router = new JevModelRouter({
       apiKey: 'test-typesafe-key',
+      externalRoutingAllowed: true,
       confidenceThreshold: 0.8,
       fetchFn: mockFetch
     });
@@ -309,7 +325,7 @@ describe('ModeratorAgent + Jev Routing Integration', () => {
     const result = await agent.processInboundMessage(incoming);
 
     // Gemini was invoked with the preferredModel selected by the router
-    expect(modelCalledWith).toBe('gemini-4-argon');
+    expect(String(modelCalledWith)).toBe('gemini-4-argon');
 
     // Decision contains strongly-typed modelRouting
     expect(result.decision.modelRouting).toBeDefined();
