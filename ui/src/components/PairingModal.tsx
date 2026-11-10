@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { AlertCircle, CheckCircle2, LogOut, Phone, QrCode, RefreshCw, X } from 'lucide-react';
 import { Button } from '@astryxdesign/core/Button';
 import type { SystemStatus } from '../api/types';
 import { useLocale } from '../locale-context';
+import { useModalDismiss } from '../hooks/useModalDismiss';
 
 interface PairingModalProps {
   status: SystemStatus | null;
@@ -17,17 +18,7 @@ export function PairingModal({ status, isOpen, onClose, onConnect, onDisconnect 
   const [tab, setTab] = useState<'qr' | 'phone'>('qr');
   const [phoneNumber, setPhoneNumber] = useState('');
 
-  const onCloseRef = useRef(onClose);
-  useEffect(() => {
-    onCloseRef.current = onClose;
-  }, [onClose]);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    const onEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') onCloseRef.current(); };
-    window.addEventListener('keydown', onEscape);
-    return () => window.removeEventListener('keydown', onEscape);
-  }, [isOpen]);
+  useModalDismiss(isOpen, onClose);
 
   if (!isOpen) return null;
 

@@ -29,6 +29,9 @@ describe('Funnel Registry', () => {
     expect(registry.validateKey('bad-key')).toBe(false);
     expect(registry.validateKey('')).toBe(false);
     expect(registry.validateKey(undefined)).toBe(false);
+
+    const emptyRegistry = new FunnelRegistry();
+    expect(emptyRegistry.validateKey('any-key')).toBe(false);
   });
 
   it('rejects duplicate or invalid method registrations', () => {

@@ -145,13 +145,15 @@ export function App() {
             return isDifferent ? res.messages : prev;
           });
         }
-      } catch {}
-    }, 2500);
+      } catch (err) {
+        console.debug('[App] Background message sync:', err);
+      }
+    }, 15000);
 
     return () => clearInterval(harvestTimer);
   }, [selectedChatId]);
 
-  // Periodic Chat List Harvest: Poll every 4s for fresh chats & unread counts
+  // Periodic Chat List Drift-Sync: Low-frequency background sync (15s)
   useEffect(() => {
     const chatListTimer = setInterval(async () => {
       try {
@@ -159,12 +161,14 @@ export function App() {
         if (res.chats && Array.isArray(res.chats)) {
           setChats(res.chats);
           setSelectedChatId((prev) => {
-            const exists = res.chats.some((c: any) => c.id === prev);
+            const exists = res.chats.some((c: { id: string }) => c.id === prev);
             return (!prev || !exists) && res.chats.length > 0 ? res.chats[0].id : prev;
           });
         }
-      } catch {}
-    }, 4000);
+      } catch (err) {
+        console.debug('[App] Background chat list sync:', err);
+      }
+    }, 15000);
 
     return () => clearInterval(chatListTimer);
   }, []);

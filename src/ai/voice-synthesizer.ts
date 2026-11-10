@@ -41,8 +41,16 @@ export class VoiceSynthesizer {
 
     try {
       if (!this.project) {
-        const proc = Bun.spawn(['gcloud', 'config', 'get-value', 'project'], { stdout: 'pipe' });
-        this.project = (await new Response(proc.stdout).text()).trim() || 'project-3a53318f-795c-46b9-888';
+        const envProject = process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT;
+        if (envProject?.trim()) {
+          this.project = envProject.trim();
+        } else {
+          const proc = Bun.spawn(['gcloud', 'config', 'get-value', 'project'], { stdout: 'pipe' });
+          this.project = (await new Response(proc.stdout).text()).trim();
+        }
+        if (!this.project) {
+          throw new Error('Google Cloud Project ID is not configured (set GOOGLE_CLOUD_PROJECT environment variable or configure gcloud)');
+        }
       }
 
       const tokenProc = Bun.spawn(['gcloud', 'auth', 'print-access-token'], { stdout: 'pipe' });
@@ -76,10 +84,11 @@ export class VoiceSynthesizer {
       if (exitCode === 0 && arrayBuf.byteLength > 0) {
         return Buffer.from(arrayBuf);
       }
+      throw new Error(`ffmpeg transcoding failed with exit code ${exitCode}`);
     } catch (err: any) {
-      console.warn('⚠️ [VoiceSynthesizer] ffmpeg transcoding warning:', err.message);
+      console.warn('⚠️ [VoiceSynthesizer] ffmpeg transcoding failed:', err.message);
+      throw err;
     }
-    return wavBuffer;
   }
 
   /**

@@ -28,6 +28,23 @@ export interface Evidence {
   lastChecked: number;
   score: number;
 }
+interface RawChunkRow {
+  source_id: string;
+  authority: SourceAuthority;
+  version_id: string;
+  last_checked: number;
+  content: string;
+  location: string;
+  embedding_json?: string | null;
+}
+interface RawSourceRow {
+  source_id: string;
+  type: string;
+  locator: string;
+  authority: SourceAuthority;
+  version_id: string;
+  last_checked: number;
+}
 export type EmbeddingProvider = (text: string) => Promise<number[]>;
 
 function sha(text: string) {
@@ -76,10 +93,20 @@ export class BrandKnowledgeStore {
     const current = this.db.query('SELECT v.version_id, v.hash, s.retired FROM brand_source_versions v JOIN brand_sources s ON s.source_id=v.source_id WHERE v.source_id=? AND v.current=1').get(sourceId) as {version_id:string;hash:string;retired:number}|null;
     if (current && current.hash === hash && !current.retired) return {sourceId,versionId:current.version_id,changed:false};
     const lines = input.type==='csv' ? input.content.split(/\r?\n/).filter(Boolean).slice(0,5000) : input.content.match(/[\s\S]{1,1000}/g) ?? [];
-    const chunks = await Promise.all(lines.map(async (text,i)=>({
-      text, location: input.type==='csv' ? 'row:'+String(i+1) : 'section:'+String(i+1),
-      embedding: this.embed ? JSON.stringify(await this.embed(text)) : null
-    })));
+    const chunks: Array<{ text: string; location: string; embedding: string | null }> = [];
+    const batchSize = 10;
+    for (let i = 0; i < lines.length; i += batchSize) {
+      const batch = lines.slice(i, i + batchSize);
+      const batchChunks = await Promise.all(batch.map(async (text, batchIdx) => {
+        const lineIdx = i + batchIdx;
+        return {
+          text,
+          location: input.type === 'csv' ? 'row:' + String(lineIdx + 1) : 'section:' + String(lineIdx + 1),
+          embedding: this.embed ? JSON.stringify(await this.embed(text)) : null
+        };
+      }));
+      chunks.push(...batchChunks);
+    }
     const versionId = randomUUID();
     const write = this.db.transaction(() => {
       this.db.query('INSERT INTO brand_sources(source_id,brand_id,type,locator,authority,locale,retired) VALUES(?,?,?,?,?,?,0) ON CONFLICT(source_id) DO UPDATE SET authority=excluded.authority,locale=excluded.locale,retired=0').run(sourceId,input.brandId,input.type,input.locator,input.authority,input.locale ?? null);
@@ -103,9 +130,9 @@ export class BrandKnowledgeStore {
     const qembedding=this.embed ? await this.embed(input.question) : undefined;
     const select='SELECT s.source_id,s.authority,v.version_id,v.last_checked,c.content,c.location,c.embedding_json FROM brand_sources s JOIN brand_source_versions v ON v.source_id=s.source_id AND v.current=1 JOIN knowledge_chunks c ON c.version_id=v.version_id';
     const lexicalQuery=qterms.map(term=>'"'+term.replaceAll('"', '""')+'"').join(' OR ');
-    const rows= this.embed || !lexicalQuery
-      ? this.db.query(select+' WHERE s.brand_id=? AND s.retired=0').all(input.brandId) as any[]
-      : this.db.query(select+" JOIN knowledge_fts ON knowledge_fts.rowid=c.id WHERE s.brand_id=? AND s.retired=0 AND knowledge_fts.normalized_content MATCH ? ORDER BY bm25(knowledge_fts) LIMIT 500").all(input.brandId,lexicalQuery) as any[];
+    const rows: RawChunkRow[] = this.embed || !lexicalQuery
+      ? (this.db.query(select+' WHERE s.brand_id=? AND s.retired=0 LIMIT 500').all(input.brandId) as RawChunkRow[])
+      : (this.db.query(select+" JOIN knowledge_fts ON knowledge_fts.rowid=c.id WHERE s.brand_id=? AND s.retired=0 AND knowledge_fts.normalized_content MATCH ? ORDER BY bm25(knowledge_fts) LIMIT 500").all(input.brandId,lexicalQuery) as RawChunkRow[]);
     const hits=rows.map(row=>{
       const text=normalized(row.content);
       const matches=qterms.filter(t=>text.includes(t)).length;
@@ -141,7 +168,7 @@ export class BrandKnowledgeStore {
   }
 
   listSources(brandId:string): Array<{sourceId:string;type:string;locator:string;authority:SourceAuthority;versionId:string;lastChecked:number}> {
-    const rows=this.db.query('SELECT s.source_id,s.type,s.locator,s.authority,v.version_id,v.last_checked FROM brand_sources s JOIN brand_source_versions v ON v.source_id=s.source_id AND v.current=1 WHERE s.brand_id=? AND s.retired=0 ORDER BY v.last_checked DESC').all(brandId) as any[];
+    const rows = this.db.query('SELECT s.source_id,s.type,s.locator,s.authority,v.version_id,v.last_checked FROM brand_sources s JOIN brand_source_versions v ON v.source_id=s.source_id AND v.current=1 WHERE s.brand_id=? AND s.retired=0 ORDER BY v.last_checked DESC').all(brandId) as RawSourceRow[];
     return rows.map(row=>({sourceId:row.source_id,type:row.type,locator:row.locator,authority:row.authority,versionId:row.version_id,lastChecked:row.last_checked}));
   }
   retireSource(brandId:string,sourceId:string) {

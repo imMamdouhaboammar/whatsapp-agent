@@ -67,8 +67,7 @@ export class FunnelRegistry {
 
   validateKey(key?: string): boolean {
     if (!key || typeof key !== 'string') return false;
-    // If no keys configured at all, fallback to allowing loopback/internal
-    if (this.apiKeys.size === 0) return true;
+    if (this.apiKeys.size === 0) return false;
     return this.apiKeys.has(key.trim());
   }
 }

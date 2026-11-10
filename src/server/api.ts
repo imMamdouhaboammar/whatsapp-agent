@@ -1,3 +1,6 @@
+import { unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { streamSSE } from 'hono/streaming';
@@ -532,6 +535,94 @@ export function createApiServer(deps: {
       draftCreated: result.draftCreated,
       shouldSendImmediately: result.shouldSendImmediately
     });
+  });
+
+  // Sticker Studio conversion endpoint
+  app.post('/api/media/sticker', async (c) => {
+    const body = await c.req.json().catch(() => null);
+    if (!body || typeof body.imageBase64 !== 'string' || !body.imageBase64.trim()) {
+      return c.json({ error: 'imageBase64 is required' }, 400);
+    }
+    if (body.imageBase64.length > 15 * 1024 * 1024) {
+      return c.json({ error: 'Image exceeds maximum allowable size (10MB)' }, 413);
+    }
+
+    try {
+      const cleanBase64 = body.imageBase64.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, '').trim();
+      const inputBuffer = Buffer.from(cleanBase64, 'base64');
+      if (inputBuffer.length === 0) {
+        return c.json({ error: 'Decoded image buffer is empty' }, 400);
+      }
+
+      if (!Bun.which('cwebp')) {
+        return c.json({ error: 'cwebp utility is not installed on this server' }, 503);
+      }
+
+      const tempId = crypto.randomUUID();
+      const inPath = join(tmpdir(), `wa_sticker_in_${tempId}`);
+      const outPath = join(tmpdir(), `wa_sticker_out_${tempId}.webp`);
+
+      try {
+        await Bun.write(inPath, inputBuffer);
+
+        const qualities = [75, 50, 30];
+        let webpBuffer: Buffer | null = null;
+
+        for (const q of qualities) {
+          try {
+            const proc = Bun.spawn(['cwebp', '-q', String(q), '-resize', '512', '512', inPath, '-o', outPath], {
+              stdout: 'ignore',
+              stderr: 'ignore'
+            });
+            const exitCode = await proc.exited;
+            if (exitCode === 0) {
+              const file = Bun.file(outPath);
+              if (file.size > 0 && file.size <= 101888) {
+                webpBuffer = Buffer.from(await file.arrayBuffer());
+                break;
+              } else if (file.size > 101888 && q === qualities[qualities.length - 1]) {
+                webpBuffer = Buffer.from(await file.arrayBuffer());
+              }
+            }
+          } catch (spawnErr) {
+            console.warn('[StickerStudio] cwebp spawn failed:', spawnErr);
+            break;
+          }
+        }
+
+        if (!webpBuffer) {
+          return c.json({ error: 'Failed to convert image to WhatsApp WebP sticker' }, 500);
+        }
+
+        if (webpBuffer.length > 101888) {
+          return c.json({ error: `Generated sticker size (${webpBuffer.length} bytes) exceeds WhatsApp 100 KB limit (101,888 bytes)` }, 422);
+        }
+
+        return c.json({
+          success: true,
+          bytes: webpBuffer.length,
+          stickerBase64: webpBuffer.toString('base64'),
+          mimeType: 'image/webp'
+        });
+      } finally {
+        try {
+          unlinkSync(inPath);
+        } catch (err: any) {
+          if (err?.code !== 'ENOENT') {
+            console.warn('[StickerStudio] Failed to remove temp input file:', err?.message || err);
+          }
+        }
+        try {
+          unlinkSync(outPath);
+        } catch (err: any) {
+          if (err?.code !== 'ENOENT') {
+            console.warn('[StickerStudio] Failed to remove temp output file:', err?.message || err);
+          }
+        }
+      }
+    } catch (err: any) {
+      return c.json({ error: `Sticker processing failed: ${err.message}` }, 500);
+    }
   });
 
   // Real-Time Server-Sent Events (SSE)

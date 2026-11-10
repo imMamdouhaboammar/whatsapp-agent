@@ -23,6 +23,7 @@ export class AudioTranscriber {
   "language": "اللهجة أو اللغة المكتشفة"
 }`;
 
+    const primaryModel = process.env.GEMINI_TRANSCRIBE_MODEL || 'gemini-3.8-flash';
     let response;
     try {
       response = await this.gemini.generateContent([
@@ -39,11 +40,11 @@ export class AudioTranscriber {
           ]
         }
       ], {
-        model: 'gemini-3.5-transcribe',
+        model: primaryModel,
         responseMimeType: 'application/json'
       });
     } catch {
-      // Graceful fallback to gemini-3.8-flash
+      // Graceful fallback to gemini-3.1-flash-lite
       response = await this.gemini.generateContent([
         {
           role: 'user',
@@ -58,7 +59,7 @@ export class AudioTranscriber {
           ]
         }
       ], {
-        model: 'gemini-3.8-flash',
+        model: 'gemini-3.1-flash-lite',
         responseMimeType: 'application/json'
       });
     }

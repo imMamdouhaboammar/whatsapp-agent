@@ -3,6 +3,7 @@ import { Image as ImageIcon, Send, Smile, X, Check, AlertCircle } from 'lucide-r
 import { Tag } from '@lobehub/ui';
 import { api } from '../api/client';
 import { useLocale } from '../locale-context';
+import { useModalDismiss } from '../hooks/useModalDismiss';
 
 interface StickerStudioModalProps {
   isOpen: boolean;
@@ -23,6 +24,8 @@ export function StickerStudioModal({ isOpen, onClose, selectedChatId, onSendStic
     bytes: number;
     base64: string;
   } | null>(null);
+
+  useModalDismiss(isOpen, onClose);
 
   if (!isOpen) return null;
 
@@ -61,7 +64,7 @@ export function StickerStudioModal({ isOpen, onClose, selectedChatId, onSendStic
         text: caption.trim() || undefined,
       });
 
-      if (res.success) {
+      if (res.success && res.bytes !== undefined && res.stickerBase64) {
         setGeneratedSticker({
           bytes: res.bytes,
           base64: res.stickerBase64,
@@ -69,8 +72,9 @@ export function StickerStudioModal({ isOpen, onClose, selectedChatId, onSendStic
       } else {
         setError(res.error || tr('فشل تحويل الاستيكر', 'Sticker creation failed'));
       }
-    } catch (err: any) {
-      setError(err.message || tr('فشل في المعالجة', 'Processing failed'));
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message || tr('فشل في المعالجة', 'Processing failed'));
     } finally {
       setLoading(false);
     }
@@ -81,8 +85,9 @@ export function StickerStudioModal({ isOpen, onClose, selectedChatId, onSendStic
     try {
       await onSendSticker(selectedChatId, generatedSticker.base64);
       onClose();
-    } catch (err: any) {
-      setError(err.message || tr('فشل الإرسال', 'Failed to send'));
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message || tr('فشل الإرسال', 'Failed to send'));
     }
   };
 

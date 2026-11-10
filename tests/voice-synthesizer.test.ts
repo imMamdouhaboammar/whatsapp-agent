@@ -57,6 +57,40 @@ describe('VoiceSynthesizer', () => {
     await expect(synth.synthesizeVoice('Testing failure')).rejects.toThrow('Google Cloud Text-to-Speech fallback failed (503)');
   });
 
+  it('falls back to Chirp3-HD when Gemini TTS returns invalid audio that fails transcoding', async () => {
+    const audio = Buffer.from(await Bun.file(new URL('./fixtures/valid-silence-opus.ogg', import.meta.url)).arrayBuffer());
+    let chirpCalled = false;
+    const synth = new VoiceSynthesizer({
+      authProvider: async () => ({ token: 'local-test-token', project: 'local-test-project' }),
+      fetcher: (async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/models/gemini-3.8-flash-tts:generateContent')) {
+          return Response.json({
+            candidates: [{
+              content: {
+                parts: [{
+                  inlineData: {
+                    mimeType: 'audio/wav',
+                    data: Buffer.from('corrupt-non-wav-payload').toString('base64')
+                  }
+                }]
+              }
+            }]
+          });
+        }
+        if (url === 'https://texttospeech.googleapis.com/v1/text:synthesize') {
+          chirpCalled = true;
+          return Response.json({ audioContent: audio.toString('base64') });
+        }
+        throw new Error('Unexpected URL: ' + url);
+      }) as typeof fetch
+    });
+
+    const result = await synth.synthesizeVoice('اختبار الصوت الاحتياطي');
+    expect(chirpCalled).toBe(true);
+    expect(result).toEqual(audio);
+  });
+
   const liveIt = process.env.RUN_LIVE_GOOGLE_TTS === '1' ? it : it.skip;
   liveIt('synthesizes an OGG Opus buffer against live Google TTS when explicitly configured', async () => {
     const synth = new VoiceSynthesizer({ languageCode: 'ar-XA', ssmlGender: 'MALE' });

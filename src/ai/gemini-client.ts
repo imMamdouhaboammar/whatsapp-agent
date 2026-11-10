@@ -38,7 +38,7 @@ export class GeminiClient {
 
   constructor(options: { apiKey?: string; project?: string; location?: string } = {}) {
     this.apiKey = options.apiKey || process.env.GEMINI_API_KEY;
-    this.project = options.project || process.env.GOOGLE_CLOUD_PROJECT || 'project-3a53318f-795c-46b9-888';
+    this.project = options.project || process.env.GOOGLE_CLOUD_PROJECT;
     if (options.location) this.location = options.location;
   }
 
@@ -54,7 +54,7 @@ export class GeminiClient {
     try {
       if (!this.project) {
         const proc = Bun.spawn(['gcloud', 'config', 'get-value', 'project'], { stdout: 'pipe' });
-        this.project = (await new Response(proc.stdout).text()).trim() || 'project-3a53318f-795c-46b9-888';
+        this.project = (await new Response(proc.stdout).text()).trim() || undefined;
       }
 
       // Fetch access token via gcloud CLI (active session)
@@ -151,19 +151,39 @@ export class GeminiClient {
       });
     };
 
-    let res = await callApi(model);
-    let data: any = await res.json();
+    const readResponse = async (response: Response) => {
+      const text = await response.text();
+      let parsed: any = null;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = null;
+      }
+      return { ok: response.ok, status: response.status, statusText: response.statusText, data: parsed, text };
+    };
+
+    let apiResult = await readResponse(await callApi(model));
 
     // Fallback gracefully if model not yet enabled on Vertex AI endpoint
-    if (!res.ok && res.status === 404 && auth.type === 'vertex') {
+    if (!apiResult.ok && apiResult.status === 404 && auth.type === 'vertex') {
       const fallbackModel = model.includes('argon') || model.includes('pro') ? 'gemini-3.1-pro' : 'gemini-3.8-flash';
       console.warn(`⚠️ [GeminiClient] Model "${model}" is not enabled in this region, gracefully falling back to "${fallbackModel}"`);
-      res = await callApi(fallbackModel);
-      data = await res.json();
+      apiResult = await readResponse(await callApi(fallbackModel));
     }
-    if (!res.ok) {
-      const msg = data.error?.message || `HTTP ${res.status}: ${res.statusText}`;
-      throw new Error(`Gemini API Error: ${msg}`);
+    if (!apiResult.ok) {
+      const msg = apiResult.data?.error?.message || (apiResult.text ? apiResult.text.slice(0, 300) : `HTTP ${apiResult.status}: ${apiResult.statusText}`);
+      const err: any = new Error(`Gemini API Error (${apiResult.status}): ${msg}`);
+      err.status = apiResult.status;
+      err.statusCode = apiResult.status;
+      throw err;
+    }
+
+    const data = apiResult.data;
+    if (!data) {
+      const err: any = new Error(`Gemini API returned non-JSON response (${apiResult.status})`);
+      err.status = apiResult.status;
+      err.statusCode = apiResult.status;
+      throw err;
     }
 
     const candidate = data.candidates?.[0];

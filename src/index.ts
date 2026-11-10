@@ -188,7 +188,9 @@ export async function createFableWhatsAppAgent(options: {
                   messageId: fusedMsg.id,
                   emoji: result.decision.suggestedReaction
                 });
-              } catch {}
+              } catch (err) {
+                console.warn('[Delivery] Failed to send or persist reaction:', err);
+              }
             }
 
             // 2. Decide between Voice Note (PTT) vs Split Text Bubbles
