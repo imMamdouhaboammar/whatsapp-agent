@@ -96,6 +96,9 @@ export function SimulatorModal({ isOpen, onClose, onSimulate }: SimulatorModalPr
               <p className="wa-sim-outcome-detail">{actionDetail}</p>
               <div className="wa-sim-facts">
                 <p><span>{tr('نوع الطلب', 'Intent')}</span><b dir="auto">{result.decision?.intent?.replaceAll('_', ' ') || tr('غير محدد', 'Unknown')}</b></p>
+                {result.decision?.modelRouting && (
+                  <p><span>{tr('توجيه النموذج', 'Model Routing')}</span><b dir="ltr">{result.decision.modelRouting.tier.toUpperCase()} &rarr; {result.decision.modelRouting.selectedModel} ({Math.round(result.decision.modelRouting.confidence * 100)}%, {result.decision.modelRouting.routerLatencyMs}ms)</b></p>
+                )}
                 {result.decision?.reasoning && <p><span>{tr('سبب القرار', 'Reason')}</span><span dir="auto">{result.decision.reasoning}</span></p>}
               </div>
               {result.decision?.replyText && <div className="wa-sim-reply"><span>{tr('الرد المتوقع', 'Expected reply')}</span><p dir="auto">{result.decision.replyText}</p></div>}

@@ -41,6 +41,15 @@ export interface ChatSummary {
   avatarUrl?: string;
 }
 
+export interface ModelRoutingTrace {
+  selectedModel: string;
+  tier: 'trivial' | 'standard' | 'complex';
+  confidence: number;
+  routerLatencyMs: number;
+  reason: string;
+  bypassed?: boolean;
+}
+
 export interface AgentDecision {
   action: 'reply' | 'draft' | 'ignore' | 'human';
   intent: string;
@@ -49,6 +58,7 @@ export interface AgentDecision {
   confidence: number;
   simulatedDelayMs: number;
   suggestedReaction?: string;
+  modelRouting?: ModelRoutingTrace;
 }
 
 export interface AgentDraft {
@@ -62,6 +72,7 @@ export interface AgentDraft {
   confidence: number;
   status: 'pending' | 'approved' | 'rejected' | 'sent';
   createdAt: number;
+  modelRouting?: ModelRoutingTrace;
 }
 
 export interface ContactDossier {

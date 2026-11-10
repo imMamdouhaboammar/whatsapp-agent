@@ -4,13 +4,14 @@ import type { MemoryStore } from '../domain/memory-store';
 import type { AgentDecision, AgentDraft, AutonomyAction, ChatMessage, ModeratorPersona, PolicyConfig } from '../domain/types';
 import type { GeminiClient } from './gemini-client';
 import { formatWhatsAppMessage } from '../domain/whatsapp-formatter';
-import { executeWithModelFallback, parseModelChain } from './model-fallback';
+import { executeWithModelFallback, resolveModelChain } from './model-fallback';
 import { formatMemoriesForPrompt } from '../domain/user-memory';
 import { detectConversationStyle, getStylePromptDirective, isExplicitStyleRequest, type ConversationStyle } from './adaptive-style';
 import type { DualMemoryManager } from '../domain/learning-memory';
 import { ContextFoldEngine } from '../domain/context-fold-engine';
 import { buildFoldContext } from '../domain/context-fold-prompt';
 import { createGeminiFoldSummarizer } from './fold-summarizer';
+import { routeTurnModel, type RoutingDecision, type JevRouteRequest } from './model-router';
 
 export const DEFAULT_MODERATOR_PERSONA: ModeratorPersona = {
   name: 'ممدوح (الموديرتور الذكي)',
@@ -61,6 +62,7 @@ export class ModeratorAgent {
   private rateLimiter: HumanRateLimiter;
   private dualMemoryManager?: DualMemoryManager;
   private contextFoldEngine?: ContextFoldEngine;
+  private router: (input: JevRouteRequest) => Promise<RoutingDecision>;
 
   constructor(
     private gemini: GeminiClient,
@@ -71,6 +73,7 @@ export class ModeratorAgent {
       rateLimiter?: HumanRateLimiter;
       dualMemoryManager?: DualMemoryManager;
       contextFoldEngine?: ContextFoldEngine;
+      router?: (input: JevRouteRequest) => Promise<RoutingDecision>;
     } = {}
   ) {
     this.persona = { ...DEFAULT_MODERATOR_PERSONA, ...options.persona };
@@ -80,6 +83,7 @@ export class ModeratorAgent {
       maxDelayMs: this.persona.maxTypingDelayMs
     });
     this.dualMemoryManager = options.dualMemoryManager;
+    this.router = options.router ?? routeTurnModel;
     this.contextFoldEngine = options.contextFoldEngine ?? (
       process.env.CONTEXT_FOLD_ENABLED === 'false' ? undefined :
         new ContextFoldEngine({
@@ -240,24 +244,49 @@ ${notebookPrompt}
 
     let parsedDecision: AgentDecision;
 
+    // Route inbound turn with Jev to dynamically select the optimal model
+    let routing: RoutingDecision;
     try {
-      const fallbackModels = parseModelChain(
-        this.persona.model || 'gemini-3.8-flash',
+      const recentContext = history.slice(-3).map((m) => m.text || m.transcription || '').filter(Boolean);
+      routing = await this.router({
+        message: inboundText,
+        threadContext: recentContext,
+        senderName: message.senderName || message.sender
+      });
+    } catch {
+      routing = {
+        selectedModel: 'gemini-3.8-flash',
+        tier: 'standard',
+        confidence: 0,
+        routerLatencyMs: 0,
+        reason: 'Router call threw unexpected error; bypassed to gemini-3.8-flash',
+        bypassed: true
+      };
+    }
+
+    try {
+      const preferredModel = routing.selectedModel || this.persona.model || 'gemini-3.8-flash';
+      const fallbackModels = resolveModelChain(
+        preferredModel,
         process.env.GEMINI_FALLBACK_MODELS,
-        'gemini-3.8-flash,gemini-3.1-pro,gemini-4-argon'
+        this.persona.model
       );
 
-      const fallbackRes = await executeWithModelFallback(fallbackModels, async (model) => {
-        return await this.gemini.generateContent(
-          [{ role: 'user', parts: [{ text: prompt }] }],
-          {
-            model,
-            temperature: this.persona.temperature,
-            systemInstruction,
-            responseMimeType: 'application/json'
-          }
-        );
-      });
+      const fallbackRes = await executeWithModelFallback(
+        fallbackModels,
+        async (model) => {
+          return await this.gemini.generateContent(
+            [{ role: 'user', parts: [{ text: prompt }] }],
+            {
+              model,
+              temperature: this.persona.temperature,
+              systemInstruction,
+              responseMimeType: 'application/json'
+            }
+          );
+        },
+        { preferredModel }
+      );
 
       const response = fallbackRes.result;
       const json = JSON.parse(response.text);
@@ -271,18 +300,22 @@ ${notebookPrompt}
         ? this.rateLimiter.calculateTypingDelay(json.replyText || '')
         : 500;
 
+      const routingTrace = `[Jev: ${routing.tier} -> ${routing.selectedModel} (${Math.round(routing.confidence * 100)}%, ${routing.routerLatencyMs}ms)]`;
+      const combinedReasoning = json.reasoning ? `${routingTrace} ${json.reasoning}` : routingTrace;
+
       parsedDecision = {
         action: json.action || 'reply',
         intent: json.intent || 'general_faq',
         replyText: json.replyText,
         sendAsVoiceNote: Boolean(json.sendAsVoiceNote),
-        reasoning: json.reasoning || 'Automated moderation evaluation',
+        reasoning: combinedReasoning,
         confidence: Number(json.confidence ?? 0.85),
         simulatedDelayMs: simulatedDelay,
         suggestedReaction: json.suggestedReaction,
         extractedFacts: Array.isArray(json.extractedFacts) ? json.extractedFacts : undefined,
         extractedCommitments: Array.isArray(json.extractedCommitments) ? json.extractedCommitments : undefined,
-        contactStage: json.contactStage
+        contactStage: json.contactStage,
+        modelRouting: routing
       };
 
       // Persist newly discovered facts into the Contact Dossier
@@ -318,7 +351,8 @@ ${notebookPrompt}
         intent: 'error_fallback',
         reasoning: `Model generation failed: ${err.message}`,
         confidence: 0,
-        simulatedDelayMs: 0
+        simulatedDelayMs: 0,
+        modelRouting: routing
       };
     }
 
@@ -350,7 +384,8 @@ ${notebookPrompt}
         reasoning: parsedDecision.reasoning,
         confidence: parsedDecision.confidence,
         status: 'pending',
-        createdAt: Date.now()
+        createdAt: Date.now(),
+        modelRouting: routing
       };
       if (!options.dryRun) this.memoryStore.saveDraft(draftCreated);
       shouldSendImmediately = false;

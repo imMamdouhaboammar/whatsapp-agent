@@ -59,6 +59,10 @@ async function simulate(text: string) {
   const elapsed = Math.round(performance.now() - start);
 
   console.log('--- Agent Decision ---');
+  if (result.decision.modelRouting) {
+    const r = result.decision.modelRouting;
+    console.log(`Model Routing (Jev): [${r.tier.toUpperCase()}] -> ${r.selectedModel} (confidence: ${(r.confidence * 100).toFixed(0)}%, latency: ${r.routerLatencyMs}ms)`);
+  }
   console.log(`Action: ${result.decision.action.toUpperCase()}`);
   console.log(`Intent: ${result.decision.intent}`);
   console.log(`Confidence: ${(result.decision.confidence * 100).toFixed(0)}%`);
