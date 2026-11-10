@@ -179,53 +179,65 @@ function eligibleReviews(review: HumanReview | undefined, candidateId: string): 
   return new Set(review.approved_case_ids);
 }
 
+function validateRecording(recording: RecordedModelResponse | undefined): 'missing_candidate_recording' | 'invalid_recording' | 'invalid_model_decision' | null {
+  if (!recording) return 'missing_candidate_recording';
+  if (!['decision', 'timeout', 'error'].includes(recording.kind)) return 'invalid_recording';
+  if (recording.kind === 'decision') {
+    const val = recording.value;
+    if (!val || typeof val !== 'object' ||
+        !ALLOWED_ACTIONS.includes(val.action as AutonomyAction) ||
+        typeof val.intent !== 'string' || !val.intent.trim() ||
+        typeof val.confidence !== 'number' ||
+        !Number.isFinite(val.confidence) ||
+        val.confidence < 0 || val.confidence > 1 ||
+        (val.replyText !== undefined && typeof val.replyText !== 'string') ||
+        (val.citations !== undefined &&
+          (!Array.isArray(val.citations) ||
+            !val.citations.every((id: unknown) => typeof id === 'string')))) {
+      return 'invalid_model_decision';
+    }
+  }
+  return null;
+}
+
+function setupSyntheticHistory(memory: MemoryStore, testCase: EvaluationCase, chatId: string): void {
+  memory.setChatMode(chatId, testCase.chat_mode);
+  for (const [index, turn] of testCase.inbound_turns.slice(0, -1).entries()) {
+    memory.addMessage({
+      id: `history-${index}`, chatId, sender: turn.sender, text: turn.text, timestamp: index + 1,
+      type: 'text', isFromMe: turn.sender === 'owner'
+    });
+  }
+  if (testCase.dossier_facts.length > 0) {
+    memory.saveDossier({
+      chatId, name: 'Synthetic contact', stage: 'lead',
+      facts: testCase.dossier_facts, commitments: [], updatedAt: 1
+    });
+  }
+}
+
 async function observe(testCase: EvaluationCase, snapshot: EvaluationSnapshot, timeoutMs: number): Promise<ReplayObservation> {
   const recording = snapshot.responses[testCase.case_id];
-  if (!recording) return { infrastructureError: 'missing_candidate_recording', elapsed_ms: 0 };
-  if (!['decision', 'timeout', 'error'].includes(recording.kind)) {
-    return { infrastructureError: 'invalid_recording', elapsed_ms: 0 };
-  }
-  if (recording.kind === 'decision' &&
-      (!recording.value || typeof recording.value !== 'object' ||
-       !ALLOWED_ACTIONS.includes(recording.value.action as AutonomyAction) ||
-       typeof recording.value.intent !== 'string' || !recording.value.intent.trim() ||
-       typeof recording.value.confidence !== 'number' ||
-       !Number.isFinite(recording.value.confidence) ||
-       recording.value.confidence < 0 || recording.value.confidence > 1 ||
-       (recording.value.replyText !== undefined && typeof recording.value.replyText !== 'string') ||
-       (recording.value.citations !== undefined &&
-         (!Array.isArray(recording.value.citations) ||
-           !recording.value.citations.every((id: unknown) => typeof id === 'string'))))) {
-    return { infrastructureError: 'invalid_model_decision', elapsed_ms: 0 };
-  }
+  const invalidReason = validateRecording(recording);
+  if (invalidReason) return { infrastructureError: invalidReason, elapsed_ms: 0 };
+  const validRecording = recording!;
+
   const memory = new MemoryStore({ dataDir: ':memory:' });
   const started = performance.now();
   let modelError: string | undefined;
   const chatId = `case_${testCase.case_id}@simulator.invalid`;
   try {
-    memory.setChatMode(chatId, testCase.chat_mode);
-    for (const [index, turn] of testCase.inbound_turns.slice(0, -1).entries()) {
-      memory.addMessage({
-        id: `history-${index}`, chatId, sender: turn.sender, text: turn.text, timestamp: index + 1,
-        type: 'text', isFromMe: turn.sender === 'owner'
-      });
-    }
-    if (testCase.dossier_facts.length > 0) {
-      memory.saveDossier({
-        chatId, name: 'Synthetic contact', stage: 'lead',
-        facts: testCase.dossier_facts, commitments: [], updatedAt: 1
-      });
-    }
+    setupSyntheticHistory(memory, testCase, chatId);
 
     // The model is a scripted in-process double: no credentials, transport or network access.
     const model = {
       generateContent: async () => {
-        if (recording.kind === 'timeout') return new Promise<never>(() => {});
-        if (recording.kind === 'error') {
-          modelError = recording.code || 'model_error';
+        if (validRecording.kind === 'timeout') return new Promise<never>(() => {});
+        if (validRecording.kind === 'error') {
+          modelError = validRecording.code || 'model_error';
           throw new Error('Recorded model failure');
         }
-        return { text: JSON.stringify(recording.value) };
+        return { text: JSON.stringify(validRecording.value) };
       }
     };
     const moderator = new ModeratorAgent(model as unknown as GeminiClient, memory, {
@@ -251,7 +263,7 @@ async function observe(testCase: EvaluationCase, snapshot: EvaluationSnapshot, t
 
       // Record the actual production evaluator's matched rule; the actual action
       // and send disposition come from the real ModeratorAgent dry run.
-      const modelDecision = recording.kind === 'decision' ? recording.value : {};
+      const modelDecision = validRecording.kind === 'decision' ? validRecording.value : {};
       const permission = evaluatePermission(snapshot.policy, {
         intent: String(modelDecision.intent ?? 'general_faq'),
         confidence: Number(modelDecision.confidence ?? 0.85),
@@ -263,9 +275,9 @@ async function observe(testCase: EvaluationCase, snapshot: EvaluationSnapshot, t
         draft_created: Boolean(result.draftCreated),
         matched_rule_id: permission.matchedRuleId,
         policy_reason: permission.reason,
-        model_usage: recording.kind === 'decision' ? recording.usage : undefined,
-        cited_evidence_ids: recording.kind === 'decision' && Array.isArray(recording.value.citations)
-          ? [...recording.value.citations as string[]] : undefined,
+        model_usage: validRecording.kind === 'decision' ? validRecording.usage : undefined,
+        cited_evidence_ids: validRecording.kind === 'decision' && Array.isArray(validRecording.value.citations)
+          ? [...validRecording.value.citations as string[]] : undefined,
         elapsed_ms: Math.round(performance.now() - started)
       };
     } catch (error) {

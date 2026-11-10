@@ -1,4 +1,4 @@
-import type {Hono} from 'hono';
+import type {Hono, Context, Next} from 'hono';
 import {createHash,timingSafeEqual} from 'node:crypto';
 import {join} from 'node:path';
 import {BrandKnowledgeStore} from './brand-knowledge';
@@ -49,7 +49,7 @@ export function createCapabilities(dataDir:string,model?:Pick<GeminiClient,'gene
   registry.register(brandId,{name:'inventory.lookup',kind:'read',scope:'inventory:read',
    description:'Look up available inventory by exact product SKU',
    parameters:{type:'OBJECT',properties:{sku:{type:'STRING'}},required:['sku']},
-   validate:(v):v is {sku:string}=>typeof v==='object' && v!==null && typeof (v as any).sku==='string' && (v as any).sku.length<129,
+   validate:(v):v is {sku:string}=>typeof v==='object' && v!==null && 'sku' in v && typeof (v as {sku:unknown}).sku==='string' && ((v as {sku:string}).sku).length<129,
    execute:async({sku})=>provider.lookup(sku)
   });
  };
@@ -61,7 +61,7 @@ export function createCapabilities(dataDir:string,model?:Pick<GeminiClient,'gene
 export type CapabilityEngine=ReturnType<typeof createCapabilities>;
 
 export function registerCapabilityRoutes(app:Hono, capabilities:CapabilityEngine, token:string) {
- const auth=async(c:any,next:()=>Promise<void>)=>{
+ const auth=async(c:Context,next:Next)=>{
   if(!token)return c.json({error:'Owner token is not configured'},503);
   const provided=c.req.header('x-agent-owner-token')??'';
   if(!provided || !timingSafeEqual(digest(provided),digest(token)))return c.json({error:'Unauthorized'},401);

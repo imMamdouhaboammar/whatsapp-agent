@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { CheckCircle2, Play, ShieldCheck, Bot, X } from 'lucide-react';
 import type { AgentDecision } from '../api/types';
 import { useLocale } from '../locale-context';
+import { useModalDismiss } from '../hooks/useModalDismiss';
 
 interface SimulationResult { decision?: AgentDecision }
 
@@ -19,10 +20,7 @@ export function SimulatorModal({ isOpen, onClose, onSimulate }: SimulatorModalPr
   const [result, setResult] = useState<SimulationResult | null>(null);
   const [error, setError] = useState('');
 
-  const onCloseRef = useRef(onClose);
-  useEffect(() => {
-    onCloseRef.current = onClose;
-  }, [onClose]);
+  useModalDismiss(isOpen, onClose);
 
   useEffect(() => {
     if (!isOpen) {
@@ -30,11 +28,7 @@ export function SimulatorModal({ isOpen, onClose, onSimulate }: SimulatorModalPr
       setError('');
       setTestText('');
       setSenderName('');
-      return;
     }
-    const onEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') onCloseRef.current(); };
-    window.addEventListener('keydown', onEscape);
-    return () => window.removeEventListener('keydown', onEscape);
   }, [isOpen]);
 
   if (!isOpen) return null;

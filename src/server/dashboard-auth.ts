@@ -89,8 +89,14 @@ export function registerDashboardAuth(app: Hono, token: string): void {
     return c.json({ authenticated: false });
   });
 
+  const EXEMPT_PREFIXES = ['/api/auth/', '/api/webhooks/', '/api/funnel/', '/api/brands/', '/api/agent/'];
+
   app.use('/api/*', async (c, next) => {
     if (!token) return next();
+    const path = c.req.path;
+    if (EXEMPT_PREFIXES.some((prefix) => path.startsWith(prefix))) {
+      return next();
+    }
     if (!authenticated({
       authorization: c.req.header('authorization'),
       cookie: getCookie(c, SESSION_COOKIE)

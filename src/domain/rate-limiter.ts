@@ -60,7 +60,11 @@ export class HumanRateLimiter {
     const now = Date.now();
     const windowStart = now - 60_000;
     const timestamps = (this.chatSendTimestamps.get(chatId) ?? []).filter((t) => t > windowStart);
-    this.chatSendTimestamps.set(chatId, timestamps);
+    if (timestamps.length === 0) {
+      this.chatSendTimestamps.delete(chatId);
+    } else {
+      this.chatSendTimestamps.set(chatId, timestamps);
+    }
 
     if (timestamps.length >= this.maxMessagesPerMinute) {
       return { allowed: false, remaining: 0 };
@@ -78,7 +82,9 @@ export class HumanRateLimiter {
     let actionError: any = null;
 
     const next = previous
-      .catch(() => {}) // Continue even if prior action failed
+      .catch((err) => {
+        console.warn(`[HumanRateLimiter] Prior queued action failed for chat ${chatId}:`, err);
+      })
       .then(async () => {
         try {
           result = await action();
@@ -87,6 +93,11 @@ export class HumanRateLimiter {
           this.chatSendTimestamps.set(chatId, list);
         } catch (err) {
           actionError = err;
+        }
+      })
+      .finally(() => {
+        if (this.sendQueues.get(chatId) === next) {
+          this.sendQueues.delete(chatId);
         }
       });
 

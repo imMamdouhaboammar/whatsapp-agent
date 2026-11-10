@@ -10,6 +10,47 @@ async function handleResponse<T>(res: Response, fallbackError: string): Promise<
   return res.json() as Promise<T>;
 }
 
+export interface FunnelMethodMeta {
+  method: string;
+  description?: string;
+  mode?: string;
+  targets?: unknown[];
+  timeoutMs?: number;
+}
+
+export interface CircuitBreakerStatus {
+  targetId: string;
+  state: 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+  failures?: number;
+  successes?: number;
+  totalCalls?: number;
+  totalFailures?: number;
+  lastFailureTime?: number;
+}
+
+export interface FunnelDispatchResult {
+  traceId?: string;
+  method?: string;
+  success?: boolean;
+  error?: string;
+  results?: Array<Record<string, unknown>>;
+  [key: string]: unknown;
+}
+
+export interface ContactMemoryItem {
+  id: string;
+  content: string;
+  created_at: number;
+}
+
+export interface StickerResult {
+  success?: boolean;
+  bytes?: number;
+  stickerBase64?: string;
+  error?: string;
+  mimeType?: string;
+}
+
 export const api = {
   async getDashboardStatus(): Promise<{ required: boolean; authenticated: boolean }> {
     const res = await fetch(`${BASE_URL}/auth/status`, { cache: 'no-store' });
@@ -160,23 +201,23 @@ export const api = {
     return handleResponse<any>(res, 'Could not preview assistant response');
   },
 
-  async getFunnelMethods(): Promise<{ methods: any[] }> {
+  async getFunnelMethods(): Promise<{ methods: FunnelMethodMeta[] }> {
     const res = await fetch(`${BASE_URL}/funnel/methods`);
-    return handleResponse<{ methods: any[] }>(res, 'Failed to fetch funnel methods');
+    return handleResponse<{ methods: FunnelMethodMeta[] }>(res, 'Failed to fetch funnel methods');
   },
 
-  async getFunnelStats(): Promise<{ circuitBreakers: any[]; activeMethodsCount: number }> {
+  async getFunnelStats(): Promise<{ circuitBreakers: CircuitBreakerStatus[]; activeMethodsCount: number }> {
     const res = await fetch(`${BASE_URL}/funnel/stats`);
-    return handleResponse<{ circuitBreakers: any[]; activeMethodsCount: number }>(res, 'Failed to fetch funnel stats');
+    return handleResponse<{ circuitBreakers: CircuitBreakerStatus[]; activeMethodsCount: number }>(res, 'Failed to fetch funnel stats');
   },
 
-  async dispatchFunnel(data: { method: string; payload?: any; queryParams?: any; timeoutMs?: number }): Promise<any> {
+  async dispatchFunnel(data: { method: string; payload?: unknown; queryParams?: Record<string, string>; timeoutMs?: number }): Promise<FunnelDispatchResult> {
     const res = await fetch(`${BASE_URL}/funnel/dispatch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
     });
-    return handleResponse<any>(res, 'Failed to dispatch funnel request');
+    return handleResponse<FunnelDispatchResult>(res, 'Failed to dispatch funnel request');
   },
 
   async resetCircuitBreaker(targetId: string): Promise<{ success: boolean; targetId: string }> {
@@ -188,18 +229,18 @@ export const api = {
     return handleResponse<{ success: boolean; targetId: string }>(res, 'Failed to reset circuit breaker');
   },
 
-  async getMemories(chatId: string): Promise<{ memories: any[] }> {
+  async getMemories(chatId: string): Promise<{ memories: ContactMemoryItem[] }> {
     const res = await fetch(`${BASE_URL}/contacts/${encodeURIComponent(chatId)}/memories`);
-    return handleResponse<{ memories: any[] }>(res, 'Failed to fetch contact memories');
+    return handleResponse<{ memories: ContactMemoryItem[] }>(res, 'Failed to fetch contact memories');
   },
 
-  async addMemory(chatId: string, content: string): Promise<{ status: string; message?: string; memories?: any[] }> {
+  async addMemory(chatId: string, content: string): Promise<{ status: string; message?: string; memories?: ContactMemoryItem[] }> {
     const res = await fetch(`${BASE_URL}/contacts/${encodeURIComponent(chatId)}/memories`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content })
     });
-    return handleResponse<{ status: string; message?: string; memories?: any[] }>(res, 'Failed to save contact memory');
+    return handleResponse<{ status: string; message?: string; memories?: ContactMemoryItem[] }>(res, 'Failed to save contact memory');
   },
 
   async deleteMemory(chatId: string, memoryId: string): Promise<{ success: boolean }> {
@@ -223,12 +264,12 @@ export const api = {
     return handleResponse<{ success: boolean; style: string }>(res, 'Failed to update chat style');
   },
 
-  async createSticker(data: { imageBase64: string; mimeType: string; crop?: boolean; text?: string }): Promise<any> {
+  async createSticker(data: { imageBase64: string; mimeType: string; crop?: boolean; text?: string }): Promise<StickerResult> {
     const res = await fetch(`${BASE_URL}/media/sticker`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
     });
-    return handleResponse<any>(res, 'Failed to generate sticker');
+    return handleResponse<StickerResult>(res, 'Failed to generate sticker');
   }
 };

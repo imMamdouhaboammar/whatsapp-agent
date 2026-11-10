@@ -25,6 +25,15 @@ function advancedStatus(current: ChatMessage['status'], next: ChatMessage['statu
   return STATUS_RANK[current] >= STATUS_RANK[next] ? current : next;
 }
 
+function safeJsonParse<T>(raw: string | null | undefined, fallback: T): T {
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
 export interface SqliteStoreOptions {
   dbPath?: string;
   legacyDataDir?: string;
@@ -167,28 +176,34 @@ export class SqliteStore {
   private importLegacyJson(dir: string) {
     try {
       const chatsCount = (this.db.query('SELECT COUNT(*) as c FROM chats;').get() as any)?.c || 0;
-      const chatsPath = `${dir}/chats.json`;
-      if (chatsCount === 0 && existsSync(chatsPath)) {
-        const raw = JSON.parse(readFileSync(chatsPath, 'utf-8'));
-        if (Array.isArray(raw)) {
-          for (const item of raw) {
-            this.saveChat(item);
+      if (chatsCount === 0) {
+        try {
+          const raw = JSON.parse(readFileSync(`${dir}/chats.json`, 'utf-8'));
+          if (Array.isArray(raw)) {
+            for (const item of raw) {
+              this.saveChat(item);
+            }
           }
+        } catch {
+          // File missing or unparseable
         }
       }
 
       const msgsCount = (this.db.query('SELECT COUNT(*) as c FROM messages;').get() as any)?.c || 0;
-      const msgsPath = `${dir}/messages.json`;
-      if (msgsCount === 0 && existsSync(msgsPath)) {
-        const raw = JSON.parse(readFileSync(msgsPath, 'utf-8'));
-        if (typeof raw === 'object' && raw !== null) {
-          for (const msgs of Object.values(raw)) {
-            if (Array.isArray(msgs)) {
-              for (const m of msgs) {
-                this.saveMessage(m);
+      if (msgsCount === 0) {
+        try {
+          const raw = JSON.parse(readFileSync(`${dir}/messages.json`, 'utf-8'));
+          if (typeof raw === 'object' && raw !== null) {
+            for (const msgs of Object.values(raw)) {
+              if (Array.isArray(msgs)) {
+                for (const m of msgs) {
+                  this.saveMessage(m);
+                }
               }
             }
           }
+        } catch {
+          // File missing or unparseable
         }
       }
     } catch {
@@ -368,8 +383,8 @@ export class SqliteStore {
       isFromMe: Boolean(row.is_from_me),
       type: row.type as ChatMessage['type'],
       replyToId: row.reply_to_id ?? undefined,
-      quotedMessage: row.quoted_json ? JSON.parse(row.quoted_json) : undefined,
-      reactions: row.reactions_json ? JSON.parse(row.reactions_json) : undefined,
+      quotedMessage: safeJsonParse(row.quoted_json, undefined),
+      reactions: safeJsonParse(row.reactions_json, undefined),
       transcription: row.transcription ?? undefined,
       status: row.status as ChatMessage['status']
     }));
@@ -391,8 +406,8 @@ export class SqliteStore {
       isFromMe: Boolean(row.is_from_me),
       type: row.type as ChatMessage['type'],
       replyToId: row.reply_to_id ?? undefined,
-      quotedMessage: row.quoted_json ? JSON.parse(row.quoted_json) : undefined,
-      reactions: row.reactions_json ? JSON.parse(row.reactions_json) : undefined,
+      quotedMessage: safeJsonParse(row.quoted_json, undefined),
+      reactions: safeJsonParse(row.reactions_json, undefined),
       transcription: row.transcription ?? undefined,
       status: row.status as ChatMessage['status']
     };
@@ -455,8 +470,8 @@ export class SqliteStore {
       name: row.name,
       phone: row.phone ?? undefined,
       stage: row.stage as ContactDossier['stage'],
-      facts: JSON.parse(row.facts_json || '[]'),
-      commitments: JSON.parse(row.commitments_json || '[]'),
+      facts: safeJsonParse<string[]>(row.facts_json, []),
+      commitments: safeJsonParse<string[]>(row.commitments_json, []),
       preferredTone: row.preferred_tone ?? undefined,
       notes: row.notes ?? undefined,
       updatedAt: row.updated_at

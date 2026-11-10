@@ -1,24 +1,24 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Activity, ArrowRight, CheckCircle2, ChevronRight, Play, RefreshCw, ShieldAlert, Zap } from 'lucide-react';
-import { api } from '../api/client';
+import { api, type FunnelMethodMeta, type CircuitBreakerStatus, type FunnelDispatchResult } from '../api/client';
 import { useLocale } from '../locale-context';
 
 export function FunnelPage({ onClose }: { onClose: () => void }) {
   const { direction, tr } = useLocale();
-  const [methods, setMethods] = useState<any[]>([]);
-  const [stats, setStats] = useState<any[]>([]);
+  const [methods, setMethods] = useState<FunnelMethodMeta[]>([]);
+  const [stats, setStats] = useState<CircuitBreakerStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedMethod, setSelectedMethod] = useState<string>('');
   const [dispatchPayload, setDispatchPayload] = useState('{\n  "sku": "SKU-42"\n}');
-  const [lastReceipt, setLastReceipt] = useState<any | null>(null);
+  const [lastReceipt, setLastReceipt] = useState<FunnelDispatchResult | null>(null);
   const [dispatching, setDispatching] = useState(false);
 
   const loadData = useCallback(async () => {
     try {
       setLoading(true);
       const [mRes, sRes] = await Promise.all([
-        api.getFunnelMethods().catch(() => ({ methods: [] })),
-        api.getFunnelStats().catch(() => ({ circuitBreakers: [] }))
+        api.getFunnelMethods().catch(() => ({ methods: [] as FunnelMethodMeta[] })),
+        api.getFunnelStats().catch(() => ({ circuitBreakers: [] as CircuitBreakerStatus[], activeMethodsCount: 0 }))
       ]);
       setMethods(mRes.methods || []);
       setStats(sRes.circuitBreakers || []);
@@ -37,10 +37,10 @@ export function FunnelPage({ onClose }: { onClose: () => void }) {
     setDispatching(true);
     setLastReceipt(null);
     try {
-      let parsedPayload: any = undefined;
+      let parsedPayload: Record<string, unknown> | undefined = undefined;
       if (dispatchPayload.trim()) {
         try {
-          parsedPayload = JSON.parse(dispatchPayload);
+          parsedPayload = JSON.parse(dispatchPayload) as Record<string, unknown>;
         } catch {
           parsedPayload = { raw: dispatchPayload };
         }
@@ -51,8 +51,9 @@ export function FunnelPage({ onClose }: { onClose: () => void }) {
       });
       setLastReceipt(receipt);
       void loadData();
-    } catch (err: any) {
-      setLastReceipt({ error: err.message, success: false });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setLastReceipt({ error: message, success: false });
     } finally {
       setDispatching(false);
     }
@@ -76,7 +77,7 @@ export function FunnelPage({ onClose }: { onClose: () => void }) {
           <span>{tr('المحادثات', 'Chats')}</span>
         </button>
         <div className="wa-settings-title-group">
-          <h1>{tr('محرك التوزيع المتوازي (Funnel Engine)', 'Scatter-Gather Funnel Engine')}</h1>
+          <h1>{tr('محرك التوزيع المتوازي', 'Scatter-Gather Funnel Engine')}</h1>
           <p>{tr('محرك توجيه وحماية استدعاءات الـ APIs الخارجية، النماذج، والـ Webhooks', 'High-throughput scatter-gather & hedged request dispatcher for AI and external systems')}</p>
         </div>
         <button
@@ -94,7 +95,7 @@ export function FunnelPage({ onClose }: { onClose: () => void }) {
         <section className="wa-settings-section">
           <h2>
             <Activity size={18} />
-            <span>{tr('قواطع الدائرة (Circuit Breakers)', 'Target Circuit Breakers')}</span>
+            <span>{tr('قواطع الدائرة', 'Target Circuit Breakers')}</span>
           </h2>
           <div className="wa-brand-overview-grid" style={{ marginTop: '0.75rem' }}>
             {stats.length === 0 ? (

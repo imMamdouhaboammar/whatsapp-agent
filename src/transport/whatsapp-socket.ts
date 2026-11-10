@@ -64,6 +64,8 @@ export class WhatsAppSocketClient {
     updatedAt: Date.now()
   };
   private isConnecting = false;
+  private isExplicitlyClosed = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
   private pairingCodeRequestedNumber: string | null = null;
 
@@ -93,6 +95,12 @@ export class WhatsAppSocketClient {
    * Initializes and starts the WhatsApp socket connection
    */
   async start(pairingPhoneNumber?: string): Promise<void> {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.isExplicitlyClosed = false;
+
     if (this.isConnecting) return;
     this.isConnecting = true;
     if (pairingPhoneNumber) {
@@ -108,7 +116,9 @@ export class WhatsAppSocketClient {
         this.sock.ev.removeAllListeners('messages.update');
         this.sock.ev.removeAllListeners('message-receipt.update');
         this.sock.end(undefined);
-      } catch {}
+      } catch (err) {
+        console.warn('[WhatsApp] Error during socket listener cleanup:', err);
+      }
       this.sock = null;
     }
 
@@ -138,21 +148,38 @@ export class WhatsAppSocketClient {
       this.sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
-        if (qr && !this.pairingCodeRequestedNumber) {
-          try {
-            const dataUrl = await QRCode.toDataURL(qr, { margin: 2, scale: 6 });
-            this.setState({
-              state: 'qr_ready',
-              qrDataUrl: dataUrl,
-              pairingCode: undefined,
-              error: undefined // Clear any transient reconnect error once fresh QR is ready
-            });
-          } catch (err: any) {
-            this.setState({ error: `Failed to render QR code: ${err.message}` });
+        if (qr) {
+          if (this.pairingCodeRequestedNumber && !this.sock?.authState?.creds?.registered) {
+            try {
+              const code = await this.sock.requestPairingCode(this.pairingCodeRequestedNumber);
+              this.setState({
+                state: 'pairing_code_ready',
+                pairingCode: code,
+                qrDataUrl: undefined
+              });
+            } catch (err: any) {
+              this.setState({ error: `Failed to request pairing code: ${err.message}` });
+            }
+          } else {
+            try {
+              const dataUrl = await QRCode.toDataURL(qr, { margin: 2, scale: 6 });
+              this.setState({
+                state: 'qr_ready',
+                qrDataUrl: dataUrl,
+                pairingCode: undefined,
+                error: undefined // Clear any transient reconnect error once fresh QR is ready
+              });
+            } catch (err: any) {
+              this.setState({ error: `Failed to render QR code: ${err.message}` });
+            }
           }
         }
 
         if (connection === 'open') {
+          if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+          }
           this.reconnectAttempts = 0;
           this.isConnecting = false;
           const user = this.sock?.user;
@@ -173,6 +200,16 @@ export class WhatsAppSocketClient {
 
         if (connection === 'close') {
           this.isConnecting = false;
+          if (this.isExplicitlyClosed) {
+            this.setState({
+              state: 'disconnected',
+              error: undefined,
+              qrDataUrl: undefined,
+              pairingCode: undefined
+            });
+            return;
+          }
+
           const statusCode = (lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)?.output?.statusCode;
           const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
@@ -185,7 +222,8 @@ export class WhatsAppSocketClient {
             this.reconnectAttempts++;
             // During QR pairing, 408 (timeout), 500, and 515 are routine cycling events
             const isQRCycle = statusCode === 408 || statusCode === 500 || statusCode === 515;
-            const backoff = isQRCycle ? 1500 : Math.min(1000 * Math.pow(1.5, this.reconnectAttempts), 15000);
+            const maxBackoff = Math.min(1000 * Math.pow(1.5, this.reconnectAttempts), 15000);
+            const backoff = isQRCycle ? 1500 : Math.floor(500 + Math.random() * (maxBackoff - 500));
 
             if (!isQRCycle) {
               this.setState({
@@ -199,7 +237,11 @@ export class WhatsAppSocketClient {
               });
             }
 
-            setTimeout(() => {
+            if (this.reconnectTimer) {
+              clearTimeout(this.reconnectTimer);
+            }
+            this.reconnectTimer = setTimeout(() => {
+              this.reconnectTimer = null;
               void this.start(this.pairingCodeRequestedNumber || undefined);
             }, backoff);
           } else {
@@ -211,23 +253,6 @@ export class WhatsAppSocketClient {
         }
       });
 
-      // Handle phone pairing code if requested
-      if (this.pairingCodeRequestedNumber && !this.sock.authState.creds.registered) {
-        setTimeout(async () => {
-          try {
-            if (this.sock && this.pairingCodeRequestedNumber) {
-              const code = await this.sock.requestPairingCode(this.pairingCodeRequestedNumber);
-              this.setState({
-                state: 'pairing_code_ready',
-                pairingCode: code,
-                qrDataUrl: undefined
-              });
-            }
-          } catch (err: any) {
-            this.setState({ error: `Failed to request pairing code: ${err.message}` });
-          }
-        }, 3000);
-      }
 
       const publishStatus = (remoteJid: string, messageId: string, status: NonNullable<ChatMessage['status']>) => {
         void this.canonicalizeJid(remoteJid)
@@ -295,7 +320,9 @@ export class WhatsAppSocketClient {
             if (parsed) {
               this.onMessageCallback?.(parsed, { historical: true });
             }
-          } catch {}
+          } catch (err) {
+            console.warn('[WhatsApp] Failed to parse historical incoming message:', err);
+          }
         }
       });
     } catch (err: any) {
@@ -324,7 +351,9 @@ export class WhatsAppSocketClient {
             return canonical;
           }
         }
-      } catch {}
+      } catch (err) {
+        console.warn('[WhatsApp] Failed to resolve reverse LID mapping:', err);
+      }
     }
 
     this.transportJids.set(normalized, jid);
@@ -522,7 +551,9 @@ export class WhatsAppSocketClient {
     // Emit composing presence indicator
     try {
       await this.sock.sendPresenceUpdate('composing', targetJid);
-    } catch {}
+    } catch (err) {
+      console.warn('[WhatsApp] Failed to send composing presence update:', err);
+    }
 
     if (options.simulatedDelayMs && options.simulatedDelayMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, options.simulatedDelayMs));
@@ -530,7 +561,9 @@ export class WhatsAppSocketClient {
 
     try {
       await this.sock.sendPresenceUpdate('paused', targetJid);
-    } catch {}
+    } catch (err) {
+      console.warn('[WhatsApp] Failed to send paused presence update:', err);
+    }
 
     // Safely resolve quoted message: only pass if raw message is cached with authentic proto.IMessage
     let quoted: WAMessage | undefined = undefined;
@@ -572,7 +605,9 @@ export class WhatsAppSocketClient {
     // Emit recording audio presence indicator
     try {
       await this.sock.sendPresenceUpdate('recording', targetJid);
-    } catch {}
+    } catch (err) {
+      console.warn('[WhatsApp] Failed to send recording presence update:', err);
+    }
 
     const recordingDelay = options.simulatedRecordingDurationMs ?? 2500;
     if (recordingDelay > 0) {
@@ -581,7 +616,9 @@ export class WhatsAppSocketClient {
 
     try {
       await this.sock.sendPresenceUpdate('paused', targetJid);
-    } catch {}
+    } catch (err) {
+      console.warn('[WhatsApp] Failed to send paused presence update:', err);
+    }
 
     // Safely resolve quoted message if available
     let quoted: WAMessage | undefined = undefined;
@@ -632,13 +669,76 @@ export class WhatsAppSocketClient {
   }
 
   /**
+   * Sends a WebP sticker to a WhatsApp chat
+   */
+  async sendSticker(
+    chatId: string,
+    stickerBuffer: Buffer | Uint8Array,
+    options: { replyToMessageId?: string } = {}
+  ): Promise<{ messageId: string }> {
+    if (!this.sock) {
+      const error = new Error('WhatsApp socket is not connected') as Error & { code: string };
+      error.code = 'WHATSAPP_NOT_CONNECTED';
+      throw error;
+    }
+
+    const targetJid = this.transportJids.get(chatId) || chatId;
+    let quoted: WAMessage | undefined = undefined;
+    if (options.replyToMessageId) {
+      const cached = this.rawMessages.get(options.replyToMessageId);
+      if (cached && cached.message) {
+        quoted = cached;
+      }
+    }
+
+    const buf = Buffer.isBuffer(stickerBuffer) ? stickerBuffer : Buffer.from(stickerBuffer);
+    const sent = await this.sock.sendMessage(
+      targetJid,
+      {
+        sticker: buf
+      },
+      quoted ? { quoted } : undefined
+    );
+
+    const messageId = sent?.key?.id;
+    if (!messageId) {
+      const error = new Error('WhatsApp send outcome is ambiguous: native message ID missing') as Error & { code: string };
+      error.code = 'WHATSAPP_ACCEPTANCE_AMBIGUOUS';
+      throw error;
+    }
+    if (sent.message) this.rawMessages.set(messageId, sent);
+    return { messageId };
+  }
+
+  /**
    * Disconnects the socket
    */
   async disconnect(): Promise<void> {
+    this.isExplicitlyClosed = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
     if (this.sock) {
-      this.sock.end(undefined);
+      try {
+        this.sock.ev.removeAllListeners('connection.update');
+        this.sock.ev.removeAllListeners('creds.update');
+        this.sock.ev.removeAllListeners('messages.upsert');
+        this.sock.ev.removeAllListeners('messages.update');
+        this.sock.ev.removeAllListeners('message-receipt.update');
+        this.sock.end(undefined);
+      } catch (err) {
+        console.warn('[WhatsApp] Error during socket disconnect:', err);
+      }
       this.sock = null;
     }
-    this.setState({ state: 'disconnected' });
+    this.isConnecting = false;
+    this.setState({
+      state: 'disconnected',
+      error: undefined,
+      qrDataUrl: undefined,
+      pairingCode: undefined
+    });
   }
 }

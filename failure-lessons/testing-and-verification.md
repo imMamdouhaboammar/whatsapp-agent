@@ -41,6 +41,9 @@ $$\text{Fixed Implementation} \xrightarrow{\text{Pass}} \text{Broken Defect Inje
 | **FL-022** | Hardcoded extension namespace rejection (`pgmq`) | Dedicated schema creation prior to extension activation | `supabase/migrations/20261107000000_enable_agent_extensions.sql` | `bun -e "import { sql } from './src/server/supabase'..."` |
 | **FL-023** | Agent Kernel vault permission drift and missing accounts | Enforce octal 0600 on env files & canonical service-accounts.json binding | `~/.agent-kernel/service-accounts.json`, `.env` | `agent-kernel env status` |
 | **FL-024** | Supabase CLI multi-organization token 403 Forbidden | Decoupled local project-ref configuration from interactive CLI state | `supabase/.temp/project-ref`, `supabase/config.toml` | Direct wire connection & integration tests |
+| **FL-037** | Anti-Slop SRE unbounded concurrency & silent catches | Chunked batching, full jitter backoffs, and structured error logging | `src/agent/brand-knowledge.ts`, `src/domain/rate-limiter.ts` | `bun test tests/brand-knowledge.test.ts` |
+| **FL-038** | Ponytail forensic audit findings (auth, socket, stickers, leaks) | Explicit disconnect flag, exempt auth prefixes, 100 KB WebP limits, and fail-closed keys | `src/transport/whatsapp-socket.ts`, `src/server/dashboard-auth.ts`, `src/server/api.ts` | `bun test tests/sticker-api.test.ts && bun test tests/dashboard-auth.test.ts` |
+| **FL-039** | UI/UX accessibility, contrast & AI anti-pattern defects | W3C APG dialog standards, focus trapping, useModalDismiss hook, and WCAG AA contrast | `ui/src/components/`, `ui/src/index.css` | `cd ui && bun test:ui && bun run build` |
 
 ---
 

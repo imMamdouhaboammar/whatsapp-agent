@@ -10,7 +10,7 @@ import json
 import re
 import sys
 from html.parser import HTMLParser
-from xml.etree import ElementTree
+from xml.etree import ElementTree  # nosec B405
 from zipfile import ZipFile, BadZipFile
 
 DOCX='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
@@ -50,6 +50,49 @@ def bounded_zip(data,limit):
     except (BadZipFile,OverflowError):
         raise ExtractionError('Invalid office document archive')
 
+def _extract_docx(z, add):
+    try:
+        root = ElementTree.fromstring(z.read('word/document.xml'))  # nosec B314
+    except (KeyError, ElementTree.ParseError):
+        raise ExtractionError('Malformed DOCX')
+    ns = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
+    for idx, p in enumerate(root.iter(ns + 'p'), 1):
+        add('word/document.xml:p' + str(idx), ''.join((t.text or '') for t in p.iter(ns + 't')))
+
+def _extract_pptx(z, add):
+    names = sorted(
+        (n for n in z.namelist() if re.fullmatch(r'ppt/slides/slide\d+\.xml', n)),
+        key=lambda n: int(re.search(r'slide(\d+)', n).group(1))
+    )
+    ns = '{http://schemas.openxmlformats.org/drawingml/2006/main}'
+    for name in names[:100]:
+        try:
+            root = ElementTree.fromstring(z.read(name))  # nosec B314
+        except ElementTree.ParseError:
+            raise ExtractionError('Malformed PPTX')
+        add(name, ' '.join(t.text or '' for t in root.iter(ns + 't')))
+
+def _extract_xlsx(data, add):
+    try:
+        from openpyxl import load_workbook
+        wb = load_workbook(io.BytesIO(data), read_only=True, data_only=False)
+    except Exception:
+        raise ExtractionError('Malformed XLSX')
+    try:
+        for ws in wb.worksheets[:20]:
+            count = 0
+            for row in ws.iter_rows():
+                for cell in row:
+                    val = cell.value
+                    if val is None:
+                        continue
+                    add(ws.title + '!' + cell.coordinate, val)
+                    count += 1
+                    if count > 5000:
+                        raise ExtractionError('Too many spreadsheet cells')
+    finally:
+        wb.close()
+
 def extract_document(data,mime_type,max_bytes=LIMIT,max_uncompressed=30*1024*1024):
     if not isinstance(data,(bytes,bytearray)) or not data or len(data)>max_bytes:
         raise ExtractionError('File exceeds allowed size or is empty')
@@ -74,36 +117,14 @@ def extract_document(data,mime_type,max_bytes=LIMIT,max_uncompressed=30*1024*102
             for i in range(0,len(content),1200):
                 add('section:'+str(i//1200+1),content[i:i+1200])
     elif mime_type in (DOCX,PPTX,XLSX):
-        with bounded_zip(data,max_uncompressed) as z:
-            if mime_type==DOCX:
-                try:root=ElementTree.fromstring(z.read('word/document.xml'))
-                except (KeyError,ElementTree.ParseError):raise ExtractionError('Malformed DOCX')
-                ns='{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
-                for idx,p in enumerate(root.iter(ns+'p'),1):
-                    add('word/document.xml:p'+str(idx),''.join((t.text or '') for t in p.iter(ns+'t')))
-            elif mime_type==PPTX:
-                names=sorted((n for n in z.namelist() if re.fullmatch(r'ppt/slides/slide\d+\.xml',n)),
-                    key=lambda n:int(re.search(r'slide(\d+)',n).group(1)))
-                ns='{http://schemas.openxmlformats.org/drawingml/2006/main}'
-                for name in names[:100]:
-                    try:root=ElementTree.fromstring(z.read(name))
-                    except ElementTree.ParseError:raise ExtractionError('Malformed PPTX')
-                    add(name,' '.join(t.text or '' for t in root.iter(ns+'t')))
-            else:
-                try:
-                    from openpyxl import load_workbook
-                    wb=load_workbook(io.BytesIO(data),read_only=True,data_only=False)
-                except Exception:raise ExtractionError('Malformed XLSX')
-                try:
-                    for ws in wb.worksheets[:20]:
-                        count=0
-                        for row in ws.iter_rows():
-                            for cell in row:
-                                if cell.value is not None:
-                                    add(ws.title+'!'+cell.coordinate,cell.value)
-                                    count+=1
-                                    if count>5000:raise ExtractionError('Too many spreadsheet cells')
-                finally:wb.close()
+        if mime_type == XLSX:
+            _extract_xlsx(data, add)
+        else:
+            with bounded_zip(data,max_uncompressed) as z:
+                if mime_type == DOCX:
+                    _extract_docx(z, add)
+                else:
+                    _extract_pptx(z, add)
     elif mime_type==PDF:
         try:from pypdf import PdfReader
         except ImportError:raise ExtractionError('PDF parser unavailable; install worker requirements')

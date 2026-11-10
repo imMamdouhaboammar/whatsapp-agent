@@ -32,3 +32,6 @@ This directory preserves battle-tested engineering lessons, root cause analyses,
 - [022-postgresql-extension-schema-namespace-isolation.md](022-postgresql-extension-schema-namespace-isolation.md) - PostgreSQL extension schema namespace isolation (the `pgmq` schema invariant).
 - [023-agent-kernel-vault-service-account-binding.md](023-agent-kernel-vault-service-account-binding.md) - Agent Kernel vault service account binding & permission drift hygiene.
 - [024-supabase-cli-multi-org-token-scope-collision.md](024-supabase-cli-multi-org-token-scope-collision.md) - Supabase CLI multi-organization token scope collision.
+- [037-anti-slop-sre-remediation-and-concurrency-bounding.md](037-anti-slop-sre-remediation-and-concurrency-bounding.md) - Anti-slop SRE remediation, unbounded concurrency bounding, and error telemetry.
+- [038-ponytail-audit-remediation-and-lifecycle-integrity.md](038-ponytail-audit-remediation-and-lifecycle-integrity.md) - Ponytail forensic audit remediation, transport lifecycle & fail-closed guardrails.
+- [039-impeccable-ui-ux-design-quality-and-accessibility-remediation.md](039-impeccable-ui-ux-design-quality-and-accessibility-remediation.md) - Impeccable UI/UX quality remediation, anti-slop elimination & accessibility invariants.

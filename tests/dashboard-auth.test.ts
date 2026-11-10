@@ -32,6 +32,10 @@ describe('Self-hosted dashboard access', () => {
     const status = await app.request('/api/auth/status');
     expect(status.status).toBe(200);
     expect(await status.json()).toEqual({ required: true, authenticated: false });
+
+    // Exempt endpoints bypass dashboard owner authentication
+    const funnelStatus = (await app.request('/api/funnel/methods')).status;
+    expect(funnelStatus).not.toBe(401);
   });
 
   test('owner login sets a private same-site cookie, supports requests, and logout invalidates it', async () => {

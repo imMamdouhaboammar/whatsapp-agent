@@ -127,6 +127,19 @@ export class ReflectionWorker {
       if (res) results.push(res);
     }
 
+    // Prune stale reflected activity records to prevent unbounded memory growth
+    const retentionThreshold = now - 24 * 60 * 60 * 1000;
+    for (const [chatId, record] of this.activityMap.entries()) {
+      if (record.isProcessing) continue;
+      if (
+        record.lastActivityAt < retentionThreshold &&
+        record.lastReflectedAt >= record.lastActivityAt &&
+        (!this.pendingFeedback.has(chatId) || (this.pendingFeedback.get(chatId)?.length ?? 0) === 0)
+      ) {
+        this.activityMap.delete(chatId);
+      }
+    }
+
     return {
       evaluatedCount: results.length,
       results
