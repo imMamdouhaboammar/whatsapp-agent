@@ -554,6 +554,10 @@ export function createApiServer(deps: {
         return c.json({ error: 'Decoded image buffer is empty' }, 400);
       }
 
+      if (!Bun.which('cwebp')) {
+        return c.json({ error: 'cwebp utility is not installed on this server' }, 503);
+      }
+
       const tempId = crypto.randomUUID();
       const inPath = join(tmpdir(), `wa_sticker_in_${tempId}`);
       const outPath = join(tmpdir(), `wa_sticker_out_${tempId}.webp`);
@@ -565,19 +569,24 @@ export function createApiServer(deps: {
         let webpBuffer: Buffer | null = null;
 
         for (const q of qualities) {
-          const proc = Bun.spawn(['cwebp', '-q', String(q), '-resize', '512', '512', inPath, '-o', outPath], {
-            stdout: 'ignore',
-            stderr: 'ignore'
-          });
-          const exitCode = await proc.exited;
-          if (exitCode === 0) {
-            const file = Bun.file(outPath);
-            if (file.size > 0 && file.size <= 101888) {
-              webpBuffer = Buffer.from(await file.arrayBuffer());
-              break;
-            } else if (file.size > 101888 && q === qualities[qualities.length - 1]) {
-              webpBuffer = Buffer.from(await file.arrayBuffer());
+          try {
+            const proc = Bun.spawn(['cwebp', '-q', String(q), '-resize', '512', '512', inPath, '-o', outPath], {
+              stdout: 'ignore',
+              stderr: 'ignore'
+            });
+            const exitCode = await proc.exited;
+            if (exitCode === 0) {
+              const file = Bun.file(outPath);
+              if (file.size > 0 && file.size <= 101888) {
+                webpBuffer = Buffer.from(await file.arrayBuffer());
+                break;
+              } else if (file.size > 101888 && q === qualities[qualities.length - 1]) {
+                webpBuffer = Buffer.from(await file.arrayBuffer());
+              }
             }
+          } catch (spawnErr) {
+            console.warn('[StickerStudio] cwebp spawn failed:', spawnErr);
+            break;
           }
         }
 
