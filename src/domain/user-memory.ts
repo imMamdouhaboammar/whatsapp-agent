@@ -5,6 +5,8 @@
  * interception, preventing leak of passwords, OTPs, API keys, or financial data.
  */
 
+export { scrubCredentials } from "./learning-memory";
+
 import type { SqliteStore } from "./db";
 
 export interface ContactMemory {

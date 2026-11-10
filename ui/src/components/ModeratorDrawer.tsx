@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { BookOpenText, CalendarCheck, Check, CheckCircle2, ChevronLeft, Edit3, Lightbulb, Mic, Plus, SlidersHorizontal, Trash2, X, ShieldAlert } from 'lucide-react';
+import { BookOpenText, CalendarCheck, Check, CheckCircle2, ChevronLeft, Edit3, Lightbulb, Mic, Plus, SlidersHorizontal, Trash2, X, ShieldAlert, Zap } from 'lucide-react';
 import { Gemini, ModelIcon } from '@lobehub/icons';
 import { AgentAvatar } from '@lobehub/ui';
 import { Button } from '@astryxdesign/core/Button';
@@ -263,6 +263,14 @@ export function ModeratorDrawer({
           <section className="wa-agent-section wa-thought-section">
             <div className="wa-agent-section-heading"><h3><Lightbulb size={17} /> {tr('آخر قرار للمساعد', 'Latest AI decision')}</h3></div>
             <p dir="auto">{thought.reasoning}</p>
+            {thought.modelRouting && (
+              <div className="wa-thought-routing" style={{ fontSize: '11px', color: 'var(--wa-text-subtle, #5a7177)', marginTop: '4px', display: 'flex', gap: '4px', alignItems: 'center' }}>
+                <Zap size={12} />
+                <span>Jev:</span>
+                <b dir="ltr">{thought.modelRouting.tier} &rarr; {thought.modelRouting.selectedModel}</b>
+                <span>({Math.round(thought.modelRouting.confidence * 100)}%, {thought.modelRouting.routerLatencyMs}ms)</span>
+              </div>
+            )}
             <div className="wa-thought-footer">
               <span>{thought.intent}</span>
               <span>{tr('الثقة', 'Confidence')} <b dir="ltr">{confidenceLabel(thought.confidence)}</b></span>

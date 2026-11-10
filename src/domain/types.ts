@@ -60,6 +60,15 @@ export interface ChatSummary {
   avatarUrl?: string;
 }
 
+export interface ModelRoutingTrace {
+  selectedModel: string;
+  tier: 'trivial' | 'standard' | 'complex';
+  confidence: number;
+  routerLatencyMs: number;
+  reason: string;
+  bypassed?: boolean;
+}
+
 export interface AgentDecision {
   action: AutonomyAction;
   intent: string;
@@ -72,6 +81,7 @@ export interface AgentDecision {
   extractedFacts?: string[];
   extractedCommitments?: string[];
   contactStage?: ContactStage;
+  modelRouting?: ModelRoutingTrace;
 }
 
 export interface PolicyRule {
@@ -130,6 +140,7 @@ export interface AgentDraft {
   confidence: number;
   status: 'pending' | 'approved' | 'rejected' | 'sent';
   createdAt: number;
+  modelRouting?: ModelRoutingTrace;
 }
 
 export type ContactStage = 'lead' | 'qualified' | 'negotiation' | 'customer' | 'vip' | 'archived';

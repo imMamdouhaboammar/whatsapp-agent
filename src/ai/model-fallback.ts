@@ -7,9 +7,16 @@
  * or authorization failures (401, 403).
  */
 
+export const DEFAULT_GEMINI_FALLBACK_CHAIN: readonly string[] = [
+  'gemini-3.8-flash',
+  'gemini-3.1-pro',
+  'gemini-4-argon'
+];
+
 export interface FallbackOptions {
   onFallback?: (fromModel: string, toModel: string, error: unknown) => void;
   circuitBreakerThreshold?: number;
+  preferredModel?: string;
 }
 
 export interface FallbackResult<T> {
@@ -62,12 +69,25 @@ export function parseModelChain(primary: string, ...fallbacks: Array<string | st
   return [...new Set(all.map((m) => m.trim()).filter((m) => m.length > 0))];
 }
 
+/**
+ * Resolves a model fallback chain starting with the dynamically preferred model,
+ * followed by standard resilient Gemini models without duplicate entries.
+ */
+export function resolveModelChain(
+  preferredModel?: string,
+  ...fallbacks: Array<string | string[] | undefined>
+): string[] {
+  const primary = preferredModel?.trim() || DEFAULT_GEMINI_FALLBACK_CHAIN[0];
+  return parseModelChain(primary, ...fallbacks, [...DEFAULT_GEMINI_FALLBACK_CHAIN]);
+}
+
 export async function executeWithModelFallback<T>(
   models: string[],
   invoker: (model: string) => Promise<T>,
   options?: FallbackOptions
 ): Promise<FallbackResult<T>> {
-  const chain = [...new Set(models.map((m) => m.trim()).filter((m) => m.length > 0))];
+  const initial = options?.preferredModel ? [options.preferredModel, ...models] : models;
+  const chain = [...new Set(initial.map((m) => m.trim()).filter((m) => m.length > 0))];
 
   if (chain.length === 0) {
     throw new Error("Model fallback chain is empty.");

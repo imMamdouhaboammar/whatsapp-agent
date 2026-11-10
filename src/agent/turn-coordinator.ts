@@ -3,6 +3,7 @@ import type {ModeratorAgent} from '../ai/moderator-agent';
 import type {MemoryStore} from '../domain/memory-store';
 import type {AutonomousOperator} from './autonomous-operator';
 import type {InboundPlanner} from './inbound-planner';
+import type {JevRouteRequest, RoutingDecision} from '../ai/model-router';
 
 type DecisionResult=Awaited<ReturnType<ModeratorAgent['processInboundMessage']>>;
 type CoordinatorDependencies={
@@ -13,6 +14,7 @@ type CoordinatorDependencies={
   planner?:Pick<InboundPlanner,'process'>;
   brandId?:string;
   enabled:boolean;
+  router?:(input:JevRouteRequest)=>Promise<RoutingDecision>;
 };
 /** Opt-in verified-data lane; general conversation and sensitive decisions retain moderator policy. */
 export class AgentTurnCoordinator {

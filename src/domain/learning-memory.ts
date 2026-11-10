@@ -60,7 +60,7 @@ export function scrubCredentials(text: string): string {
   scrubbed = scrubbed.replace(/(?:Bearer\s+|token\s*[:=]\s*)[A-Za-z0-9_.-]{20,}/gi, '[REDACTED_CREDENTIAL]');
 
   // 3. Passwords / Secrets in key-value patterns (Latin & Arabic words for password/secret)
-  scrubbed = scrubbed.replace(/(?:password|secret|passwd|كلمة[\s_]*المر|رمز[\s_]*الس)(?:\s*[:=]\s*|\s+is\s+)(\S+)/gi, (match, val) => {
+  scrubbed = scrubbed.replace(/(?:password|secret|passwd|الباسورد|باسورد|كلمة[\s_]*المر(?:ور)?|رمز[\s_]*الس(?:ري?)?)(?:\s*[:=]\s*|\s+is\s+|\s+(?:الخاصة\s+بي\s+هي|هي|هو)\s+)(\S+)/gi, (match, val) => {
     return match.replace(val, '[REDACTED_CREDENTIAL]');
   });
 
