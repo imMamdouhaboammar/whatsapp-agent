@@ -35,3 +35,4 @@ This directory preserves battle-tested engineering lessons, root cause analyses,
 - [037-anti-slop-sre-remediation-and-concurrency-bounding.md](037-anti-slop-sre-remediation-and-concurrency-bounding.md) - Anti-slop SRE remediation, unbounded concurrency bounding, and error telemetry.
 - [038-ponytail-audit-remediation-and-lifecycle-integrity.md](038-ponytail-audit-remediation-and-lifecycle-integrity.md) - Ponytail forensic audit remediation, transport lifecycle & fail-closed guardrails.
 - [039-impeccable-ui-ux-design-quality-and-accessibility-remediation.md](039-impeccable-ui-ux-design-quality-and-accessibility-remediation.md) - Impeccable UI/UX quality remediation, anti-slop elimination & accessibility invariants.
+- [040-root-ai-slop-config-bloat-and-platform-sprawl.md](040-root-ai-slop-config-bloat-and-platform-sprawl.md) - Root AI slop, speculative config bloat & multi-platform scaffolding sprawl.
