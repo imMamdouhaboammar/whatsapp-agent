@@ -4,7 +4,7 @@ import type { MemoryStore } from '../domain/memory-store';
 import type { AgentDecision, AgentDraft, AutonomyAction, ChatMessage, ModeratorPersona, PolicyConfig } from '../domain/types';
 import type { GeminiClient } from './gemini-client';
 import { formatWhatsAppMessage } from '../domain/whatsapp-formatter';
-import { executeWithModelFallback, parseModelChain, resolveModelChain } from './model-fallback';
+import { executeWithModelFallback, resolveModelChain } from './model-fallback';
 import { formatMemoriesForPrompt } from '../domain/user-memory';
 import { detectConversationStyle, getStylePromptDirective, isExplicitStyleRequest, type ConversationStyle } from './adaptive-style';
 import type { DualMemoryManager } from '../domain/learning-memory';

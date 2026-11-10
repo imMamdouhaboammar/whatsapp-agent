@@ -3,7 +3,6 @@ import {
   routeTurnModel,
   JevModelRouter,
   DEFAULT_BYPASS_MODEL,
-  type JevRouteRequest,
   type RoutingDecision
 } from '../src/ai/model-router';
 import { executeWithModelFallback, resolveModelChain } from '../src/ai/model-fallback';
