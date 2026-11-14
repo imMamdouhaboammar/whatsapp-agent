@@ -149,9 +149,10 @@ export class WhatsAppSocketClient {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-          if (this.pairingCodeRequestedNumber && !this.sock?.authState?.creds?.registered) {
+          const socket = this.sock;
+          if (socket && this.pairingCodeRequestedNumber && !socket.authState?.creds?.registered) {
             try {
-              const code = await this.sock.requestPairingCode(this.pairingCodeRequestedNumber);
+              const code = await socket.requestPairingCode(this.pairingCodeRequestedNumber);
               this.setState({
                 state: 'pairing_code_ready',
                 pairingCode: code,

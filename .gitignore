@@ -10,6 +10,12 @@ dist/
 ui/dist/
 buck-out/
 .buckd/
+*.tsbuildinfo
+ui/*.tsbuildinfo
+*.orig
+*.rej
+.eslintcache
+.turbo/
 
 # Environment, Secrets & Credentials
 .env
