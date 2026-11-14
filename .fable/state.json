@@ -1,13 +1,13 @@
 {
   "schemaVersion": 3,
-  "stateRevision": 97,
+  "stateRevision": 103,
   "workspaceId": "e6e371de2623bf032ba0feec",
   "phase": "complete",
   "currentSkill": null,
   "failureStreak": 0,
   "substantial": true,
-  "mutationGeneration": 12,
-  "verifiedGeneration": 12,
+  "mutationGeneration": 14,
+  "verifiedGeneration": 14,
   "activeCard": null,
   "lastDecision": null,
   "evidence": [
@@ -430,7 +430,31 @@
       "generation": 12,
       "timestamp": "2026-11-10T08:36:31.984Z",
       "workspaceId": "e6e371de2623bf032ba0feec"
+    },
+    {
+      "kind": "test",
+      "source": "bun test",
+      "result": "pass",
+      "detail": "446 pass, 1 skip, 0 fail; final Jev contract tests 36 pass; no source changes since",
+      "repositoryRevision": "a9aa1819f0b027db443aa6ea42349c5e43d0a771",
+      "commandCategory": "test",
+      "scope": "workspace",
+      "generation": 13,
+      "timestamp": "2026-11-10T08:37:44.624Z",
+      "workspaceId": "e6e371de2623bf032ba0feec"
+    },
+    {
+      "kind": "test",
+      "source": "bun test",
+      "result": "pass",
+      "detail": "446 pass, 1 skip, 0 fail across 108 files; tsc --noEmit 0 errors",
+      "repositoryRevision": "b9851802f4bc3b6d4f4d9b8cfd4641b64f33df29",
+      "commandCategory": "test",
+      "scope": "fable-verify",
+      "generation": 14,
+      "timestamp": "2026-11-14T14:36:31.874Z",
+      "workspaceId": "e6e371de2623bf032ba0feec"
     }
   ],
-  "updatedAt": "2026-11-10T08:36:31.984Z"
+  "updatedAt": "2026-11-14T14:36:31.990Z"
 }
