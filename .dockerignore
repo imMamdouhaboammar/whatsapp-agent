@@ -10,7 +10,7 @@
 .agent-kernel
 failure-lessons
 BUCK
-*.lock
+*.lockb
 *.log
 data/
 data/*

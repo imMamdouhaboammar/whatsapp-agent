@@ -2,10 +2,21 @@ import type { ChatMessage, ChatSummary, ModeratorPersona, PolicyConfig, SystemSt
 
 const BASE_URL = '/api';
 
+/** WA-026: HTTP failures carry their status so callers can classify them (401 vs 503 vs offline). */
+export class ApiError extends Error {
+  readonly status?: number;
+
+  constructor(message: string, status?: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
 async function handleResponse<T>(res: Response, fallbackError: string): Promise<T> {
   if (!res.ok) {
     const errorBody = (await res.json().catch(() => null)) as { error?: string; message?: string } | null;
-    throw new Error(errorBody?.error || errorBody?.message || fallbackError);
+    throw new ApiError(errorBody?.error || errorBody?.message || fallbackError, res.status);
   }
   return res.json() as Promise<T>;
 }
@@ -117,13 +128,18 @@ export const api = {
     return handleResponse<{ status: string }>(res, 'Failed to disconnect WhatsApp');
   },
 
+  async getRuntimeCapabilities(): Promise<{ capabilities: Array<{ capability: string; enabled: boolean; reason: string }> }> {
+    const res = await fetch(`${BASE_URL}/runtime/capabilities`, { cache: 'no-store' });
+    return handleResponse<{ capabilities: Array<{ capability: string; enabled: boolean; reason: string }> }>(res, 'Failed to fetch runtime capabilities');
+  },
+
   async listChats(): Promise<{ chats: ChatSummary[] }> {
     const res = await fetch(`${BASE_URL}/chats`);
     return handleResponse<{ chats: ChatSummary[] }>(res, 'Failed to list chats');
   },
 
-  async getMessages(chatId: string): Promise<{ messages: ChatMessage[] }> {
-    const res = await fetch(`${BASE_URL}/chats/${encodeURIComponent(chatId)}/messages`);
+  async getMessages(chatId: string, options?: { signal?: AbortSignal }): Promise<{ messages: ChatMessage[] }> {
+    const res = await fetch(`${BASE_URL}/chats/${encodeURIComponent(chatId)}/messages`, { signal: options?.signal });
     return handleResponse<{ messages: ChatMessage[] }>(res, 'Failed to fetch messages');
   },
 

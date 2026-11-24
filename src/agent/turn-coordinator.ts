@@ -1,3 +1,4 @@
+import { describeError } from '../observability/safe-log';
 import type {ChatMessage} from '../domain/types';
 import type {ModeratorAgent} from '../ai/moderator-agent';
 import type {MemoryStore} from '../domain/memory-store';
@@ -74,7 +75,7 @@ export class AgentTurnCoordinator {
         decision: {
           action: 'ignore',
           intent: 'processing_timeout',
-          reasoning: `Turn processing error or timeout: ${err?.message || 'unknown'}`,
+          reasoning: `Turn processing error or timeout (${describeError(err)})`,
           confidence: 0,
           simulatedDelayMs: 0
         },

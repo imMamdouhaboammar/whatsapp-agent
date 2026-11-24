@@ -285,7 +285,7 @@ ${notebookPrompt}
             }
           );
         },
-        { preferredModel }
+        { preferredModel, provider: 'gemini', lane: 'interactive' }
       );
 
       const response = fallbackRes.result;

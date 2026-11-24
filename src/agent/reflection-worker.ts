@@ -33,6 +33,8 @@ export class ReflectionWorker {
   private activityMap = new Map<string, ThreadActivityRecord>();
   private pendingFeedback = new Map<string, ModerationFeedbackEvent[]>();
   private sweepTimer?: ReturnType<typeof setInterval>;
+  private inFlightSweep?: Promise<{ evaluatedCount: number; results: ReflectionResult[] }>;
+  private static readonly MAX_PENDING_FEEDBACK_PER_CHAT = 50;
 
   constructor(options: ReflectionWorkerOptions) {
     this.memoryStore = options.memoryStore;
@@ -67,12 +69,23 @@ export class ReflectionWorker {
     }
   }
 
+  /** WA-018: read-only snapshot of a thread's activity record (watermark introspection). */
+  getThreadActivity(chatId: string): ThreadActivityRecord | undefined {
+    const record = this.activityMap.get(chatId);
+    return record ? { ...record } : undefined;
+  }
+
   /**
    * Enqueues explicit human moderation feedback for the next reflection cycle.
    */
   recordModerationFeedback(feedback: ModerationFeedbackEvent): void {
     const list = this.pendingFeedback.get(feedback.chatId) || [];
     list.push(feedback);
+    // WA-018: bound the durable backlog; the oldest entry is dropped loudly, never silently.
+    if (list.length > ReflectionWorker.MAX_PENDING_FEEDBACK_PER_CHAT) {
+      console.warn('⚠️ [ReflectionWorker] Feedback backlog full for a chat; dropping oldest entry');
+      list.splice(0, list.length - ReflectionWorker.MAX_PENDING_FEEDBACK_PER_CHAT);
+    }
     this.pendingFeedback.set(feedback.chatId, list);
     this.recordActivity(feedback.chatId, Date.now());
 
@@ -89,6 +102,21 @@ export class ReflectionWorker {
    * Sweeps threads that have exceeded the idle threshold (cold threads) or have explicit feedback.
    */
   async sweepColdThreads(): Promise<{ evaluatedCount: number; results: ReflectionResult[] }> {
+    // WA-018: single-flight. A tick that arrives while a sweep is still running skips
+    // instead of stacking overlapping evaluations and contending for the model.
+    if (this.inFlightSweep) {
+      console.warn('⚠️ [ReflectionWorker] Sweep skipped: previous sweep still in flight');
+      return { evaluatedCount: 0, results: [] };
+    }
+    this.inFlightSweep = this.sweepColdThreadsInner();
+    try {
+      return await this.inFlightSweep;
+    } finally {
+      this.inFlightSweep = undefined;
+    }
+  }
+
+  private async sweepColdThreadsInner(): Promise<{ evaluatedCount: number; results: ReflectionResult[] }> {
     const now = Date.now();
     const candidates: string[] = [];
 
@@ -173,9 +201,11 @@ export class ReflectionWorker {
         return null;
       }
 
-      // 2. Fetch pending moderation feedback
-      let feedback = this.pendingFeedback.get(chatId) || [];
-      this.pendingFeedback.delete(chatId);
+      // 2. Snapshot pending moderation feedback WITHOUT consuming it. The snapshot is only
+      // acknowledged after a successful evaluation, so a failure keeps it for the retry and
+      // feedback arriving during the evaluation is never accidentally acknowledged.
+      const localSnapshot = [...(this.pendingFeedback.get(chatId) || [])];
+      let feedback = [...localSnapshot];
 
       const pg = this.persistenceStore as PostgresLearningStore | undefined;
       if (pg && typeof pg.getUnreflectedFeedback === 'function') {
@@ -196,7 +226,21 @@ export class ReflectionWorker {
         moderationFeedback: feedback
       });
 
-      record.lastReflectedAt = Date.now();
+      // WA-018: acknowledge exactly what was evaluated. Wall-clock completion would ack
+      // messages that arrived during the evaluation without ever being reflected on.
+      const evaluatedUpTo = messages.reduce((max, m) => Math.max(max, m.timestamp), 0);
+      record.lastReflectedAt = evaluatedUpTo;
+
+      // The evaluation committed: acknowledge only the snapshotted local feedback.
+      if (localSnapshot.length > 0) {
+        const current = this.pendingFeedback.get(chatId) || [];
+        const remaining = current.slice(localSnapshot.length);
+        if (remaining.length > 0) {
+          this.pendingFeedback.set(chatId, remaining);
+        } else {
+          this.pendingFeedback.delete(chatId);
+        }
+      }
 
       // 4. Record reflection in Postgres/Supabase store if available
       if (pg && typeof pg.saveReflectionRun === 'function') {
@@ -248,12 +292,17 @@ export class ReflectionWorker {
   }
 
   /**
-   * Stops periodic timer.
+   * Stops periodic timer and drains any in-flight sweep before returning.
    */
-  stopPeriodicSweep(): void {
+  async stopPeriodicSweep(): Promise<void> {
     if (this.sweepTimer) {
       clearInterval(this.sweepTimer);
       this.sweepTimer = undefined;
+    }
+    if (this.inFlightSweep) {
+      await this.inFlightSweep.catch((err) => {
+        console.warn('⚠️ [ReflectionWorker] In-flight sweep failed during shutdown:', describeError(err));
+      });
     }
   }
 }

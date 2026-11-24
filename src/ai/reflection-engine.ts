@@ -150,7 +150,8 @@ Analyze this data and return your evaluation strictly in the following JSON stru
           responseMimeType: 'application/json'
         }
       );
-    });
+    
+    }, { provider: 'gemini', lane: 'background' });
 
     let parsed: any;
     try {

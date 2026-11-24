@@ -875,6 +875,22 @@ export class SqliteStore {
   /**
    * Flushes WAL journals to disk, truncates them, and reclaims fragmented SQLite pages
    */
+  /**
+   * WA-011: prove the store can actually commit a write, not merely open.
+   * Uses a temp table so no application data is touched.
+   */
+  verifyWriteCommit(): boolean {
+    this.db.run('CREATE TEMP TABLE IF NOT EXISTS doctor_write_probe (id INTEGER PRIMARY KEY, probe TEXT);');
+    try {
+      this.db.run('DELETE FROM doctor_write_probe;');
+      this.db.run('INSERT INTO doctor_write_probe (probe) VALUES (?);', [String(Date.now())]);
+      const row = this.db.query('SELECT COUNT(*) AS n FROM doctor_write_probe;').get() as { n: number } | null;
+      return row?.n === 1;
+    } finally {
+      this.db.run('DROP TABLE IF EXISTS doctor_write_probe;');
+    }
+  }
+
   checkpointAndVacuum(): void {
     if (this.dbPath === ':memory:') return;
     try {

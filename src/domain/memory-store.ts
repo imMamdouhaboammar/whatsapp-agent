@@ -255,6 +255,11 @@ export class MemoryStore {
     return this.sqlite.getStorageStats();
   }
 
+  /** WA-011: real write-commit probe for doctor diagnostics. */
+  verifyWriteCommit(): boolean {
+    return this.sqlite.verifyWriteCommit();
+  }
+
   checkpointAndVacuum() {
     this.sqlite.checkpointAndVacuum();
   }

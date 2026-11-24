@@ -13,6 +13,8 @@ interface ChatThreadProps {
   onSendMessage: (text: string, replyToMessageId?: string, clientMutationId?: string) => Promise<void>;
   onRetrySendIntent: (intentId: string, clientMutationId: string) => Promise<void>;
   onSendReaction: (messageId: string, emoji: string) => Promise<void>;
+  /** WA-024: false when the active transport cannot send reactions. */
+  reactionsEnabled?: boolean;
   onChangeMode: (mode: AgentMode) => Promise<void>;
   onBack: () => void;
   onOpenInspector: () => void;
@@ -30,7 +32,7 @@ function messageTime(timestamp: number, language: Language): string {
   return new Date(timestamp).toLocaleTimeString(language === 'ar' ? 'ar-EG' : 'en-US', { hour: 'numeric', minute: '2-digit' });
 }
 
-export function ChatThread({ chat, messages, onSendMessage, onRetrySendIntent, onSendReaction, onChangeMode, onBack, onOpenInspector, onDeleteChat, onClearMessages }: ChatThreadProps) {
+export function ChatThread({ chat, messages, onSendMessage, onRetrySendIntent, onSendReaction, onChangeMode, onBack, onOpenInspector, onDeleteChat, onClearMessages, reactionsEnabled = true }: ChatThreadProps) {
   const { language, tr } = useLocale();
   const [inputText, setInputText] = useState('');
   const [sending, setSending] = useState(false);
@@ -231,7 +233,7 @@ export function ChatThread({ chat, messages, onSendMessage, onRetrySendIntent, o
                   )}
                 </div>
                 <div className="wa-message-actions" aria-label={tr('إجراءات الرسالة', 'Message actions')}>
-                  {['👍', '❤️', '🙏'].map((emoji) => (
+                  {reactionsEnabled && ['👍', '❤️', '🙏'].map((emoji) => (
                     <button key={emoji} type="button" onClick={() => void onSendReaction(message.id, emoji).catch(() => setError(tr('تعذّر إرسال التفاعل', 'Could not send reaction')))} aria-label={tr('التفاعل ', 'React ') + emoji}>{emoji}</button>
                   ))}
                   <button type="button" onClick={() => setReplyingTo(message)} aria-label={tr('الرد على الرسالة', 'Reply to message')} title={tr('الرد', 'Reply')}><Reply size={15} /></button>

@@ -5,6 +5,9 @@ import { WhatsApp } from '@lobehub/ui/icons';
 import { Badge as AstryxBadge } from '@astryxdesign/core/Badge';
 import { StatusDot } from '@astryxdesign/core/StatusDot';
 import { api } from './api/client';
+import { ChatRequestCoordinator } from './lib/chat-request-coordinator';
+import { DashboardSync, type SyncHealth } from './lib/dashboard-sync';
+import { featureEnabled, type CapabilityRow } from './lib/capabilities';
 import type { AgentDecision, AgentDraft, AgentMode, ChatMessage, ChatSummary, ModeratorPersona, PolicyConfig, SystemStatus } from './api/types';
 import { ChatList } from './components/ChatList';
 import { BrandBrainPage } from './components/BrandBrainPage';
@@ -39,10 +42,20 @@ export function App() {
   const [persona, setPersona] = useState<ModeratorPersona | undefined>();
   const policyRef = useRef<PolicyConfig | undefined>(undefined);
   const [personaLoadFailed, setPersonaLoadFailed] = useState(false);
+  // WA-026: explicit freshness model; a failed refresh keeps the last known
+  // good snapshot and surfaces stale/error instead of an empty success.
+  const syncRef = useRef(new DashboardSync());
+  const [syncHealth, setSyncHealth] = useState<SyncHealth>('loading');
+  const retryTimerRef = useRef<number | undefined>(undefined);
+  const streamDroppedRef = useRef(false);
   const [latestThought, setLatestThought] = useState<{ chatId: string; messageId: string; decision: AgentDecision } | undefined>();
 
   // Ref to always have the latest selectedChatId in SSE and polling callbacks
   const selectedChatIdRef = useRef<string | undefined>(selectedChatId);
+  // WA-020: generation-gated request cycles; stale responses never apply.
+  const messageSyncRef = useRef(new ChatRequestCoordinator());
+  // WA-024: transport feature capabilities; unsupported actions are hidden.
+  const [capabilityRows, setCapabilityRows] = useState<CapabilityRow[]>([]);
   useEffect(() => {
     selectedChatIdRef.current = selectedChatId;
   }, [selectedChatId]);
@@ -83,50 +96,94 @@ export function App() {
   }, []);
   const [mobileView, setMobileView] = useState<'list' | 'chat'>('list');
 
-  // Load initial data
+  // Load initial data. WA-026: failures keep the last known good snapshot and
+  // flip the dashboard to stale/error; they are never converted to empty lists.
   const loadInitialData = useCallback(async () => {
-    try {
-      const [statusRes, chatsRes, draftsRes, personaRes] = await Promise.all([
-        api.getStatus().catch(() => null),
-        api.listChats().catch(() => ({ chats: [] })),
-        api.listDrafts().catch(() => ({ drafts: [] })),
-        api.getPersona().catch(() => null)
-      ]);
+    const sync = syncRef.current;
+    const [statusRes, chatsRes, draftsRes, personaRes, capsRes] = await Promise.all([
+      api.getStatus().catch((err: unknown) => err as Error),
+      api.listChats().catch((err: unknown) => err as Error),
+      api.listDrafts().catch((err: unknown) => err as Error),
+      api.getPersona().catch(() => null),
+      api.getRuntimeCapabilities().catch(() => null)
+    ]);
 
-      if (statusRes) setStatus(statusRes);
-      if (chatsRes.chats && Array.isArray(chatsRes.chats)) {
-        setChats(chatsRes.chats);
-        setSelectedChatId((prev) => {
-          const exists = chatsRes.chats.some((c: any) => c.id === prev);
-          return (!prev || !exists) && chatsRes.chats.length > 0 ? chatsRes.chats[0].id : prev;
-        });
-      }
-      if (draftsRes.drafts) setDrafts(draftsRes.drafts);
-      if (personaRes) {
-        setPersona(personaRes.persona);
-        policyRef.current = personaRes.policy;
-        setPersonaLoadFailed(false);
-      } else {
-        setPersonaLoadFailed(true);
-      }
-    } catch (err) {
-      console.error('Error loading data:', err);
+    let coreFailure: unknown = null;
+    if (statusRes instanceof Error) coreFailure = statusRes;
+    else setStatus(statusRes);
+    if (capsRes?.capabilities) setCapabilityRows(capsRes.capabilities);
+    if (chatsRes instanceof Error) {
+      coreFailure = coreFailure ?? chatsRes;
+    } else if (Array.isArray(chatsRes.chats)) {
+      sync.noteSnapshot();
+      setChats(chatsRes.chats);
+      setSelectedChatId((prev) => {
+        const exists = chatsRes.chats.some((c: { id: string }) => c.id === prev);
+        return (!prev || !exists) && chatsRes.chats.length > 0 ? chatsRes.chats[0].id : prev;
+      });
+    }
+    if (draftsRes instanceof Error) {
+      coreFailure = coreFailure ?? draftsRes;
+    } else if (draftsRes.drafts) {
+      setDrafts(draftsRes.drafts);
+    }
+    if (personaRes) {
+      setPersona(personaRes.persona);
+      policyRef.current = personaRes.policy;
+      setPersonaLoadFailed(false);
+    } else {
       setPersonaLoadFailed(true);
     }
+    setSyncHealth(coreFailure ? sync.noteLoadFailure(coreFailure) : sync.noteLoadSuccess());
   }, []);
+
+  // WA-026: bounded automatic resync while the live stream is down. The budget
+  // is finite; a manual retry or a stream reconnect re-arms it.
+  const scheduleResync = useCallback(() => {
+    if (retryTimerRef.current !== undefined) return;
+    const attempt = () => {
+      const delay = syncRef.current.nextRetryDelayMs();
+      if (delay === null) return;
+      retryTimerRef.current = window.setTimeout(() => {
+        retryTimerRef.current = undefined;
+        void loadInitialData().finally(() => {
+          if (streamDroppedRef.current) attempt();
+        });
+      }, delay);
+    };
+    attempt();
+  }, [loadInitialData]);
+
+  const handleSyncRetry = useCallback(() => {
+    syncRef.current.resetRetries();
+    setSyncHealth('loading');
+    void loadInitialData().finally(() => {
+      if (streamDroppedRef.current) scheduleResync();
+    });
+  }, [loadInitialData, scheduleResync]);
 
   // Continuous Harvest Sync: Poll active chat messages every 2.5s for seamless resilience
   useEffect(() => {
     if (!selectedChatId) return;
 
+    // WA-020: begin a new request cycle; the previous chat's outstanding
+    // fetches are aborted and their late responses are ignored.
+    const sync = messageSyncRef.current;
+    const token = sync.begin(selectedChatId);
+
     // Immediately fetch messages when chat is selected
-    api.getMessages(selectedChatId).then((res) => {
+    api.getMessages(selectedChatId, { signal: token.signal }).then((res) => {
+      if (!sync.isCurrent(token)) return;
       setMessages(res.messages || []);
-    }).catch(console.error);
+    }).catch((err) => {
+      if (!token.signal.aborted) console.error(err);
+    });
 
     const harvestTimer = setInterval(async () => {
+      if (!sync.isCurrent(token)) return;
       try {
-        const res = await api.getMessages(selectedChatId);
+        const res = await api.getMessages(selectedChatId, { signal: token.signal });
+        if (!sync.isCurrent(token)) return;
         if (res.messages && Array.isArray(res.messages)) {
           setMessages((prev) => {
             if (prev.length !== res.messages.length) return res.messages;
@@ -146,11 +203,14 @@ export function App() {
           });
         }
       } catch (err) {
-        console.debug('[App] Background message sync:', err);
+        if (!token.signal.aborted) console.debug('[App] Background message sync:', err);
       }
     }, 15000);
 
-    return () => clearInterval(harvestTimer);
+    return () => {
+      clearInterval(harvestTimer);
+      sync.cancelAll();
+    };
   }, [selectedChatId]);
 
   // Periodic Chat List Drift-Sync: Low-frequency background sync (15s)
@@ -165,8 +225,10 @@ export function App() {
             return (!prev || !exists) && res.chats.length > 0 ? res.chats[0].id : prev;
           });
         }
+        setSyncHealth(syncRef.current.noteLoadSuccess());
       } catch (err) {
         console.debug('[App] Background chat list sync:', err);
+        setSyncHealth(syncRef.current.noteLoadFailure(err));
       }
     }, 15000);
 
@@ -197,24 +259,41 @@ export function App() {
       }
     });
 
+    eventSource.onopen = () => {
+      syncRef.current.noteStreamOpen();
+      if (streamDroppedRef.current) {
+        streamDroppedRef.current = false;
+        // Reconnected: reconcile anything missed while the stream was down.
+        void loadInitialData();
+      }
+    };
+
     eventSource.onerror = () => {
-      // Resynchronize on connection drop or reconnect
-      void loadInitialData();
+      // Mark retained data stale and resync with a bounded retry budget instead
+      // of firing a full reload on every error event.
+      streamDroppedRef.current = true;
+      setSyncHealth(syncRef.current.noteStreamDrop());
+      scheduleResync();
     };
 
     eventSource.addEventListener('new_message', (e: MessageEvent) => {
-      const newMsg: ChatMessage = JSON.parse(e.data);
-      const activeId = selectedChatIdRef.current;
-      if (activeId === newMsg.chatId) {
-        setMessages((prev) => {
-          if (prev.some((m) => m.id === newMsg.id)) return prev;
-          return [...prev, newMsg];
-        });
-      }
+      try {
+        const newMsg = JSON.parse(e.data) as ChatMessage;
+        if (!newMsg || typeof newMsg !== 'object' || typeof newMsg.id !== 'string' || typeof newMsg.chatId !== 'string') return;
+        const activeId = selectedChatIdRef.current;
+        if (activeId === newMsg.chatId) {
+          setMessages((prev) => {
+            if (prev.some((m) => m.id === newMsg.id)) return prev;
+            return [...prev, newMsg];
+          });
+        }
 
-      api.listChats().then((res) => {
-        if (res.chats) setChats(res.chats);
-      }).catch((err) => console.warn('Failed to refresh chats after new message:', err));
+        api.listChats().then((res) => {
+          if (res.chats) setChats(res.chats);
+        }).catch((err) => console.warn('Failed to refresh chats after new message:', err));
+      } catch {
+        // Ignore malformed SSE message
+      }
     });
 
     eventSource.addEventListener('message_status', (e: MessageEvent) => {
@@ -239,7 +318,11 @@ export function App() {
       try {
         const data = JSON.parse(e.data) as { chatId: string };
         if (data.chatId !== selectedChatIdRef.current) return;
-        void api.getMessages(data.chatId).then((response) => setMessages(response.messages)).catch((error) => {
+        void api.getMessages(data.chatId).then((response) => {
+          // The selection may have changed while the fetch was in flight.
+          if (selectedChatIdRef.current !== data.chatId) return;
+          setMessages(response.messages);
+        }).catch((error) => {
           console.warn('[Delivery] Could not refresh message states:', error);
         });
       } catch {
@@ -340,23 +423,30 @@ export function App() {
 
     return () => {
       window.clearTimeout(bootstrapTimer);
+      window.clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = undefined;
       eventSource.close();
     };
-  }, [loadInitialData]);
+  }, [loadInitialData, scheduleResync]);
 
   // Handlers
   const handleSendMessage = async (text: string, replyToMessageId?: string, clientMutationId?: string) => {
     if (!selectedChatId) return;
-    const res = await api.sendMessage(selectedChatId, text, replyToMessageId, clientMutationId);
-    const latest = await api.getMessages(selectedChatId);
+    const chatId = selectedChatId;
+    const res = await api.sendMessage(chatId, text, replyToMessageId, clientMutationId);
+    const latest = await api.getMessages(chatId);
+    // Ignore the refresh if the user switched chats while the send was in flight.
+    if (selectedChatIdRef.current !== chatId) return;
     setMessages(latest.messages);
     if (res.state === 'failed') throw new Error('Send failed before reaching WhatsApp');
   };
 
   const handleRetrySendIntent = async (intentId: string, clientMutationId: string) => {
     if (!selectedChatId) return;
+    const chatId = selectedChatId;
     await api.retrySendIntent(intentId, clientMutationId);
-    const latest = await api.getMessages(selectedChatId);
+    const latest = await api.getMessages(chatId);
+    if (selectedChatIdRef.current !== chatId) return;
     setMessages(latest.messages);
   };
 
@@ -516,6 +606,20 @@ export function App() {
         <FunnelPage onClose={closeFunnel} />
       ) : (
       <div className={'wa-workspace ' + (mobileView === 'list' ? 'is-list-view' : 'is-chat-view') + (!inspectorExpanded ? ' is-inspector-collapsed' : '')}>
+        {syncHealth !== 'live' && syncHealth !== 'loading' && (
+          <div className={'wa-sync-banner is-' + syncHealth} role="status">
+            <span>
+                {syncHealth === 'unauthenticated'
+                ? tr('انتهت جلسة الوصول. سجّل الدخول مجددًا لتحديث البيانات.', 'Owner session expired. Sign in again to refresh data.')
+                : syncHealth === 'error'
+                  ? tr('تعذّر تحميل البيانات من الخادم.', 'Could not load data from the server.')
+                  : tr('تظهر آخر بيانات معروفة؛ التحديث المباشر متعذّر حاليًا.', 'Showing last known data; live updates are unavailable.')}
+            </span>
+              {syncHealth !== 'unauthenticated' && (
+              <button type="button" className="wa-sync-retry" onClick={handleSyncRetry}>{tr('إعادة المحاولة', 'Retry')}</button>
+              )}
+          </div>
+          )}
         <nav className="wa-nav" aria-label={tr('القائمة الرئيسية', 'Main navigation')}>
           <div className="wa-nav-main">
             <button type="button" className={'wa-nav-button ' + (inspectorView === 'assistant' ? 'is-active' : '')} aria-label={tr('الدردشات', 'Chats')} title={tr('الدردشات', 'Chats')} onClick={() => { setInspectorView('assistant'); setInspectorOpen(false); setMobileView('list'); }}>
@@ -548,7 +652,7 @@ export function App() {
           </button>
         </nav>
         <ChatList chats={chats} selectedChatId={selectedChatId} pendingDraftChatIds={pendingDraftChatIds} onSelectChat={selectChat} />
-        <ChatThread key={selectedChatId || 'empty'} chat={selectedChat} messages={messages} onSendMessage={handleSendMessage} onRetrySendIntent={handleRetrySendIntent} onSendReaction={handleSendReaction} onChangeMode={handleChangeMode} onBack={() => setMobileView('list')} onOpenInspector={() => openInspector('assistant')} onDeleteChat={handleDeleteChat} onClearMessages={handleClearChatMessages} />
+        <ChatThread key={selectedChatId || 'empty'} chat={selectedChat} messages={messages} reactionsEnabled={featureEnabled(capabilityRows, 'feature:reactions', true)} onSendMessage={handleSendMessage} onRetrySendIntent={handleRetrySendIntent} onSendReaction={handleSendReaction} onChangeMode={handleChangeMode} onBack={() => setMobileView('list')} onOpenInspector={() => openInspector('assistant')} onDeleteChat={handleDeleteChat} onClearMessages={handleClearChatMessages} />
         <aside id="wa-agent-panel" className={'wa-agent-shell ' + (inspectorOpen ? 'is-open' : '')} aria-label={tr('لوحة المساعد الذكي', 'AI assistant panel')} aria-hidden={!inspectorVisible} inert={!inspectorVisible}>
           <button type="button" className="wa-inspector-close wa-icon-button" onClick={closeInspector} aria-label={tr('إغلاق لوحة المساعد', 'Close assistant panel')}><X size={20} /></button>
           <ModeratorDrawer key={(selectedChatId || 'none') + inspectorView} view={inspectorView} drafts={drafts} latestThought={latestThought} persona={persona} selectedChatId={selectedChatId} selectedChatMode={selectedChat?.agentMode} onSelectChat={selectChat} onApproveDraft={handleApproveDraft} onRejectDraft={handleRejectDraft} />

@@ -7,6 +7,10 @@ export interface GeminiGenerateOptions {
   maxOutputTokens?: number;
   responseMimeType?: string;
   responseSchema?: any;
+  /** WA-012: end-to-end deadline (ms) shared with the provider resilience layer and
+   * caller cancellation. Per-request timeout is min(60s, remaining deadline). */
+  deadlineMs?: number;
+  signal?: AbortSignal;
   thinkingConfig?: {
     thinkingLevel?: 'HIGH' | 'LOW' | 'MEDIUM';
     thinkingBudget?: number;
@@ -154,11 +158,14 @@ export class GeminiClient {
         url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${auth.tokenOrKey}`;
       }
 
+      const timeoutMs = Math.max(1, Math.min(60_000, options.deadlineMs ?? 60_000));
       return fetch(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(60_000)
+        signal: options.signal
+          ? AbortSignal.any([options.signal, AbortSignal.timeout(timeoutMs)])
+          : AbortSignal.timeout(timeoutMs)
       });
     };
 

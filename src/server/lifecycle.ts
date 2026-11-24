@@ -20,6 +20,9 @@ export class ProcessLifecycleCoordinator {
   private isShuttingDown = false;
   private signalAttached = false;
   private timeoutMs: number;
+  // WA-006: concurrent shutdown calls share one in-flight run instead of
+  // returning a premature success while resources are still open.
+  private shutdownPromise: Promise<number> | null = null;
 
   constructor(options: { timeoutMs?: number } = {}) {
     this.timeoutMs = options.timeoutMs ?? 10_000;
@@ -50,9 +53,13 @@ export class ProcessLifecycleCoordinator {
   }
 
   async shutdown(signal = 'MANUAL'): Promise<number> {
-    if (this.isShuttingDown) return 0;
+    if (this.shutdownPromise) return this.shutdownPromise;
     this.isShuttingDown = true;
+    this.shutdownPromise = this.executeShutdown(signal);
+    return this.shutdownPromise;
+  }
 
+  private async executeShutdown(signal: string): Promise<number> {
     logEvent('info', 'process_shutdown_started', { signal });
 
     // Hard emergency exit timeout in case an uncooperative connection hangs
@@ -64,6 +71,7 @@ export class ProcessLifecycleCoordinator {
       forceExitTimer.unref();
     }
 
+    let failedTasks = 0;
     try {
       for (const phase of PHASE_ORDER) {
         const phaseTasks = this.tasks.filter((t) => t.phase === phase);
@@ -75,12 +83,19 @@ export class ProcessLifecycleCoordinator {
             try {
               await task.action();
             } catch (err) {
+              // WA-006: a failed teardown task must fail the exit code; the
+              // remaining phases still run so other resources close.
+              failedTasks += 1;
               console.warn(`⚠️ [Lifecycle] Task "${task.name}" failed during ${phase}:`, describeError(err));
             }
           })
         );
       }
       clearTimeout(forceExitTimer);
+      if (failedTasks > 0) {
+        console.error(`❌ [Lifecycle] Graceful shutdown completed with ${failedTasks} failed task(s).`);
+        return 1;
+      }
       console.log('✅ [Lifecycle] Graceful shutdown completed cleanly.');
       return 0;
     } catch (err) {

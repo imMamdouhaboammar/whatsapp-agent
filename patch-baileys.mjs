@@ -9,7 +9,31 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const baileys = join(__dirname, 'node_modules', '@whiskeysockets', 'baileys', 'lib');
+// WA-013/WA-014: BAILEYS_ROOT lets tests point the patcher at an isolated fixture tree;
+// production postinstall behavior (repo-local node_modules) is unchanged.
+const installRoot = process.env.BAILEYS_ROOT || __dirname;
+const baileysPkgDir = join(installRoot, 'node_modules', '@whiskeysockets', 'baileys');
+const baileys = join(baileysPkgDir, 'lib');
+
+// The patch payload targets a specific Baileys protocol surface (package.json pins
+// ^7.0.0-rc14). A silent patch against a different major version can produce a
+// half-patched client, so fail loudly and force a deliberate re-pin instead.
+const PINNED_FAMILY = /^7\./;
+let baileysVersion = null;
+try {
+  baileysVersion = JSON.parse(readFileSync(join(baileysPkgDir, 'package.json'), 'utf8')).version;
+} catch {
+  // Synthetic fixtures may omit package.json; production installs always have it.
+  console.warn('[Fable Agent] Baileys package.json not found; skipping version family check.');
+}
+if (baileysVersion && !PINNED_FAMILY.test(baileysVersion)) {
+  console.error(
+    `[Fable Agent] Unsupported @whiskeysockets/baileys version ${baileysVersion}: ` +
+    'this patch is pinned to the 7.x family (see package.json). Review the protocol ' +
+    'changes and re-pin before upgrading.'
+  );
+  process.exit(1);
+}
 
 function patch(src, find, replace, applied, label) {
   const matches = [...src.matchAll(find)];

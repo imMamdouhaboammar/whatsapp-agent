@@ -182,3 +182,36 @@
     border-right-color: var(--border);
   }
 }
+
+/* WA-026: stale/error sync banner */
+.wa-sync-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 8px 16px;
+  font-size: 13px;
+  color: var(--text, inherit);
+  background: color-mix(in srgb, #b45309 14%, transparent);
+  border-bottom: 1px solid var(--border);
+}
+
+.wa-sync-banner.is-error,
+.wa-sync-banner.is-unauthenticated {
+  background: color-mix(in srgb, #b91c1c 14%, transparent);
+}
+
+.wa-sync-retry {
+  font: inherit;
+  padding: 3px 12px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.wa-sync-retry:hover {
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}

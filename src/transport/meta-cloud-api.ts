@@ -30,7 +30,10 @@ export interface MetaCloudTextRequest {
 export type MetaCloudWebhookEvent =
   | { kind: 'receipt'; chatId: string; nativeMessageId: string; status: 'sent' | 'delivered' | 'read' }
   | { kind: 'delivery_failed'; chatId: string; nativeMessageId: string }
-  | { kind: 'inbound_text'; chatId: string; nativeMessageId: string; text: string; timestampMs: number };
+  | { kind: 'inbound_text'; chatId: string; nativeMessageId: string; text: string; timestampMs: number }
+  // WA-024: structurally valid content the transport does not support is surfaced
+  // explicitly instead of being silently dropped.
+  | { kind: 'unsupported_content'; chatId: string; nativeMessageId: string; messageType: string };
 
 export class MetaCloudTransportError extends Error {
   readonly code = 'WHATSAPP_ACCEPTANCE_AMBIGUOUS';
@@ -286,17 +289,29 @@ export class MetaCloudApi {
         for (const rawMessage of safeArray(value?.messages)) {
           const message = record(rawMessage);
           const text = record(message?.text);
+          const messageId = message?.id;
+          const messageFrom = message?.from;
+          const messageType = message?.type;
           const timestamp = message?.timestamp;
           const timestampMs = Number(timestamp) * 1000;
-          if (message?.type !== 'text' || typeof message?.id !== 'string' ||
-              !META_MESSAGE_ID.test(message.id) || typeof message.from !== 'string' ||
-              !PHONE_NUMBER.test(message.from) || typeof text?.body !== 'string' ||
-              !text.body || typeof timestamp !== 'string' || !/^\d{1,12}$/.test(timestamp) ||
-              !Number.isSafeInteger(timestampMs) || timestampMs <= 0) continue;
-          events.push({
-            kind: 'inbound_text', chatId: `${message.from}@s.whatsapp.net`,
-            nativeMessageId: message.id, text: text.body, timestampMs
-          });
+          // Structurally invalid envelopes are dropped quietly; a valid envelope
+          // with an unsupported content type is surfaced, never faked as text.
+          const validEnvelope = typeof messageId === 'string' &&
+              META_MESSAGE_ID.test(messageId) && typeof messageFrom === 'string' &&
+              PHONE_NUMBER.test(messageFrom) && typeof timestamp === 'string' &&
+              /^\d{1,12}$/.test(timestamp) && Number.isSafeInteger(timestampMs) && timestampMs > 0;
+          if (!validEnvelope || typeof messageType !== 'string') continue;
+          if (messageType === 'text' && typeof text?.body === 'string' && text.body) {
+            events.push({
+              kind: 'inbound_text', chatId: `${messageFrom}@s.whatsapp.net`,
+              nativeMessageId: messageId, text: text.body, timestampMs
+            });
+          } else {
+            events.push({
+              kind: 'unsupported_content', chatId: `${messageFrom}@s.whatsapp.net`,
+              nativeMessageId: messageId, messageType
+            });
+          }
         }
 
         for (const rawStatus of safeArray(value?.statuses)) {

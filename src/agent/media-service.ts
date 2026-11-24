@@ -1,4 +1,5 @@
 import {spawn} from 'node:child_process';
+import {sharedMediaLimiter} from './media-bounds';
 import {fileURLToPath} from 'node:url';
 import {existsSync} from 'node:fs';
 import type {SourceType} from './brand-knowledge';
@@ -19,7 +20,8 @@ export class DocumentExtractionService {
     if(!input.brandId || !input.messageId || !input.mimeType)throw new Error('Missing document lineage');
     if(!(input.data instanceof Uint8Array) || !input.data.byteLength || input.data.byteLength>sizeLimit)throw new Error('Document size exceeds limit or is empty');
     const body=JSON.stringify({mimeType:input.mimeType,base64:Buffer.from(input.data).toString('base64')});
-    return await new Promise<ExtractionResult>((resolve,reject)=>{
+    // WA-017: document extraction joins the bounded global media concurrency budget.
+    return sharedMediaLimiter.run(()=>new Promise<ExtractionResult>((resolve,reject)=>{
       const subprocess=spawn(this.opts.pythonBin??process.env.AGENT_MEDIA_PYTHON??(existsSync(VENV_PYTHON)?VENV_PYTHON:'python3'),[this.opts.workerPath??DEFAULT_WORKER],{
         stdio:['pipe','pipe','pipe'],
         env:{PATH:process.env.PATH??'/usr/bin:/bin',PYTHONNOUSERSITE:'1'}
@@ -45,7 +47,7 @@ export class DocumentExtractionService {
       });
       subprocess.stdin.on('error',()=>{});
       subprocess.stdin.end(body);
-    });
+    }));
   }
   /** Owner-only ingestion; customer uploads are not promoted into Brand Brain. */
   toKnowledgeContent(result:ExtractionResult):{type:SourceType;content:string}{

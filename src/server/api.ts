@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { streamSSE } from 'hono/streaming';
+import { MEDIA_LIMITS, sniffImageMime, sharedMediaLimiter } from '../agent/media-bounds';
 import type { AudioTranscriber } from '../ai/audio-transcriber';
 import type { ModeratorAgent } from '../ai/moderator-agent';
 import type { VoiceSynthesizer } from '../ai/voice-synthesizer';
@@ -32,7 +33,11 @@ export const SSE_KEEP_ALIVE_MS = 5000;
 
 export interface ApiDependencies {
   memoryStore: MemoryStore;
-  whatsappClient: WhatsAppSocketClient;
+  whatsappClient?: WhatsAppSocketClient;
+  /** WA-023: explicit profile state for capability reporting and disabled responses. */
+  runtimeProfile?: string;
+  capabilityMatrix?: Array<{ capability: string; enabled: boolean; reason: string }>;
+  funnelDisabled?: boolean;
   moderatorAgent: ModeratorAgent;
   sse: SSEBroadcaster;
   audioTranscriber?: AudioTranscriber;
@@ -56,16 +61,21 @@ export function createApiServer(deps: ApiDependencies): Hono {
   const getDelivery = () => delivery ??= new SendIntentService({
     memoryStore: deps.memoryStore,
     diagnostics: deps.diagnostics,
-    sendText: (chatId, text, options) => deps.whatsappClient.sendMessage(chatId, text, options),
+    sendText: (chatId, text, options) => {
+      if (!deps.whatsappClient) throw new Error('Baileys transport is not enabled in this runtime profile');
+      return deps.whatsappClient.sendMessage(chatId, text, options);
+    },
     prepareVoice: deps.voiceSynthesizer
       ? (text) => deps.voiceSynthesizer!.synthesizeVoice(text, deps.moderatorAgent.getPersona().voiceName)
       : undefined,
-    sendVoice: deps.voiceSynthesizer
-      ? (chatId, audio, options) => deps.whatsappClient.sendVoiceNote(chatId, audio, { replyToMessageId: options?.replyToMessageId })
+    sendVoice: deps.voiceSynthesizer && deps.whatsappClient
+      ? (chatId, audio, options) => deps.whatsappClient!.sendVoiceNote(chatId, audio, { replyToMessageId: options?.replyToMessageId })
       : undefined,
     publish: (event, data) => deps.sse.broadcast(event, data)
   });
-  const funnelEngine = deps.funnelEngine ?? createDefaultFunnelEngine();
+  // WA-023: when the profile disables the funnel, routes answer with explicit disabled
+  // responses instead of silently creating an engine.
+  const funnelEngine = deps.funnelDisabled ? undefined : (deps.funnelEngine ?? createDefaultFunnelEngine());
 
   // Only configured origins may issue browser mutations or read cross-origin API responses.
   // CLI/service callers without a browser Origin remain supported; bind the server to loopback by default.
@@ -131,7 +141,12 @@ export function createApiServer(deps: ApiDependencies): Hono {
       ? deps.whatsappClient.getState()
       : { state: 'disconnected' };
     const transportMode = deps.transportMode ?? 'baileys';
-    const isReady = dbOk;
+    // WA-010: readiness must reflect the serving channel, not the datastore
+    // alone. Baileys serves only when connected; meta-cloud is a stateless
+    // webhook channel, so mode configuration is the readiness signal and
+    // outbound credential validity is enforced per send.
+    const channelReady = transportMode === 'meta-cloud' ? true : state.state === 'connected';
+    const isReady = dbOk && channelReady;
 
     const payload = {
       status: isReady ? 'ready' : 'unready',
@@ -140,7 +155,8 @@ export function createApiServer(deps: ApiDependencies): Hono {
         chatsCount,
         transport: {
           mode: transportMode,
-          state: state.state
+          state: state.state,
+          ready: channelReady
         }
       },
       timestamp: Date.now()
@@ -153,6 +169,14 @@ export function createApiServer(deps: ApiDependencies): Hono {
 
   // Status & Connection
   app.get('/api/status', (c) => {
+    if (!deps.whatsappClient) {
+      return c.json({
+        state: 'disabled',
+        transportMode: deps.transportMode ?? 'baileys',
+        metaCloudConfigured: deps.transportMode === 'meta-cloud',
+        reason: 'Baileys transport is not enabled in this runtime profile'
+      });
+    }
     const state = deps.whatsappClient.getState();
     const pendingDrafts = deps.memoryStore.getPendingDrafts();
     return c.json({
@@ -160,6 +184,14 @@ export function createApiServer(deps: ApiDependencies): Hono {
       transportMode: deps.transportMode ?? 'baileys',
       metaCloudConfigured: deps.transportMode === 'meta-cloud',
       pendingDraftsCount: pendingDrafts.length
+    });
+  });
+
+  // WA-023: capability matrix for the active runtime profile
+  app.get('/api/runtime/capabilities', (c) => {
+    return c.json({
+      profile: deps.runtimeProfile ?? 'FULL',
+      capabilities: deps.capabilityMatrix ?? []
     });
   });
 
@@ -176,6 +208,9 @@ export function createApiServer(deps: ApiDependencies): Hono {
     const body = await c.req.json().catch(() => ({}));
     const phone = body.pairingPhoneNumber ? String(body.pairingPhoneNumber) : undefined;
     const refresh = Boolean(body.refresh);
+    if (!deps.whatsappClient) {
+      return c.json({ error: 'Baileys pairing is not enabled in this runtime profile' }, 503);
+    }
     void deps.whatsappClient.start(phone, { refresh });
     return c.json({ status: 'initiated', phone, refresh });
   });
@@ -185,6 +220,9 @@ export function createApiServer(deps: ApiDependencies): Hono {
       return c.json({ error: 'Baileys disconnect is disabled in Meta Cloud transport mode' }, 409);
     }
     const body = await c.req.json().catch(() => ({}));
+    if (!deps.whatsappClient) {
+      return c.json({ error: 'Baileys disconnect is not enabled in this runtime profile' }, 503);
+    }
     const clearSession = body.clearSession !== false;
     await deps.whatsappClient.disconnect(clearSession);
     return c.json({ status: 'disconnected' });
@@ -350,6 +388,9 @@ export function createApiServer(deps: ApiDependencies): Hono {
     const { messageId, emoji } = body;
     if (!messageId || !emoji) {
       return c.json({ error: 'messageId and emoji are required' }, 400);
+    }
+    if (!deps.whatsappClient) {
+      return c.json({ error: 'Baileys transport is not enabled in this runtime profile' }, 503);
     }
     await deps.whatsappClient.sendReaction(chatId, messageId, emoji);
     return c.json({ success: true });
@@ -602,6 +643,11 @@ export function createApiServer(deps: ApiDependencies): Hono {
 
   // Sticker Studio conversion endpoint
   app.post('/api/media/sticker', async (c) => {
+    // WA-017: reject oversized requests before JSON/base64 decoding allocates memory.
+    const declaredLength = Number(c.req.header('content-length') ?? 0);
+    if (declaredLength > MEDIA_LIMITS.maxStickerRequestBytes) {
+      return c.json({ error: 'Sticker request exceeds maximum allowable size' }, 413);
+    }
     const body = await c.req.json().catch(() => null);
     if (!body || typeof body.imageBase64 !== 'string' || !body.imageBase64.trim()) {
       return c.json({ error: 'imageBase64 is required' }, 400);
@@ -616,6 +662,13 @@ export function createApiServer(deps: ApiDependencies): Hono {
       if (inputBuffer.length === 0) {
         return c.json({ error: 'Decoded image buffer is empty' }, 400);
       }
+      // WA-017: decoded-size cap and magic-byte MIME validation; declared types are never trusted.
+      if (inputBuffer.length > MEDIA_LIMITS.maxStickerDecodedBytes) {
+        return c.json({ error: 'Decoded image exceeds maximum allowable size (10MB)' }, 413);
+      }
+      if (!sniffImageMime(inputBuffer)) {
+        return c.json({ error: 'Unsupported image content: expected PNG, JPEG, GIF or WebP' }, 415);
+      }
 
       if (!Bun.which('cwebp')) {
         return c.json({ error: 'cwebp utility is not installed on this server' }, 503);
@@ -629,29 +682,39 @@ export function createApiServer(deps: ApiDependencies): Hono {
         await Bun.write(inPath, inputBuffer);
 
         const qualities = [75, 50, 30];
-        let webpBuffer: Buffer | null = null;
 
-        for (const q of qualities) {
-          try {
-            const proc = Bun.spawn(['cwebp', '-q', String(q), '-resize', '512', '512', inPath, '-o', outPath], {
-              stdout: 'ignore',
-              stderr: 'ignore'
-            });
-            const exitCode = await proc.exited;
-            if (exitCode === 0) {
-              const file = Bun.file(outPath);
-              if (file.size > 0 && file.size <= 101888) {
-                webpBuffer = Buffer.from(await file.arrayBuffer());
-                break;
-              } else if (file.size > 101888 && q === qualities[qualities.length - 1]) {
-                webpBuffer = Buffer.from(await file.arrayBuffer());
+        // WA-017: bounded global media concurrency + subprocess deadline with kill/cleanup.
+        const webpBuffer: Buffer | null = await sharedMediaLimiter.run(async () => {
+          for (const q of qualities) {
+            try {
+              const proc = Bun.spawn(['cwebp', '-q', String(q), '-resize', '512', '512', inPath, '-o', outPath], {
+                stdout: 'ignore',
+                stderr: 'ignore'
+              });
+              const killTimer = setTimeout(() => {
+                try { proc.kill('SIGKILL'); } catch { /* already exited */ }
+              }, MEDIA_LIMITS.stickerSubprocessTimeoutMs);
+              let exitCode: number;
+              try {
+                exitCode = await proc.exited;
+              } finally {
+                clearTimeout(killTimer);
               }
+              if (exitCode === 0) {
+                const file = Bun.file(outPath);
+                if (file.size > 0 && file.size <= 101888) {
+                  return Buffer.from(await file.arrayBuffer());
+                } else if (file.size > 101888 && q === qualities[qualities.length - 1]) {
+                  return Buffer.from(await file.arrayBuffer());
+                }
+              }
+            } catch (spawnErr) {
+              console.warn('[StickerStudio] cwebp spawn failed:', spawnErr);
+              return null;
             }
-          } catch (spawnErr) {
-            console.warn('[StickerStudio] cwebp spawn failed:', spawnErr);
-            break;
           }
-        }
+          return null;
+        });
 
         if (!webpBuffer) {
           return c.json({ error: 'Failed to convert image to WhatsApp WebP sticker' }, 500);
@@ -690,13 +753,49 @@ export function createApiServer(deps: ApiDependencies): Hono {
 
   // Real-Time Server-Sent Events (SSE)
   app.get('/api/events', (c) => {
+    // WA-019: refuse new streams once the broadcaster is at capacity.
+    if (deps.sse.streamClientCount >= deps.sse.maxStreamClients) {
+      return c.json({ error: 'Too many SSE clients connected' }, 503);
+    }
     return streamSSE(c, async (stream) => {
-      const unsubscribe = deps.sse.subscribe((msg) => {
-        void stream.writeSSE({
-          event: msg.event,
-          data: JSON.stringify(msg.data)
-        });
+      let pingInterval: ReturnType<typeof setInterval> | undefined;
+      const stopPing = () => {
+        if (pingInterval) {
+          clearInterval(pingInterval);
+          pingInterval = undefined;
+        }
+      };
+      let endStream: () => void = () => {};
+      const streamEnded = new Promise<void>((resolve) => {
+        endStream = resolve;
       });
+      let unsubscribe: (() => void) | null = null;
+      const finish = () => {
+        stopPing();
+        unsubscribe?.();
+        endStream();
+      };
+      // Broadcast writes are serialized and awaited per subscriber behind a
+      // bounded queue; a slow client is disconnected so it reconnects and
+      // resyncs from the authoritative snapshot instead of growing RAM.
+      unsubscribe = deps.sse.subscribeStream(
+        async (msg) => {
+          await stream.writeSSE({
+            event: msg.event,
+            data: JSON.stringify(msg.data)
+          });
+        },
+        {
+          onDisconnect: () => {
+            finish();
+          }
+        }
+      );
+      if (!unsubscribe) {
+        // Lost a capacity race; ending here lets streamSSE close the stream.
+        endStream();
+        return;
+      }
 
       // Send initial keep-alive
       await stream.writeSSE({
@@ -704,26 +803,36 @@ export function createApiServer(deps: ApiDependencies): Hono {
         data: JSON.stringify({ timestamp: Date.now() })
       });
 
-      // Keep alive interval
-      const pingInterval = setInterval(() => {
-        void stream.writeSSE({ event: 'ping', data: '{}' }).catch(() => {
-          clearInterval(pingInterval);
-          unsubscribe();
-        });
+      // Keep alive interval; never leave more than one ping write pending.
+      let pingInFlight = false;
+      pingInterval = setInterval(() => {
+        if (pingInFlight) return;
+        pingInFlight = true;
+        void stream
+          .writeSSE({ event: 'ping', data: '{}' })
+          .catch(() => {
+            finish();
+          })
+          .finally(() => {
+            pingInFlight = false;
+          });
       }, deps.sseHeartbeatMs ?? SSE_KEEP_ALIVE_MS);
 
       stream.onAbort(() => {
-        clearInterval(pingInterval);
-        unsubscribe();
+        finish();
       });
 
-      // Sleep until stream closes
-      await stream.sleep(86400000);
+      // Stay open until the client aborts or the broadcaster disconnects us;
+      // the callback then returns and streamSSE closes the stream.
+      await streamEnded;
     });
   });
 
   // Funnel Engine Routes (Scatter-Gather & Hedged Dispatches)
   app.get('/api/funnel/methods', (c) => {
+    if (!funnelEngine) {
+      return c.json({ error: 'Funnel engine is disabled in this runtime profile' }, 503);
+    }
     // Unauthenticated route: never expose per-target credentials.
     const methods = funnelEngine.registry.listMethods().map((m) => ({
       ...m,
@@ -739,6 +848,9 @@ export function createApiServer(deps: ApiDependencies): Hono {
   app.post('/api/funnel/methods', async (c) => {
     const authHeader = c.req.header('authorization') || c.req.header('x-api-key');
     const token = authHeader?.replace(/^Bearer\s+/i, '').trim();
+    if (!funnelEngine) {
+      return c.json({ error: 'Funnel engine is disabled in this runtime profile' }, 503);
+    }
     if (!funnelEngine.registry.validateKey(token)) {
       return c.json({ error: 'Unauthorized: Invalid funnel API key' }, 401);
     }
@@ -753,6 +865,9 @@ export function createApiServer(deps: ApiDependencies): Hono {
   app.post('/api/funnel/dispatch', async (c) => {
     const authHeader = c.req.header('authorization') || c.req.header('x-api-key');
     const token = authHeader?.replace(/^Bearer\s+/i, '').trim();
+    if (!funnelEngine) {
+      return c.json({ error: 'Funnel engine is disabled in this runtime profile' }, 503);
+    }
     if (!funnelEngine.registry.validateKey(token)) {
       return c.json({ error: 'Unauthorized: Invalid funnel API key' }, 401);
     }
@@ -771,6 +886,9 @@ export function createApiServer(deps: ApiDependencies): Hono {
   });
 
   app.get('/api/funnel/stats', (c) => {
+    if (!funnelEngine) {
+      return c.json({ error: 'Funnel engine is disabled in this runtime profile' }, 503);
+    }
     return c.json({
       circuitBreakers: funnelEngine.getCircuitBreakerStats(),
       activeMethodsCount: funnelEngine.registry.listMethods().length
@@ -780,6 +898,9 @@ export function createApiServer(deps: ApiDependencies): Hono {
   app.post('/api/funnel/circuit-breaker/reset', async (c) => {
     const authHeader = c.req.header('authorization') || c.req.header('x-api-key');
     const token = authHeader?.replace(/^Bearer\s+/i, '').trim();
+    if (!funnelEngine) {
+      return c.json({ error: 'Funnel engine is disabled in this runtime profile' }, 503);
+    }
     if (!funnelEngine.registry.validateKey(token)) {
       return c.json({ error: 'Unauthorized' }, 401);
     }
@@ -844,11 +965,11 @@ export function createApiServer(deps: ApiDependencies): Hono {
 
   app.get('/api/workspace/stats', (c) => {
     const stats = deps.memoryStore.getStorageStats();
-    const wsState = deps.whatsappClient.getState();
+    const wsState = deps.whatsappClient?.getState();
     return c.json({
       ...stats,
-      connectionState: wsState.state,
-      connectedUser: wsState.connectedUser,
+      connectionState: wsState?.state ?? null,
+      connectedUser: wsState?.connectedUser ?? null,
       transportMode: deps.transportMode ?? 'baileys'
     });
   });
@@ -868,7 +989,7 @@ export function createApiServer(deps: ApiDependencies): Hono {
     const target = String(body?.target || 'all');
 
     if (target === 'all') {
-      await deps.whatsappClient.disconnect(true);
+      await deps.whatsappClient?.disconnect(true);
       const resetResult = deps.memoryStore.resetAll();
       deps.dualMemoryManager?.resetLearning();
       const cleanResult = cleanWorkspaceData(getWorkspaceDataDir());
@@ -882,7 +1003,7 @@ export function createApiServer(deps: ApiDependencies): Hono {
     }
 
     if (target === 'session') {
-      await deps.whatsappClient.disconnect(true);
+      await deps.whatsappClient?.disconnect(true);
       deps.sse.broadcast('workspace_reset', { target: 'session' });
       return c.json({ success: true, target: 'session' });
     }

@@ -56,6 +56,24 @@ export function describeBurst(msg: { chatId: string; text: string; type?: string
   return { chat: hashChatId(msg.chatId), chars: msg.text.length, type: msg.type ?? 'text', messages: messageCount };
 }
 
+/**
+ * WA-025: strips credential-bearing URL userinfo, query strings, bearer/token assignments
+ * and long digit runs (phone numbers, account ids) from arbitrary text so a provider error
+ * message can never carry secrets or PII into logs or owner-facing strings. Keeps the
+ * shape of the diagnostic (paths, codes) so errors stay actionable.
+ */
+export function redactSensitiveText(text: string): string {
+  return text
+    // credential userinfo in URLs: scheme://user:pass@host -> scheme://[redacted]@host
+    .replace(/([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)[^\s/@]+(?::[^\s/@]*)?@/g, '$1[redacted]@')
+    // query strings can carry tokens
+    .replace(/\?[^\s"']*/g, '?[redacted]')
+    // token/password/secret/key assignments
+    .replace(/\b(token|password|passwd|secret|api[_-]?key|authorization|credential)(=|:)\S+/gi, '$1=[redacted]')
+    // long digit runs: phone numbers, account ids
+    .replace(/\b\d{6,}\b/g, '[digits]');
+}
+
 /** Error summary without the message, which can echo user content from providers. */
 export function describeError(err: unknown): string {
   if (!(err instanceof Error)) return typeof err;
@@ -65,4 +83,20 @@ export function describeError(err: unknown): string {
   const safeCode = typeof code === 'string' && /^[A-Z0-9_]{1,40}$/.test(code) ? code
     : typeof code === 'number' && Number.isFinite(code) ? String(code) : '';
   return safeCode ? `${safeName}:${safeCode}` : safeName;
+}
+
+/**
+ * WA-025: safe single-line error detail for logs: identifier-shaped name/code via
+ * describeError, plus a redacted message when it adds signal. Never contains raw
+ * credentials, URLs with userinfo or phone-like digit runs.
+ */
+export function describeErrorDetail(err: unknown): string {
+  // The raw message is never included: provider prose can echo arbitrary secrets or user
+  // content that redaction cannot reliably recognize. Identifier-shaped name, code and
+  // numeric status keep the log actionable without the risk.
+  if (!(err instanceof Error)) return describeError(err);
+  const base = describeError(err);
+  const status = (err as { status?: unknown; statusCode?: unknown }).status ?? (err as { statusCode?: unknown }).statusCode;
+  const safeStatus = typeof status === 'number' && Number.isFinite(status) ? `:${status}` : '';
+  return `${base}${safeStatus}`;
 }

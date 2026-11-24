@@ -4,7 +4,7 @@ import { MemoryStore } from './domain/memory-store';
 import { WhatsAppSocketClient } from './transport/whatsapp-socket';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { formatDoctorReport, runDoctor } from './doctor';
+import { formatDoctorReport, runDoctor, verifyBaileysPatch } from './doctor';
 import { resolveRuntimeDatastore } from './persistence/postgres/runtime-selection';
 
 resolveRuntimeDatastore();
@@ -20,18 +20,24 @@ async function doctor(flags: string[]) {
     bunVersion: Bun.version,
     env: process.env,
     openStorage: () => new MemoryStore().listChats().length,
-    testStorageWrite: () => {
-      const store = new MemoryStore();
-      store.getStorageStats();
-      return true;
-    },
+    // WA-011: prove a write commits instead of trusting a stats read.
+    testStorageWrite: () => new MemoryStore().verifyWriteCommit(),
     baileysPatched: () => {
       try {
         const content = readFileSync('./node_modules/@whiskeysockets/baileys/lib/Utils/validate-connection.js', 'utf8');
-        return content.includes('passive: false');
+        return verifyBaileysPatch(content);
       } catch {
         return false;
       }
+    },
+    // WA-011: key presence is not validity; list models with the key, bounded.
+    verifyModelKey: async () => {
+      const key = process.env.GEMINI_API_KEY;
+      if (!key) return false;
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}&pageSize=1`, {
+        signal: AbortSignal.timeout(8000)
+      });
+      return res.status === 200;
     },
     uiBuilt: () => existsSync('./ui/dist/index.html'),
     gcloudAuthenticated: async () => {

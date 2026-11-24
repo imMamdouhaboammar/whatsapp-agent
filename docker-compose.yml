@@ -1,3 +1,6 @@
+# Minimal production composition for the WhatsApp agent.
+# Secrets come from .env (see .env.example); required values fail fast at
+# `docker compose config` / up time instead of booting without auth.
 services:
   whatsapp-agent:
     build:
@@ -12,14 +15,16 @@ services:
       - HOST=0.0.0.0
       - PORT=3000
       - DATA_DIR=/app/data
-      - AGENT_DASHBOARD_TOKEN=${AGENT_DASHBOARD_TOKEN:-}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - AGENT_DASHBOARD_TOKEN=${AGENT_DASHBOARD_TOKEN:?Set AGENT_DASHBOARD_TOKEN in .env (min 24 chars, see .env.example)}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:?Set GEMINI_API_KEY in .env (see .env.example)}
       - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-}
       - GOOGLE_CLOUD_LOCATION=${GOOGLE_CLOUD_LOCATION:-us-central1}
       - DATABASE_URL=${DATABASE_URL:-}
       - WHATSAPP_TRANSPORT=${WHATSAPP_TRANSPORT:-baileys}
     volumes:
-      - ./data:/app/data
+      # Named volume: initialized with the image's bun:bun ownership so the
+      # non-root runtime user can always write, and survives rebuilds.
+      - whatsapp-agent-data:/app/data
     deploy:
       resources:
         limits:
@@ -34,3 +39,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+
+volumes:
+  whatsapp-agent-data:

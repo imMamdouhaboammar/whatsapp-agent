@@ -18,10 +18,23 @@ export interface DoctorProbes {
   gcloudAuthenticated: () => Promise<boolean>;
   /** True when a paired Baileys session is saved. */
   sessionPaired: () => boolean;
-  /** Verifies SQLite writeability and commit capability */
+  /** Verifies SQLite writeability and commit capability; false means the write did not commit. */
   testStorageWrite?: () => boolean;
   /** Verifies Baileys connection validator patch is applied */
   baileysPatched?: () => boolean;
+  /** WA-011: verifies a configured GEMINI_API_KEY against the model API; false means rejected. */
+  verifyModelKey?: () => Promise<boolean>;
+}
+
+/**
+ * WA-011: both patch targets must be present — the passive flag alone passes
+ * even when the lidDbMigrated removal never landed.
+ */
+export function verifyBaileysPatch(validatorSource: string): boolean {
+  const passivePatched = /passive:\s*false,\s*pull:\s*true,/.test(validatorSource);
+  const lidRemoved = /\/\*\s*lidDbMigrated removed\s*\*\//.test(validatorSource);
+  const lidStillPresent = /lidDbMigrated:\s*false/.test(validatorSource);
+  return passivePatched && lidRemoved && !lidStillPresent;
 }
 
 export interface DoctorReport {
@@ -69,8 +82,11 @@ export async function runDoctor(probes: DoctorProbes, options: { preflightOnly?:
     const chats = probes.openStorage();
     add({ id: 'storage', section: 'preflight', level: 'pass', label: `Local storage opens (${chats} chats indexed)` });
     if (probes.testStorageWrite) {
-      probes.testStorageWrite();
-      add({ id: 'storage-write', section: 'preflight', level: 'pass', label: 'Local storage is writable (WAL commit verified)' });
+      // WA-011: a probe that returns false means the write did not commit.
+      const writable = probes.testStorageWrite() === true;
+      add(writable
+        ? { id: 'storage-write', section: 'preflight', level: 'pass', label: 'Local storage is writable (WAL commit verified)' }
+        : { id: 'storage-write', section: 'preflight', level: 'fail', label: 'Local storage write probe did not commit', detail: 'The write transaction returned false.' });
     }
   } catch (err) {
     add({ id: 'storage', section: 'preflight', level: 'fail', label: 'Local storage error', detail: err instanceof Error ? err.message : String(err) });
@@ -89,6 +105,19 @@ export async function runDoctor(probes: DoctorProbes, options: { preflightOnly?:
 
   if (!options.preflightOnly) {
     const hasKey = Boolean(probes.env.GEMINI_API_KEY);
+    if (hasKey && probes.verifyModelKey) {
+      // WA-011: key presence is not validity — verify against the model API.
+      let keyValid = false;
+      let keyError = '';
+      try {
+        keyValid = await probes.verifyModelKey();
+      } catch (err) {
+        keyError = printable(err instanceof Error ? err.message : String(err));
+      }
+      add(keyValid
+        ? { id: 'model-auth', section: 'live', level: 'pass', label: 'Gemini API key verified with the model API' }
+        : { id: 'model-auth', section: 'live', level: 'fail', label: 'GEMINI_API_KEY was rejected by the model API', detail: `The configured key did not authenticate.${keyError ? ` Verification error: ${keyError}` : ''}` });
+    } else {
     let gcloudOk = false;
     let gcloudError = '';
     if (!hasKey) {
@@ -99,6 +128,7 @@ export async function runDoctor(probes: DoctorProbes, options: { preflightOnly?:
     add(hasKey || gcloudOk
       ? { id: 'model-auth', section: 'live', level: 'pass', label: hasKey ? 'Gemini API key configured' : 'gcloud account and project available' }
       : { id: 'model-auth', section: 'live', level: 'fail', label: 'No model credentials', detail: `Set GEMINI_API_KEY, or run \`gcloud auth login\` and \`gcloud config set project <id>\` (the app uses the active gcloud account and project).${gcloudError ? ` gcloud said: ${gcloudError}` : ''}` });
+    }
 
     const transport = probes.env.WHATSAPP_TRANSPORT ?? 'baileys';
     if (transport === 'meta-cloud') {
