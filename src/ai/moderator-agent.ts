@@ -318,32 +318,17 @@ ${notebookPrompt}
         modelRouting: routing
       };
 
-      // Persist newly discovered facts into the Contact Dossier
-      if (!options.dryRun && Array.isArray(json.extractedFacts)) {
-        for (const fact of json.extractedFacts) {
-          if (typeof fact === 'string' && fact.trim()) {
-            this.memoryStore.addFactToDossier(message.chatId, fact.trim());
-          }
-        }
-      }
-
-      // Persist newly extracted commitments into the Contact Dossier
-      if (!options.dryRun && Array.isArray(json.extractedCommitments)) {
-        for (const comm of json.extractedCommitments) {
-          if (typeof comm === 'string' && comm.trim()) {
-            this.memoryStore.addCommitmentToDossier(message.chatId, comm.trim());
-          }
-        }
-      }
-
-      // Update stage if recognized
-      if (!options.dryRun && json.contactStage) {
-        const existingDossier = this.memoryStore.getDossier(message.chatId);
-        if (existingDossier) {
-          existingDossier.stage = json.contactStage;
-          existingDossier.updatedAt = Date.now();
-          this.memoryStore.saveDossier(existingDossier);
-        }
+      // Persist newly discovered facts, commitments, and stage in a single atomic update
+      if (!options.dryRun && (
+        (Array.isArray(json.extractedFacts) && json.extractedFacts.length > 0) ||
+        (Array.isArray(json.extractedCommitments) && json.extractedCommitments.length > 0) ||
+        json.contactStage
+      )) {
+        this.memoryStore.updateDossierExtracts(message.chatId, {
+          facts: Array.isArray(json.extractedFacts) ? json.extractedFacts : undefined,
+          commitments: Array.isArray(json.extractedCommitments) ? json.extractedCommitments : undefined,
+          stage: typeof json.contactStage === 'string' ? json.contactStage : undefined
+        });
       }
     } catch (err: any) {
       parsedDecision = {

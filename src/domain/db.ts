@@ -4,12 +4,14 @@ import { dirname } from 'node:path';
 import { SendLedger } from './send-ledger';
 import { FoldRepository } from './fold-repository';
 import { InboundJobLedger, type InboundJob } from './inbound-job-ledger';
+import { scrubCredentials } from './learning-memory';
 import type {
   AgentDraft,
   AgentMode,
   ChatMessage,
   ChatSummary,
-  ContactDossier
+  ContactDossier,
+  ContactStage
 } from './types';
 
 const STATUS_RANK: Record<NonNullable<ChatMessage['status']>, number> = {
@@ -71,6 +73,8 @@ export class SqliteStore {
     this.db.run('PRAGMA journal_mode = WAL;');
     this.db.run('PRAGMA synchronous = NORMAL;');
     this.db.run('PRAGMA busy_timeout = 5000;');
+    this.db.run('PRAGMA temp_store = MEMORY;');
+    this.db.run('PRAGMA cache_size = -16000;');
 
     this.db.run(`
       CREATE TABLE IF NOT EXISTS chats (
@@ -85,6 +89,8 @@ export class SqliteStore {
         avatar_url TEXT
       );
     `);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_chats_last_timestamp ON chats(last_timestamp DESC);`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_chats_last_timestamp_coalesce ON chats(COALESCE(last_timestamp, 0) DESC);`);
 
     this.db.run(`
       CREATE TABLE IF NOT EXISTS messages (
@@ -132,6 +138,8 @@ export class SqliteStore {
         created_at INTEGER NOT NULL
       );
     `);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_drafts_pending ON drafts(status, created_at DESC);`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_drafts_chat_status ON drafts(chat_id, status, created_at DESC);`);
 
     this.db.run(`
       CREATE TABLE IF NOT EXISTS contact_memories (
@@ -510,6 +518,52 @@ export class SqliteStore {
 
     if (!existing.commitments.includes(commitment)) {
       existing.commitments.push(commitment);
+      existing.updatedAt = Date.now();
+      this.saveDossier(existing);
+    }
+  }
+
+  updateDossierExtracts(chatId: string, updates: { facts?: string[]; commitments?: string[]; stage?: ContactStage }) {
+    const existing = this.getDossier(chatId) ?? {
+      chatId,
+      name: chatId.split('@')[0],
+      stage: 'lead',
+      facts: [],
+      commitments: [],
+      updatedAt: Date.now()
+    };
+
+    let modified = false;
+    if (updates.facts?.length) {
+      for (const fact of updates.facts) {
+        if (typeof fact === 'string' && fact.trim()) {
+          const safeFact = scrubCredentials(fact.trim());
+          if (safeFact && !existing.facts.includes(safeFact)) {
+            existing.facts.push(safeFact);
+            modified = true;
+          }
+        }
+      }
+    }
+
+    if (updates.commitments?.length) {
+      for (const comm of updates.commitments) {
+        if (typeof comm === 'string' && comm.trim()) {
+          const safeComm = scrubCredentials(comm.trim());
+          if (safeComm && !existing.commitments.includes(safeComm)) {
+            existing.commitments.push(safeComm);
+            modified = true;
+          }
+        }
+      }
+    }
+
+    if (updates.stage && existing.stage !== updates.stage) {
+      existing.stage = updates.stage;
+      modified = true;
+    }
+
+    if (modified) {
       existing.updatedAt = Date.now();
       this.saveDossier(existing);
     }

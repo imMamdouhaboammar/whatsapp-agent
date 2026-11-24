@@ -1,7 +1,7 @@
 import {spawn} from 'node:child_process';
 import {sharedMediaLimiter} from './media-bounds';
 import {fileURLToPath} from 'node:url';
-import {existsSync} from 'node:fs';
+import {statSync} from 'node:fs';
 import type {SourceType} from './brand-knowledge';
 
 export interface ExtractedSection {location:string;text:string;}
@@ -13,16 +13,34 @@ export interface ExtractionResult {
 }
 const DEFAULT_WORKER=fileURLToPath(new URL('../../workers/media-python/document_worker.py',import.meta.url));
 const VENV_PYTHON=fileURLToPath(new URL('../../workers/media-python/.venv/bin/python',import.meta.url));
+
+function resolvePythonBinary(configured?: string): string {
+  if (configured) return configured;
+  if (process.env.AGENT_MEDIA_PYTHON) return process.env.AGENT_MEDIA_PYTHON;
+  try {
+    const s = statSync(VENV_PYTHON);
+    if (s.isFile()) return VENV_PYTHON;
+  } catch (err: unknown) {
+    if (typeof err === 'object' && err !== null && 'code' in err && (err as { code?: string }).code !== 'ENOENT') {
+      // ignore non-critical resolution failure and fallback to python3
+    }
+  }
+  return 'python3';
+}
+
 export class DocumentExtractionService {
-  constructor(private readonly opts:{pythonBin?:string;workerPath?:string;timeoutMs?:number}={}){}
+  constructor(private readonly opts:{pythonBin?:string;workerPath?:string;timeoutMs?:number;maxConcurrent?:number}={}){}
+
   async extract(input:ExtractionRequest):Promise<ExtractionResult>{
     const sizeLimit=Math.min(input.maxBytes??15*1024*1024,15*1024*1024);
     if(!input.brandId || !input.messageId || !input.mimeType)throw new Error('Missing document lineage');
     if(!(input.data instanceof Uint8Array) || !input.data.byteLength || input.data.byteLength>sizeLimit)throw new Error('Document size exceeds limit or is empty');
-    const body=JSON.stringify({mimeType:input.mimeType,base64:Buffer.from(input.data).toString('base64')});
-    // WA-017: document extraction joins the bounded global media concurrency budget.
+    // WA-017: document extraction joins the bounded global media concurrency budget;
+    // serialize base64 payload only after acquiring a slot to avoid retaining queued copies.
     return sharedMediaLimiter.run(()=>new Promise<ExtractionResult>((resolve,reject)=>{
-      const subprocess=spawn(this.opts.pythonBin??process.env.AGENT_MEDIA_PYTHON??(existsSync(VENV_PYTHON)?VENV_PYTHON:'python3'),[this.opts.workerPath??DEFAULT_WORKER],{
+      const body=JSON.stringify({mimeType:input.mimeType,base64:Buffer.from(input.data).toString('base64')});
+      const pythonExecutable=resolvePythonBinary(this.opts.pythonBin);
+      const subprocess=spawn(pythonExecutable,[this.opts.workerPath??DEFAULT_WORKER],{
         stdio:['pipe','pipe','pipe'],
         env:{PATH:process.env.PATH??'/usr/bin:/bin',PYTHONNOUSERSITE:'1'}
       });

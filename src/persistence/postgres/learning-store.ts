@@ -25,7 +25,7 @@ export class PostgresLearningStore implements LearningPersistenceStore {
     if (options.sql) {
       this.sql = options.sql;
     } else if (options.databaseUrl) {
-      this.sql = new SQL(options.databaseUrl);
+      this.sql = new SQL(options.databaseUrl, { max: 2, idleTimeout: 5 });
     }
     this.supabase = options.supabase;
   }
@@ -34,7 +34,7 @@ export class PostgresLearningStore implements LearningPersistenceStore {
     if (this.sql) return this.sql;
     const dbUrl = process.env.DATABASE_URL;
     if (dbUrl) {
-      this.sql = new SQL(dbUrl);
+      this.sql = new SQL(dbUrl, { max: 2, idleTimeout: 5 });
       return this.sql;
     }
     throw new Error('PostgresLearningStore requires DATABASE_URL or an active SQL client');

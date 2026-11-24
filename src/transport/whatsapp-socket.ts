@@ -872,7 +872,7 @@ export class WhatsAppSocketClient {
       error.code = 'WHATSAPP_ACCEPTANCE_AMBIGUOUS';
       throw error;
     }
-    if (sent.message) this.rawMessages.set(messageId, sent);
+    if (sent.message) this.boundedCacheSet(this.rawMessages, this.quoteKey(targetJid, messageId), sent, WhatsAppSocketClient.MAX_RAW_MESSAGES);
     return { messageId };
   }
 
@@ -931,7 +931,7 @@ export class WhatsAppSocketClient {
       error.code = 'WHATSAPP_ACCEPTANCE_AMBIGUOUS';
       throw error;
     }
-    if (sent.message) this.rawMessages.set(messageId, sent);
+    if (sent.message) this.boundedCacheSet(this.rawMessages, this.quoteKey(targetJid, messageId), sent, WhatsAppSocketClient.MAX_RAW_MESSAGES);
     return { messageId };
   }
 
