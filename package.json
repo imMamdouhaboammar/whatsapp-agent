@@ -1,6 +1,6 @@
 {
   "name": "fable-agentic-whatsapp",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Fully agentic WhatsApp client and AI supervisor powered by Gemini, Baileys browserless transport, and Model Context Protocol",
   "type": "module",
   "scripts": {
