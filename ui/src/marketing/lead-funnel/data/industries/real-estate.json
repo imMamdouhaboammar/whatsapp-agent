@@ -1,0 +1,88 @@
+{
+  "industry_id": "real_estate",
+  "name_ar": "العقارات والتطوير العقاري",
+  "recommended_module_name": "موديول تأهيل الليدز العقارية وحجز المعاينات",
+  "vocab": {
+    "industry_label": "العقارات",
+    "customer_singular": "العميل العقاري",
+    "customer_plural": "العملاء العقاريين"
+  },
+  "nodes": {
+    "ind_q1": {
+      "id": "ind_q1",
+      "type": "question",
+      "phase": 2,
+      "title_template": "لما الليد العقاري يدخل من الإعلان على واتساب، إيه أكتر حاجة بتحرق وقت السيلز عندكم",
+      "body_template": "",
+      "options": [
+        { "id": "unqualified", "label": "ليدز كتير بتسأل على السعر بس وميزانيتها بعيدة", "add_tags": ["qualification_pain"], "pain_delta": 15 },
+        { "id": "cold_leads", "label": "ليدز بتملى الفورم وبعدها مبتردش على المكالمات", "add_tags": ["no_answer_calls"], "pain_delta": 20 },
+        { "id": "brochures", "label": "بعت البروشور والأسعار وخطط السداد لمئات الناس كل أسبوع", "add_tags": ["brochure_heavy"], "pain_delta": 10 }
+      ],
+      "default_next": "ind_react1"
+    },
+    "ind_react1": {
+      "id": "ind_react1",
+      "type": "reaction",
+      "phase": 2,
+      "title_template": "في العقارات، الليد الواحد بيكلفك مئات الجنيهات أو عشرات الريالات، وأغلب السيلز بيكلموه بعد 4 ساعات، ساعتها بيكون كلم 3 شركات غيرك ونسى أصلاً إنه سجل في إعلانك",
+      "body_template": "الكلام ده حقيقي في سوق العقارات دلوقتي",
+      "options": [
+        { "id": "agree", "label": "صح الكلام ده، سرعة أول رد بتفرق في نص البيعة", "add_tags": ["speed_to_lead"], "pain_delta": 20, "next_node_override": "ind_q2" },
+        { "id": "disagree", "label": "لأ مش مقتنع، العقار قرار كبير ومحدش بيشتري من رسالة واتساب", "add_tags": ["skeptical"], "pain_delta": 0, "next_node_override": "ind_obj1" }
+      ],
+      "default_next": "ind_q2"
+    },
+    "ind_obj1": {
+      "id": "ind_obj1",
+      "type": "objection_handler",
+      "phase": 2,
+      "title_template": "أكيد محدش هيشتري شقة بملايين من شات واتساب، ومش ده دور الوكيل أصلاً",
+      "body_template": "دوره إنه يمسك الليد في أول 30 ثانية وهو لسه مهتم، يسأله عن الميزانية والمنطقة والاستلام المطلوب، ويسلم السيلز بتاعك عميل متفلتر وجاهز لمكالمة أو معاينة بدل ما السيلز يضيع يومه في أرقام مبتردش",
+      "options": [
+        { "id": "convinced", "label": "لو دوره التأهيل السريع وتسليم السيلز فده ممتاز فعلاً", "add_tags": ["qualifier_fit"], "pain_delta": 10 }
+      ],
+      "default_next": "ind_q2"
+    },
+    "ind_q2": {
+      "id": "ind_q2",
+      "type": "question",
+      "phase": 2,
+      "title_template": "أغلب شغلك حالياً في أنهي نوع وحدات",
+      "body_template": "",
+      "options": [
+        { "id": "primary", "label": "مشاريع جديدة وأقساط (Primary)", "add_tags": ["re_primary"], "pain_delta": 5 },
+        { "id": "resale", "label": "ريسيل واستلام فوري وإيجارات", "add_tags": ["re_resale"], "pain_delta": 10 },
+        { "id": "commercial", "label": "تجاري وإداري وطبي", "add_tags": ["re_commercial"], "pain_delta": 10 }
+      ],
+      "default_next": "ind_react2"
+    },
+    "ind_react2": {
+      "id": "ind_react2",
+      "type": "reaction",
+      "phase": 3,
+      "title_template": "عملاء العقارات بياخدوا وقت طويل في القرار، والمتابعة الهادية على واتساب بعد أسبوع وأسبوعين هي اللي بتقفل الصفقات اللي السيلز نسيها في الـ CRM",
+      "body_template": "متفق مع الفكرة دي",
+      "options": [
+        { "id": "agree", "label": "صح الكلام ده، أغلب البيع بييجي من المتابعة مش من أول مكالمة", "add_tags": ["followup_value"], "pain_delta": 15 },
+        { "id": "disagree", "label": "لأ مش مقتنع، المتابعة الكتير على واتساب بتضايق العميل وممكن تحظر الرقم", "add_tags": ["skeptical"], "pain_delta": 0, "next_node_override": "ind_obj2" }
+      ],
+      "default_next": "q11_daily_volume"
+    },
+    "ind_obj2": {
+      "id": "ind_obj2",
+      "type": "objection_handler",
+      "phase": 3,
+      "title_template": "كلامك سليم، السبام العشوائي فعلاً بيزعج العميل ويحظر الأرقام",
+      "body_template": "المتابعة هنا مش حملات جماعية، دي متابعة فردية ذكية للعميل اللي كلمك بنفسه، وكمان التطبيق فيه ضوابط سرعة وتقارب إنساني وبيدعم Meta Cloud API الرسمي لو بتبعت متابعات كبيرة",
+      "options": [
+        { "id": "good", "label": "فهمت، كده آمن ومرتب فعلاً", "add_tags": ["safe_followup"], "pain_delta": 5 }
+      ],
+      "default_next": "q11_daily_volume"
+    }
+  },
+  "sample_conversation": [
+    { "sender": "customer", "text": "بكام الشقق في مشروع التجمع وأنظمة القسط إيه" },
+    { "sender": "agent", "text": "أهلاً بحضرتك، المساحات بتبدأ من 135 متر بأسعار تبدأ من 6.5 مليون بمقدم 10% وتقسيط حتى 8 سنين، حضرتك بتدور على سكن قريب ولا استثمار عشان أرشحلك أنسب وحدة وأرتبلك مكالمة سريعة مع مستشار المبيعات" }
+  ]
+}

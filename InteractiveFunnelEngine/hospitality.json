@@ -1,0 +1,88 @@
+{
+  "industry_id": "hospitality",
+  "name_ar": "المطاعم والكافيهات والضيافة",
+  "recommended_module_name": "موديول حجز الطاولات والمنيو وطلبات التوصيل",
+  "vocab": {
+    "industry_label": "المطاعم والكافيهات والضيافة",
+    "customer_singular": "الضيف",
+    "customer_plural": "الضيوف"
+  },
+  "nodes": {
+    "ind_q1": {
+      "id": "ind_q1",
+      "type": "question",
+      "phase": 2,
+      "title_template": "إيه أكتر رسايل بتجيلكم على واتساب في أوقات الزحمة والويك إند",
+      "body_template": "",
+      "options": [
+        { "id": "tables", "label": "حجز طاولات، مواعيد الفتح، والعنوان والباركنج", "add_tags": ["table_booking"], "pain_delta": 15 },
+        { "id": "menu_delivery", "label": "طلب المنيو وأسعار الأصناف وتأكيد أوردرات الدليفري", "add_tags": ["direct_delivery"], "pain_delta": 15 },
+        { "id": "events_catering", "label": "حجوزات أعياد ميلاد ومجموعات كبيرة أو كاترينج", "add_tags": ["group_events"], "pain_delta": 15 }
+      ],
+      "default_next": "ind_react1"
+    },
+    "ind_react1": {
+      "id": "ind_react1",
+      "type": "reaction",
+      "phase": 2,
+      "title_template": "اللي جعان أو خارج مع أصحابه يوم الخميس بالليل وبيسأل على طاولة أو منيو، لو مردتش عليه خلال 3 دقايق بيروح المكان اللي جنبك فوراً",
+      "body_template": "ده بيحصل في مجال المطاعم فعلاً",
+      "options": [
+        { "id": "agree", "label": "صح الكلام ده، وقت الذروة محدش في الكاشير بيلحق يمسك الموبايل", "add_tags": ["rush_hour_loss"], "pain_delta": 20, "next_node_override": "ind_q2" },
+        { "id": "disagree", "label": "لأ مش مقتنع، أغلب أوردراتنا بتيجي من تطبيقات التوصيل", "add_tags": ["skeptical"], "pain_delta": 0, "next_node_override": "ind_obj1" }
+      ],
+      "default_next": "ind_q2"
+    },
+    "ind_obj1": {
+      "id": "ind_obj1",
+      "type": "objection_handler",
+      "phase": 2,
+      "title_template": "تطبيقات التوصيل بتجيب أوردرات فعلاً، بس بتاخد منك عمولة 20 لـ 30 في المية من كل أوردر",
+      "body_template": "لو حولت بس جزء من زباينك المتكررين يطلبوا منك مباشرة على واتساب برد فوري ومنيو واضح، العمولة اللي بتوفرها في أسبوع واحد بتغطي تكلفة التشغيل لسنة قدام",
+      "options": [
+        { "id": "convinced", "label": "عمولات التطبيقات فعلاً بتاكل هامش الربح، فكرة ممتازة", "add_tags": ["cut_aggregator_fees"], "pain_delta": 15 }
+      ],
+      "default_next": "ind_q2"
+    },
+    "ind_q2": {
+      "id": "ind_q2",
+      "type": "question",
+      "phase": 2,
+      "title_template": "لو ضيف بعت فويس نوت يطلب أوردر أو يسأل على أصناف معينة (مثلاً أكل صحي أو خالي من مكونات معينة)، مين بيتعامل معاها حالياً",
+      "body_template": "",
+      "options": [
+        { "id": "cashier", "label": "الكاشير أو الهوست وسط الدوشة والزحمة", "add_tags": ["noisy_floor"], "pain_delta": 15 },
+        { "id": "ignored", "label": "بنتأخر في سماع الفويس نوت وبنرد متأخر", "add_tags": ["voice_delay"], "pain_delta": 15 },
+        { "id": "call_center", "label": "عندنا شخص مخصص لواتساب بس", "add_tags": ["dedicated_staff"], "pain_delta": 5 }
+      ],
+      "default_next": "ind_react2"
+    },
+    "ind_react2": {
+      "id": "ind_react2",
+      "type": "reaction",
+      "phase": 3,
+      "title_template": "وكيل واتساب بيسمع الفويس نوت ويرد بالمنيو ويرشح أصناف جانبية ومشروبات مع الأوردر، وبيجمع طلبات حجز الطاولات بالعدد والوقت من غير ما يشغل الكاشير في عز الزحمة",
+      "body_template": "حاسس إن ده هيفرق في تجربة ضيوفك",
+      "options": [
+        { "id": "agree", "label": "صح الكلام ده، وهيريح الفريق جوه المكان جداً", "add_tags": ["ops_relief"], "pain_delta": 10 },
+        { "id": "disagree", "label": "لأ مش مقتنع، أخاف ياخد حجز طاولة والمكان يكون مليان", "add_tags": ["skeptical"], "pain_delta": 0, "next_node_override": "ind_obj2" }
+      ],
+      "default_next": "q11_daily_volume"
+    },
+    "ind_obj2": {
+      "id": "ind_obj2",
+      "type": "objection_handler",
+      "phase": 3,
+      "title_template": "معاك حق، مفيش أسوأ من ضيف يوصل وميلاقيش طاولته",
+      "body_template": "الوكيل بيجمع طلب الحجز (الاسم، العدد، الساعة، داخلي ولا خارجي) ويبعتله إن الطلب اتسجل وهيوصله تأكيد خلال دقايق، أو يقرأ السعة المتاحة من شيت الحجوزات اليومي بتاعكم",
+      "options": [
+        { "id": "good", "label": "كده مفيش مجال للخبطة، نكمل", "add_tags": ["controlled_booking"], "pain_delta": 5 }
+      ],
+      "default_next": "q11_daily_volume"
+    }
+  },
+  "sample_conversation": [
+    { "sender": "customer", "text": "عايز أحجز طاولة لـ 6 أفراد بكرة الساعة 9 في فرع التجمع" },
+    { "sender": "agent", "text": "أهلاً بحضرتك، تنورنا في فرع التجمع، تحب الطاولة في المنطقة المفتوحة ولا الداخلية، ويا ريت الاسم ورقم التليفون عشان نأكدلك الحجز فوراً" }
+  ]
+}

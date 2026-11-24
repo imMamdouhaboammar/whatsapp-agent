@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
+import { isValidElement, useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
 import { ArrowRight, LockKeyhole, LogOut, MessageCircle, RefreshCw, ShieldCheck } from 'lucide-react';
 import { api } from '../api/client';
 import { useLocale } from '../locale-context';
 import { OwnerAccessContext } from './owner-access-context';
+import { isPublicMarketingRoute } from '../marketing/routing';
 import './owner-access.css';
 
 type AccessState = 'checking' | 'ready' | 'locked' | 'error';
@@ -16,10 +17,17 @@ export function OwnerSignOutButton({ onSignOut, pending }: { onSignOut: () => Pr
   ><LogOut size={18} aria-hidden="true" /></button>;
 }
 
-export function OwnerAccessGate({ children }: { children: ReactNode }) {
+export function OwnerAccessGate({ children, currentPath }: { children: ReactNode; currentPath?: string }) {
   const { tr, direction } = useLocale();
   const [access, setAccess] = useState<AccessState>('checking');
   const [required, setRequired] = useState(false);
+
+  const resolvedPath =
+    currentPath ??
+    (isValidElement(children) ? (children.props as Record<string, unknown>)?.initialPath as string | undefined : undefined) ??
+    (typeof window !== 'undefined' ? window.location.pathname : undefined);
+
+  const isPublic = isPublicMarketingRoute(resolvedPath);
 
   const checkAccess = useCallback(async () => {
     try {
@@ -32,19 +40,20 @@ export function OwnerAccessGate({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (isPublic) return;
     void checkAccess();
     window.addEventListener('focus', checkAccess);
     return () => window.removeEventListener('focus', checkAccess);
-  }, [checkAccess]);
+  }, [checkAccess, isPublic]);
 
   const signOut = useCallback(async () => {
     await api.endDashboardSession();
     setAccess('locked');
   }, []);
 
-  const contextValue = useMemo(() => ({ required, signOut }), [required, signOut]);
+  const contextValue = useMemo(() => ({ required: isPublic ? false : required, signOut }), [required, signOut, isPublic]);
 
-  if (access === 'ready') return <OwnerAccessContext.Provider value={contextValue}>{children}</OwnerAccessContext.Provider>;
+  if (isPublic || access === 'ready') return <OwnerAccessContext.Provider value={contextValue}>{children}</OwnerAccessContext.Provider>;
   if (access === 'checking') {
     return <main className="wa-owner-access-screen" dir={direction} role="status">
       <div className="wa-owner-loading"><LockKeyhole size={22} /><p>{tr('جارٍ فتح مساحة العمل', 'Opening your workspace')}</p></div>

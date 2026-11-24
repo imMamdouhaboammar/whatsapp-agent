@@ -1,0 +1,88 @@
+{
+  "industry_id": "tourism",
+  "name_ar": "السياحة والرحلات وحجوزات السفر",
+  "recommended_module_name": "موديول عروض الرحلات وتجميع بيانات الحجز",
+  "vocab": {
+    "industry_label": "السياحة والرحلات",
+    "customer_singular": "المسافر",
+    "customer_plural": "المسافرين"
+  },
+  "nodes": {
+    "ind_q1": {
+      "id": "ind_q1",
+      "type": "question",
+      "phase": 2,
+      "title_template": "وقت مواسم الإجازات والعمرة والصيف، إيه أكتر ضغط بيقابلك على واتساب",
+      "body_template": "",
+      "options": [
+        { "id": "pricing_combos", "label": "حسابات معقدة حسب عدد الأفراد والأطفال والغرف والتواريخ", "add_tags": ["complex_quotes"], "pain_delta": 15 },
+        { "id": "program_details", "label": "شرح تفاصيل البرنامج والفنادق والانتقالات لكل مسافر", "add_tags": ["itinerary_qa"], "pain_delta": 15 },
+        { "id": "visa_docs", "label": "أسئلة متكررة عن الأوراق المطلوبة والتأشيرات ومواعيد الطيران", "add_tags": ["visa_qa"], "pain_delta": 10 }
+      ],
+      "default_next": "ind_react1"
+    },
+    "ind_react1": {
+      "id": "ind_react1",
+      "type": "reaction",
+      "phase": 2,
+      "title_template": "اللي بيخطط لرحلة أو إجازة بيبعت لـ 5 شركات سياحة في نفس الدقيقة، وأول شركة ترد عليه بتفاصيل واضحة وسعر مظبوط لعدد أسرته هي اللي بياخد منها العرض",
+      "body_template": "ده اللي بيحصل معاك في الموسم",
+      "options": [
+        { "id": "agree", "label": "صح الكلام ده، العميل مبيستناش نص ساعة حتى", "add_tags": ["speed_wins_booking"], "pain_delta": 20, "next_node_override": "ind_q2" },
+        { "id": "disagree", "label": "لأ مش مقتنع، العميل في السياحة بيدور على أرخص سعر بس", "add_tags": ["skeptical"], "pain_delta": 0, "next_node_override": "ind_obj1" }
+      ],
+      "default_next": "ind_q2"
+    },
+    "ind_obj1": {
+      "id": "ind_obj1",
+      "type": "objection_handler",
+      "phase": 2,
+      "title_template": "السعر مهم طبعاً، بس اللي بيجاوب متأخر ساعات كتير مبيوصلش أصلاً لمرحلة المقارنة لأن العميل قفل الحجز مع غيره",
+      "body_template": "وكمان لما الوكيل يشرحله الفارق بين فندق 4 نجوم و5 نجوم وقرب الفندق من المزارات في ثواني، بيخلي عميلك يقتنع بالقيمة مش بالأرخص وخلاص",
+      "options": [
+        { "id": "convinced", "label": "فعلاً التوضيح السريع بيفرق جداً في السياحة", "add_tags": ["value_selling"], "pain_delta": 10 }
+      ],
+      "default_next": "ind_q2"
+    },
+    "ind_q2": {
+      "id": "ind_q2",
+      "type": "question",
+      "phase": 2,
+      "title_template": "أكتر نوع رحلات شغالين عليه دلوقتي",
+      "body_template": "",
+      "options": [
+        { "id": "domestic", "label": "سياحة داخلية وفنادق ورحلات اليوم الواحد", "add_tags": ["tour_domestic"], "pain_delta": 10 },
+        { "id": "outbound", "label": "رحلات خارجية وبرامج دولية وتأشيرات", "add_tags": ["tour_outbound"], "pain_delta": 15 },
+        { "id": "umrah", "label": "برامج العمرة والسياحة الدينية", "add_tags": ["tour_umrah"], "pain_delta": 15 }
+      ],
+      "default_next": "ind_react2"
+    },
+    "ind_react2": {
+      "id": "ind_react2",
+      "type": "reaction",
+      "phase": 3,
+      "title_template": "لما الوكيل يجمعلك من المسافر عدد الأفراد، أعمار الأطفال، التواريخ المقترحة، والميزانية التقريبية قبل ما موظف الحجز يتدخل، موظفك بيقدر يقفل 3 أضعاف الحجوزات في نفس اليوم",
+      "body_template": "تتفق مع الحساب ده",
+      "options": [
+        { "id": "agree", "label": "صح الكلام ده، تجميع البيانات ده بياكل نص وقت الموظف", "add_tags": ["intake_automation"], "pain_delta": 15 },
+        { "id": "disagree", "label": "لأ مش مقتنع، أسعار الفنادق والطيران بتتغير كل ساعة", "add_tags": ["skeptical"], "pain_delta": 0, "next_node_override": "ind_obj2" }
+      ],
+      "default_next": "q11_daily_volume"
+    },
+    "ind_obj2": {
+      "id": "ind_obj2",
+      "type": "objection_handler",
+      "phase": 3,
+      "title_template": "مظبوط جداً، عشان كده مش بنخلي الوكيل يدي سعر نهائي متغير من دماغه",
+      "body_template": "الوكيل بيدي الأسعار التقديرية للبرامج الثابتة اللي إنت محددهاله في ملف المعرفة أو شيت الأسعار، ولو فيه طيران متغير بيجمع بيانات المسافر كاملة ويقوله السعر المبدئي ويحول الحجز للموظف للتسعير اللحظي",
+      "options": [
+        { "id": "good", "label": "لو بيشتغل بالنظام المنضبط ده يبقى عملي جداً", "add_tags": ["quote_handoff"], "pain_delta": 5 }
+      ],
+      "default_next": "q11_daily_volume"
+    }
+  },
+  "sample_conversation": [
+    { "sender": "customer", "text": "عايزين عرض لشرم الشيخ 4 أيام لشخصين وطفل 7 سنين الأسبوع الجاي" },
+    { "sender": "agent", "text": "أهلاً بحضرتك، متاح عرض 4 أيام / 3 ليالي شامل الإفطار والعشاء والانتقالات، الطفل تحت 12 سنة مجاني في الغرفة، تفضل فندق 4 نجوم ولا 5 نجوم صف أول على البحر عشان أبعتلك الأسعار بالظبط" }
+  ]
+}

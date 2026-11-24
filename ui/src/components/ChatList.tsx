@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { MessageCircle, Search } from 'lucide-react';
 import { Avatar, Badge, Tag } from '@lobehub/ui';
 import type { ChatSummary } from '../api/types';
@@ -24,7 +24,7 @@ function displayTime(timestamp: number | undefined, language: Language): string 
   return date.toLocaleDateString(language === 'ar' ? 'ar-EG' : 'en-US', { day: 'numeric', month: 'short' });
 }
 
-export function ChatList({ chats, selectedChatId, pendingDraftChatIds, onSelectChat }: ChatListProps) {
+export const ChatList = memo(function ChatList({ chats, selectedChatId, pendingDraftChatIds, onSelectChat }: ChatListProps) {
   const { language, tr } = useLocale();
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<ChatFilter>('all');
@@ -133,5 +133,5 @@ export function ChatList({ chats, selectedChatId, pendingDraftChatIds, onSelectC
       </div>
     </section>
   );
-}
+});
 
