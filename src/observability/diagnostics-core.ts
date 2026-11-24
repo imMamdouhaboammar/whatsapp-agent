@@ -155,14 +155,7 @@ export class DiagnosticsCore {
     }
 
     while (this.traces.size >= this.maxTraces) {
-      let oldestId: string | undefined;
-      let oldestActivity = Number.POSITIVE_INFINITY;
-      for (const [candidateId, candidate] of this.traces) {
-        if (candidate.updatedAt < oldestActivity) {
-          oldestId = candidateId;
-          oldestActivity = candidate.updatedAt;
-        }
-      }
+      const oldestId = this.traces.keys().next().value;
       if (!oldestId) break;
       this.traces.delete(oldestId);
       this.truncation.tracesEvicted++;
@@ -370,6 +363,8 @@ export class DiagnosticsCore {
       this.truncation.eventsEvicted += discarded;
     }
     trace.updatedAt = at;
+    this.traces.delete(canonicalId);
+    this.traces.set(canonicalId, trace);
     return { ...event };
   }
 

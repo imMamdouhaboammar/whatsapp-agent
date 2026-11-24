@@ -279,10 +279,15 @@ export function createApiServer(deps: ApiDependencies): Hono {
     if (deps.whatsappClient?.canonicalizeJid) {
       chatId = await deps.whatsappClient.canonicalizeJid(chatId);
     }
-    const limit = Number(c.req.query('limit') ?? 50);
+    const rawLimit = Number(c.req.query('limit') ?? 50);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.max(1, Math.min(Math.floor(rawLimit), 200)) : 50;
     const messages = deps.memoryStore.getMessages(chatId, limit);
-    const outstanding: ChatMessage[] = deps.memoryStore.getSendLedger().getOutstanding(chatId).map((intent): ChatMessage => {
-      const attempts = deps.memoryStore.getSendLedger().getAttempts(intent.id);
+    const outstandingIntents = deps.memoryStore.getSendLedger().getOutstanding(chatId);
+    const lastAttemptMap = outstandingIntents.length > 0
+      ? deps.memoryStore.getSendLedger().getLastAttempts(outstandingIntents.map((i) => i.id))
+      : new Map<string, number>();
+
+    const outstanding: ChatMessage[] = outstandingIntents.map((intent): ChatMessage => {
       return {
         id: `intent:${intent.id}`,
         sendIntentId: intent.id,
@@ -295,7 +300,7 @@ export function createApiServer(deps: ApiDependencies): Hono {
         replyToId: intent.replyToMessageId,
         status: 'pending',
         deliveryState: intent.state as ChatMessage['deliveryState'],
-        lastAttemptAt: attempts.at(-1)?.startedAt,
+        lastAttemptAt: lastAttemptMap.get(intent.id),
         nativeMessageId: intent.nativeMessageId
       };
     });

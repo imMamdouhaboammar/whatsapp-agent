@@ -6,7 +6,8 @@ import type {
   ChatMessage,
   ConversationFold,
   ChatSummary,
-  ContactDossier
+  ContactDossier,
+  ContactStage
 } from './types';
 
 export interface MemoryStoreOptions {
@@ -152,6 +153,10 @@ export class MemoryStore {
 
   addCommitmentToDossier(chatId: string, commitment: string) {
     this.sqlite.addCommitmentToDossier(chatId, commitment);
+  }
+
+  updateDossierExtracts(chatId: string, updates: { facts?: string[]; commitments?: string[]; stage?: ContactStage }) {
+    this.sqlite.updateDossierExtracts(chatId, updates);
   }
 
   // --- Contact Memory & Preferences ---

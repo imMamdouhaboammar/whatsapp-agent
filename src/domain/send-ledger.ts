@@ -193,6 +193,8 @@ export class SendLedger {
     this.db.run('CREATE INDEX IF NOT EXISTS idx_send_intents_batch ON send_intents(batch_id, batch_ordinal)');
     this.db.run('CREATE INDEX IF NOT EXISTS idx_send_intents_native ON send_intents(chat_id, native_message_id)');
     this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_send_intents_retry_parent ON send_intents(parent_intent_id) WHERE parent_intent_id IS NOT NULL');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_send_intents_lease ON send_intents(state, lease_expires_at)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_send_intents_uncertain ON send_intents(state, updated_at)');
     this.db.run(`
       CREATE TABLE IF NOT EXISTS send_attempts (
         id TEXT PRIMARY KEY,
@@ -691,6 +693,22 @@ export class SendLedger {
       networkStartedAt: r.network_started_at ?? undefined, finishedAt: r.finished_at ?? undefined,
       outcome: r.outcome, failureCode: r.failure_code ?? undefined, traceId: r.trace_id
     }));
+  }
+
+  getLastAttempts(intentIds: string[]): Map<string, number> {
+    const map = new Map<string, number>();
+    if (intentIds.length === 0) return map;
+    const placeholders = intentIds.map(() => '?').join(',');
+    const rows = this.db.prepare(`
+      SELECT intent_id, MAX(started_at) as last_started
+      FROM send_attempts
+      WHERE intent_id IN (${placeholders})
+      GROUP BY intent_id
+    `).all(...intentIds) as Array<{ intent_id: string; last_started: number }>;
+    for (const r of rows) {
+      map.set(r.intent_id, r.last_started);
+    }
+    return map;
   }
 
   getEvents(id: string): SendEvent[] {

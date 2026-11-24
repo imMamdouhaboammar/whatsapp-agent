@@ -1,4 +1,5 @@
 import { serveStatic } from 'hono/bun';
+import { compress } from 'hono/compress';
 import { createCapabilities, registerCapabilityRoutes } from './agent/capabilities-api';
 import { AgentTurnCoordinator } from './agent/turn-coordinator';
 import { createInboundPlanner } from './agent/inbound-planner';
@@ -601,9 +602,24 @@ export async function createFableWhatsAppAgent(options: {
   registerCapabilityRoutes(app, capabilities, options.capabilityToken ?? process.env.AGENT_CAPABILITIES_OWNER_TOKEN ?? '');
   if (metaClient) registerMetaCloudWebhookRoutes(app, metaClient);
 
+  // Enable HTTP response compression (gzip/deflate)
+  app.use('*', compress());
+
+  // Cache-Control headers for immutable hashed assets (only when actually served as non-HTML asset)
+  app.use('/assets/*', async (c, next) => {
+    await next();
+    const contentType = c.res.headers.get('content-type') ?? '';
+    if (c.res.status === 200 && !contentType.includes('text/html')) {
+      c.header('Cache-Control', 'public, max-age=31536000, immutable');
+    }
+  });
+
   // Serve static UI assets if built
   app.use('/*', serveStatic({ root: './ui/dist' }));
-  app.get('*', serveStatic({ path: './ui/dist/index.html' }));
+  app.get('*', async (c, next) => {
+    c.header('Cache-Control', 'no-cache');
+    return serveStatic({ path: './ui/dist/index.html' })(c, next);
+  });
 
   const proactiveAbort = options.autoConnect && proactiveScheduler ? new AbortController() : undefined;
   if (proactiveAbort && proactiveScheduler) {
