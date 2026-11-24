@@ -37,7 +37,7 @@ credentials.json
 service-account*.json
 
 # Databases & Runtime SQLite Persistence
-data/
+/data/
 *.db
 *.db-wal
 *.db-shm
@@ -151,6 +151,8 @@ agent-kernel/env-vault/
 *.worktree*/
 *.wave.*
 coordinator.*/
+fable-hero-preview/
+test-session/
 *.pem
 *.key
 .anti-slop/scratch/

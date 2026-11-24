@@ -1,0 +1,88 @@
+{
+  "industry_id": "ecommerce",
+  "name_ar": "الإيكوميرس والمتاجر الأونلاين",
+  "recommended_module_name": "موديول مبيعات المتاجر وتأكيد الأوردرات",
+  "vocab": {
+    "industry_label": "المتاجر الأونلاين والإيكوميرس",
+    "customer_singular": "المشتري",
+    "customer_plural": "المشترين"
+  },
+  "nodes": {
+    "ind_q1": {
+      "id": "ind_q1",
+      "type": "question",
+      "phase": 2,
+      "title_template": "لما بتشغل إعلان جديد، إيه أكتر سبب بيخلي المشتري يدخل واتساب ويمشي من غير ما يطلب",
+      "body_template": "",
+      "options": [
+        { "id": "slow_reply", "label": "الرد اتأخر فحماسه للشراء برد", "add_tags": ["impulse_lost"], "pain_delta": 15 },
+        { "id": "size_stock", "label": "أسئلة كتير عن المقاسات والألوان ومصاريف الشحن", "add_tags": ["catalog_qa"], "pain_delta": 10 },
+        { "id": "data_friction", "label": "مكسل يملى بيانات العنوان والتليفون على الموقع", "add_tags": ["whatsapp_checkout"], "pain_delta": 15 }
+      ],
+      "default_next": "ind_react1"
+    },
+    "ind_react1": {
+      "id": "ind_react1",
+      "type": "reaction",
+      "phase": 2,
+      "title_template": "العميل اللي ضغط على إعلانك الساعة 12 بالليل وهو ماسك الموبايل على السرير، ده قرار شراء لحظي، لو مردتش عليه في دقيقتين تاني يوم الصبح بيكون نسى الإعلان أصلاً",
+      "body_template": "شوفت الموقف ده في أرقام حملاتك قبل كده",
+      "options": [
+        { "id": "agree", "label": "صح الكلام ده، نص ميزانية الإعلانات بتروح بسبب التأخير ده", "add_tags": ["ad_spend_waste"], "pain_delta": 20, "next_node_override": "ind_q2" },
+        { "id": "disagree", "label": "لأ مش مقتنع، اللي عايز يشتري بيستنى أو بيطلب من الموقع", "add_tags": ["skeptical"], "pain_delta": 0, "next_node_override": "ind_obj1" }
+      ],
+      "default_next": "ind_q2"
+    },
+    "ind_obj1": {
+      "id": "ind_obj1",
+      "type": "objection_handler",
+      "phase": 2,
+      "title_template": "المشتري اللي متعود يطلب من الموقع فعلاً بيخلص لوحده، بس في مصر والخليج نسبة ضخمة بتدخل واتساب عشان تسأل سؤال واحد يطمنها قبل ما تطلب",
+      "body_template": "لو الوكيل جاوبه على المقاس والشحن في 10 ثواني وخد منه العنوان في نفس الشات، إنت بتحول رسايل الاستفسار دي لمبيعات فورية",
+      "options": [
+        { "id": "convinced", "label": "عندك حق، فعلاً ناس كتير بتفضل الطلب على واتساب", "add_tags": ["cod_focus"], "pain_delta": 10 }
+      ],
+      "default_next": "ind_q2"
+    },
+    "ind_q2": {
+      "id": "ind_q2",
+      "type": "question",
+      "phase": 2,
+      "title_template": "إيه وضع تأكيد أوردرات الدفع عند الاستلام (COD) والمرتجعات عندك",
+      "body_template": "",
+      "options": [
+        { "id": "high_rto", "label": "المرتجعات عالية والتأكيد اليدوي بياخد وقت طويل", "add_tags": ["rto_pain"], "pain_delta": 15 },
+        { "id": "manual_sheets", "label": "بنجمع الأوردرات يدوي في شيت إكسل وبنغلط أوقات الضغط", "add_tags": ["sheets_sync_need"], "pain_delta": 15 },
+        { "id": "prepaid", "label": "أغلب شغلنا دفع أونلاين على المتجر", "add_tags": ["prepaid_store"], "pain_delta": 5 }
+      ],
+      "default_next": "ind_react2"
+    },
+    "ind_react2": {
+      "id": "ind_react2",
+      "type": "reaction",
+      "phase": 3,
+      "title_template": "المشتري لما يبعتلك سكرين شوت لمنتج ويسأل بكام، لو الوكيل قرأ الصورة وطلعله السعر والمقاسات المتاحة وعرضله منتج مكمل (Upsell) في نفس اللحظة، متوسط سلة الطلب بيزيد من غير ما تزود جنيه في الإعلانات",
+      "body_template": "الطريقة دي تفرق في مبيعات متجرك",
+      "options": [
+        { "id": "agree", "label": "صح الكلام ده، موضوع فهم صور المنتجات ده مهم جداً لينا", "add_tags": ["vision_upsell"], "pain_delta": 10 },
+        { "id": "disagree", "label": "لأ مش مقتنع، أخاف يبيع مقاس مش موجود في المخزن", "add_tags": ["skeptical"], "pain_delta": 0, "next_node_override": "ind_obj2" }
+      ],
+      "default_next": "q11_daily_volume"
+    },
+    "ind_obj2": {
+      "id": "ind_obj2",
+      "type": "objection_handler",
+      "phase": 3,
+      "title_template": "نقطة المخزون دي فعلاً أساسية",
+      "body_template": "التطبيق فيه ربط مباشر مع Google Sheets للمخزون عشان يقرأ المقاسات المتاحة لحظياً قبل ما يأكد للعميل، وقريباً هنضيف ربط مباشر مع Salla وZid وShopify في متجر الإضافات",
+      "options": [
+        { "id": "good", "label": "لو بيقرأ من شيت المخزون مباشرة يبقى ممتاز", "add_tags": ["sheets_inventory"], "pain_delta": 5 }
+      ],
+      "default_next": "q11_daily_volume"
+    }
+  },
+  "sample_conversation": [
+    { "sender": "customer", "text": "الهودي الأسود ده بكام وفيه منه مقاس L والشحن لإسكندرية كام" },
+    { "sender": "agent", "text": "سعره 650 جنيه ومقاس L متاح حالياً، الشحن لإسكندرية 60 جنيه وبيوصل خلال يومين، ولو أخدت قطعتين الشحن مجاني، تحب نجهزلك الأوردر بالاسم والعنوان" }
+  ]
+}

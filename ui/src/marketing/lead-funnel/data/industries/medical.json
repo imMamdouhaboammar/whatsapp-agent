@@ -1,0 +1,89 @@
+{
+  "industry_id": "medical",
+  "name_ar": "الميديكال والعيادات والمراكز الطبية",
+  "recommended_module_name": "موديول حجز العيادات والرد الإداري المنضبط",
+  "vocab": {
+    "industry_label": "العيادات والمراكز الطبية",
+    "customer_singular": "المريض",
+    "customer_plural": "المرضى"
+  },
+  "nodes": {
+    "ind_q1": {
+      "id": "ind_q1",
+      "type": "question",
+      "phase": 2,
+      "title_template": "إيه أكتر نوع أسئلة بيسحب وقت الاستقبال على واتساب العيادة كل يوم",
+      "body_template": "",
+      "options": [
+        { "id": "prices_hours", "label": "سعر الكشف، مواعيد الدكتور، والعنوان باللوكيشن", "add_tags": ["faq_heavy"], "pain_delta": 10 },
+        { "id": "booking_reschedule", "label": "حجز وتعديل وإلغاء المواعيد وتأكيد الحضور", "add_tags": ["booking_heavy"], "pain_delta": 15 },
+        { "id": "voice_reports", "label": "فويس نوت طويلة وصور تحاليل وروشتات", "add_tags": ["multimodal_heavy"], "pain_delta": 15 }
+      ],
+      "default_next": "ind_react1"
+    },
+    "ind_react1": {
+      "id": "ind_react1",
+      "type": "reaction",
+      "phase": 2,
+      "title_template": "المريض اللي بيتألم أو بيدور على كشف الساعة 11 بالليل، لو بعت لعيادتك ومحدش رد غير تاني يوم الضهر، بيكون حجز في عيادة تانية الصبح بدري",
+      "body_template": "الكلام ده بيحصل في عيادتك فعلاً",
+      "options": [
+        { "id": "agree", "label": "صح الكلام ده، وبنخسر حجوزات جاهزة بسبب التأخير", "add_tags": ["night_bookings_lost"], "pain_delta": 15, "next_node_override": "ind_q2" },
+        { "id": "partly", "label": "بيحصل في التخصصات السريعة زي الأسنان والجلدية والباطنة", "add_tags": ["urgent_specialty"], "pain_delta": 10, "next_node_override": "ind_q2" },
+        { "id": "disagree", "label": "لأ مش مقتنع، مرضانا جايين بالاسم للدكتور وبيستنوا", "add_tags": ["skeptical"], "pain_delta": 0, "next_node_override": "ind_obj1" }
+      ],
+      "default_next": "ind_q2"
+    },
+    "ind_obj1": {
+      "id": "ind_obj1",
+      "type": "objection_handler",
+      "phase": 2,
+      "title_template": "المريض القديم فعلاً بيستنى الدكتور بالاسم، لكن المريض الجديد اللي جاي من إعلان أو ترشيح سريع بيقارن أول 3 عيادات يردوا عليه",
+      "body_template": "وحتى المريض القديم لما يلاقي رد فوري ومؤدب بيأكدله ميعاده ويبعتله اللوكيشن، ده بيعلي صورة العيادة ويشيل ضغط التليفونات الصبح",
+      "options": [
+        { "id": "convinced", "label": "نقطة قوية فعلاً، نكمل", "add_tags": ["new_patient_focus"], "pain_delta": 10 }
+      ],
+      "default_next": "ind_q2"
+    },
+    "ind_q2": {
+      "id": "ind_q2",
+      "type": "question",
+      "phase": 2,
+      "title_template": "مشكلة المرضى اللي بيحجزوا ميعاد وميجوش (No-Show) بتتكرر عندكم بنسبة قد إيه",
+      "body_template": "",
+      "options": [
+        { "id": "high_noshow", "label": "كتير جداً، وبتبوظ جدول الدكتور اليومي", "add_tags": ["noshow_pain"], "pain_delta": 15 },
+        { "id": "mid_noshow", "label": "موجودة بس بنحاول نأكد عليهم بالتليفون يدوي", "add_tags": ["manual_confirm"], "pain_delta": 10 },
+        { "id": "low_noshow", "label": "قليلة لأننا بناخد عربون أو بنأكد بدري", "add_tags": ["low_noshow"], "pain_delta": 0 }
+      ],
+      "default_next": "ind_react2"
+    },
+    "ind_react2": {
+      "id": "ind_react2",
+      "type": "reaction",
+      "phase": 3,
+      "title_template": "أكبر قلق عند أي دكتور من الذكاء الاصطناعي هو إنه يفتي طبياً أو يوصف علاج، عشان كده الوكيل بيتقفل على الأسعار والمواعيد واللوكيشن بس، وأي سؤال طبي بيتحول للدكتور فوراً",
+      "body_template": "القاعدة دي تطمنك على سمعة العيادة",
+      "options": [
+        { "id": "agree", "label": "صح الكلام ده، ده شرط أساسي عشان أشغله عندي", "add_tags": ["medical_guardrails_req"], "pain_delta": 5 },
+        { "id": "disagree", "label": "لأ مش مقتنع، إيه اللي يضمن إنه ميغلطش", "add_tags": ["skeptical"], "pain_delta": 0, "next_node_override": "ind_obj2" }
+      ],
+      "default_next": "q11_daily_volume"
+    },
+    "ind_obj2": {
+      "id": "ind_obj2",
+      "type": "objection_handler",
+      "phase": 3,
+      "title_template": "السؤال ده مهم جداً ومش بنعتمد فيه على وعد كلامي",
+      "body_template": "جوه التطبيق نفسه فيه Simulator ومعمل اختبار بتجرب فيه بنفسك تسأله عن أدوية وأعراض قبل ما تربطه برقم العيادة أصلاً، وبتتأكد إنه بيرفض يجاوب طبياً ويحول للدكتور",
+      "options": [
+        { "id": "good", "label": "وجود محاكي للتجربة قبل التشغيل يطمن فعلاً", "add_tags": ["simulator_interested"], "pain_delta": 5 }
+      ],
+      "default_next": "q11_daily_volume"
+    }
+  },
+  "sample_conversation": [
+    { "sender": "customer", "text": "مساء الخير، سعر كشف الجلدية كام وهل في ميعاد بكرة بعد 6" },
+    { "sender": "agent", "text": "مساء النور، سعر الكشف 400 جنيه وشامل الاستشارة خلال أسبوعين، متاح بكرة مع د. سارة الساعة 6:30 أو 7:15 مساءً، تحب نثبت أنهي ميعاد باسم حضرتك" }
+  ]
+}

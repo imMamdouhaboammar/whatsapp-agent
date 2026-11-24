@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { memo, useEffect, useRef, useState, type FormEvent } from 'react';
 import { AlertCircle, ArrowRight, Check, CheckCheck, Clock3, FileText, MessageCircle, Mic, Reply, Send, Trash2, X } from 'lucide-react';
 import { Gemini } from '@lobehub/icons';
 import { Avatar } from '@lobehub/ui';
@@ -32,7 +32,7 @@ function messageTime(timestamp: number, language: Language): string {
   return new Date(timestamp).toLocaleTimeString(language === 'ar' ? 'ar-EG' : 'en-US', { hour: 'numeric', minute: '2-digit' });
 }
 
-export function ChatThread({ chat, messages, onSendMessage, onRetrySendIntent, onSendReaction, onChangeMode, onBack, onOpenInspector, onDeleteChat, onClearMessages, reactionsEnabled = true }: ChatThreadProps) {
+export const ChatThread = memo(function ChatThread({ chat, messages, onSendMessage, onRetrySendIntent, onSendReaction, onChangeMode, onBack, onOpenInspector, onDeleteChat, onClearMessages, reactionsEnabled = true }: ChatThreadProps) {
   const { language, tr } = useLocale();
   const [inputText, setInputText] = useState('');
   const [sending, setSending] = useState(false);
@@ -370,5 +370,5 @@ export function ChatThread({ chat, messages, onSendMessage, onRetrySendIntent, o
       )}
     </main>
   );
-}
+});
 

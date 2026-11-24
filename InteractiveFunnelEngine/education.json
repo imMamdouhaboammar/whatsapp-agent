@@ -1,0 +1,88 @@
+{
+  "industry_id": "education",
+  "name_ar": "التعليم الأكاديمي والدورات التدريبية",
+  "recommended_module_name": "موديول تسجيل الكورسات والرد على المناهج",
+  "vocab": {
+    "industry_label": "التعليم والدورات التدريبية",
+    "customer_singular": "المتدرب",
+    "customer_plural": "المتدربين"
+  },
+  "nodes": {
+    "ind_q1": {
+      "id": "ind_q1",
+      "type": "question",
+      "phase": 2,
+      "title_template": "لما تفتح باب التسجيل لدفعة أو كورس جديد، إيه أكتر حاجة بتضغطكم على واتساب",
+      "body_template": "",
+      "options": [
+        { "id": "syllabus_price", "label": "نفس الأسئلة عن المحتوى، السعر، المواعيد، والشهادة", "add_tags": ["syllabus_qa"], "pain_delta": 15 },
+        { "id": "level_fit", "label": "كل متدرب بيسأل هل الكورس مناسب لمستواه وخلفيته ولا لأ", "add_tags": ["advisory_qa"], "pain_delta": 15 },
+        { "id": "payment_confirm", "label": "استلام إيصالات التحويل وتأكيد حجز المقعد", "add_tags": ["payment_intake"], "pain_delta": 15 }
+      ],
+      "default_next": "ind_react1"
+    },
+    "ind_react1": {
+      "id": "ind_react1",
+      "type": "reaction",
+      "phase": 2,
+      "title_template": "الطالب أو المتدرب بيسأل بالليل وهو متحمس يطور نفسه، لو ملاقاش حد يشرحله الكورس هيفيده إزاي ويرد على شكوكه في ساعتها، حماسه بيبرد تاني يوم ويأجل التسجيل للدفعة الجاية",
+      "body_template": "بتلاحظ النمط ده مع اللي بيسألوا على الكورسات",
+      "options": [
+        { "id": "agree", "label": "صح الكلام ده، نص اللي بيسألوا بالليل بيختفوا تاني يوم", "add_tags": ["impulse_enrollment_lost"], "pain_delta": 20, "next_node_override": "ind_q2" },
+        { "id": "disagree", "label": "لأ مش مقتنع، اللي عايز يتعلم بيدور ويسأل براحته", "add_tags": ["skeptical"], "pain_delta": 0, "next_node_override": "ind_obj1" }
+      ],
+      "default_next": "ind_q2"
+    },
+    "ind_obj1": {
+      "id": "ind_obj1",
+      "type": "objection_handler",
+      "phase": 2,
+      "title_template": "المهتم جداً فعلاً بياخد وقته، بس المنافسة في الكورسات بقت عالية جداً والبدائل قدامه بالهبل",
+      "body_template": "لما يلاقي عندك وكيل فاهم المنهج بالتفصيل ويسأله عن مستواه الحالي ويرشحله التراك الصح ويبعتله المحاور في دقيقتين، بيثق في احترافية الأكاديمية من قبل ما يحضر أول محاضرة",
+      "options": [
+        { "id": "convinced", "label": "فعلاً جودة الاستشارة الأولية بتفرق في قرار التسجيل", "add_tags": ["advisory_value"], "pain_delta": 10 }
+      ],
+      "default_next": "ind_q2"
+    },
+    "ind_q2": {
+      "id": "ind_q2",
+      "type": "question",
+      "phase": 2,
+      "title_template": "طبيعة البرامج التعليمية اللي بتقدمها إيه",
+      "body_template": "",
+      "options": [
+        { "id": "live_cohorts", "label": "كورسات لايف أو أوفلاين بمواعيد دفعات محددة", "add_tags": ["edu_cohorts"], "pain_delta": 10 },
+        { "id": "recorded", "label": "كورسات مسجلة ومنصات أونلاين", "add_tags": ["edu_recorded"], "pain_delta": 10 },
+        { "id": "academic", "label": "أكاديمية لغات أو برمجة أو دروس لطلاب المدارس والجامعات", "add_tags": ["edu_academic"], "pain_delta": 15 }
+      ],
+      "default_next": "ind_react2"
+    },
+    "ind_react2": {
+      "id": "ind_react2",
+      "type": "reaction",
+      "phase": 3,
+      "title_template": "تقدر تغذي الوكيل بملفات المنهج (PDF) والأسئلة الشائعة، فيرد على أي استفسار تقني أو أكاديمي بدقة، ويستلم بيانات المتدرب وصورة التحويل البنكي أو إنستاباي ويجهزهم للتفعيل",
+      "body_template": "الطريقة دي تغنيك عن تكرار نفس الكلام مع مئات الطلاب",
+      "options": [
+        { "id": "agree", "label": "صح الكلام ده، خصوصاً وقت قفل باب الحجز والضغط", "add_tags": ["enrollment_rush"], "pain_delta": 15 },
+        { "id": "disagree", "label": "لأ مش مقتنع، فيه أولياء أمور أو طلاب بيحتاجوا مكالمة أو شرح طويل", "add_tags": ["skeptical"], "pain_delta": 0, "next_node_override": "ind_obj2" }
+      ],
+      "default_next": "q11_daily_volume"
+    },
+    "ind_obj2": {
+      "id": "ind_obj2",
+      "type": "objection_handler",
+      "phase": 3,
+      "title_template": "صحيح، في الحالات اللي محتاجة مكالمة طويلة أو استشارة خاصة الوكيل مش بيجبرهم يكملوا شات",
+      "body_template": "بيجاوب على الأسئلة الأساسية الأول، ولو لقى ولي الأمر أو الطالب محتاج مكالمة بيحجزله ميعاد اتصال مع مستشار القبول ومعاه ملخص كامل للمحادثة",
+      "options": [
+        { "id": "good", "label": "كده بيجمع بين السرعة والتواصل البشري وقت الحاجة", "add_tags": ["hybrid_admissions"], "pain_delta": 5 }
+      ],
+      "default_next": "q11_daily_volume"
+    }
+  },
+  "sample_conversation": [
+    { "sender": "customer", "text": "أنا لسه مبتدئ في تحليل البيانات، الدبلومة دي مناسبة ليا ولا محتاجة خلفية برمجية، وبكام" },
+    { "sender": "agent", "text": "مناسبة تماماً للمبتدئين لأننا بنبدأ من الصفر في الإكسل وSQL لحد الباور بي آي ومش محتاجة خبرة برمجية مسبقة، الدفعة الجديدة بتبدأ 10 الشهر الجاي وسعرها 3500 جنيه ومتاح تقسيط على دفعتين، تحب أبعتلك ملف المحاور الكامل" }
+  ]
+}

@@ -1,0 +1,263 @@
+{
+  "version": "1.0.0",
+  "totalEstimatedSteps": 16,
+  "nodes": {
+    "q01_industry": {
+      "id": "q01_industry",
+      "type": "question",
+      "phase": 1,
+      "title_template": "خلينا نبدأ بالمهم، إيه مجال شغلك اللي بتستقبل عليه رسايل واتساب دلوقتي",
+      "body_template": "اختيارك هنا هيحدد باقي الأسئلة والسيناريوهات عشان نطلعلك إعداد مناسب لطبيعة عملائك",
+      "options": [
+        { "id": "medical", "label": "ميديكال وعيادات ومراكز طبية", "set_field": ["industry_id", "medical"], "add_tags": ["ind_medical"], "pain_delta": 5 },
+        { "id": "ecommerce", "label": "إيكوميرس ومتاجر أونلاين", "set_field": ["industry_id", "ecommerce"], "add_tags": ["ind_ecommerce"], "pain_delta": 5 },
+        { "id": "real_estate", "label": "عقارات وبروكرز وتطوير عقاري", "set_field": ["industry_id", "real_estate"], "add_tags": ["ind_real_estate"], "pain_delta": 5 },
+        { "id": "tourism", "label": "سياحة ورحلات وحجوزات سفر", "set_field": ["industry_id", "tourism"], "add_tags": ["ind_tourism"], "pain_delta": 5 },
+        { "id": "hospitality", "label": "مطاعم وكافيهات وضيافة", "set_field": ["industry_id", "hospitality"], "add_tags": ["ind_hospitality"], "pain_delta": 5 },
+        { "id": "education", "label": "تعليم أكاديمي ودورات تدريبية", "set_field": ["industry_id", "education"], "add_tags": ["ind_education"], "pain_delta": 5 }
+      ],
+      "default_next": "q02_ops_mode"
+    },
+
+    "q02_ops_mode": {
+      "id": "q02_ops_mode",
+      "type": "question",
+      "phase": 1,
+      "title_template": "مين اللي ماسك الرد على رسايل {{customer_plural}} على واتساب حالياً",
+      "body_template": "اختار الوضع الأقرب للي بيحصل فعلياً كل يوم",
+      "options": [
+        { "id": "team", "label": "عندي فريق موديريشن أو سيلز بيرد", "set_field": ["ops_mode", "team"], "add_tags": ["has_team"], "pain_delta": 10 },
+        { "id": "solo", "label": "أنا اللي برد بنفسي أو معايا شخص واحد", "set_field": ["ops_mode", "solo"], "add_tags": ["solo_operator"], "pain_delta": 15 },
+        { "id": "existing_bot", "label": "شغال حالياً بمنصة شات بوت أو Business API", "set_field": ["ops_mode", "existing_bot"], "add_tags": ["paying_saas"], "pain_delta": 15 }
+      ],
+      "default_next": "q03_team_speed"
+    },
+
+    "q03_team_speed": {
+      "id": "q03_team_speed",
+      "type": "question",
+      "phase": 2,
+      "title_template": "بصراحة، لما ينزل إعلان وتيجي 25 رسالة من {{customer_plural}} في نفس الوقت، متوسط وقت الرد بيكون قد إيه",
+      "body_template": "فكر في ساعات الذروة أو بعد الساعة 10 بالليل",
+      "options": [
+        { "id": "under_1m", "label": "أقل من دقيقة طول اليوم وبليل", "add_tags": ["fast_team"], "pain_delta": 0, "next_node_override": "r04_team_stamina" },
+        { "id": "5_to_15m", "label": "من 5 لـ 15 دقيقة في أوقات الشغل، وبيتأخر بالليل", "add_tags": ["night_leak"], "pain_delta": 15, "next_node_override": "r04_team_stamina" },
+        { "id": "over_30m", "label": "ساعات بيعدي نص ساعة وأكتر ورسايل بتفلت", "add_tags": ["severe_delay", "night_leak"], "pain_delta": 25, "next_node_override": "r04_team_stamina" }
+      ],
+      "default_next": "r04_team_stamina"
+    },
+
+    "r04_team_stamina": {
+      "id": "r04_team_stamina",
+      "type": "reaction",
+      "phase": 2,
+      "title_template": "حتى أشطر موظف موديريشن، بعد ما يرد على نفس سؤال السعر والتفاصيل 80 مرة في اليوم، طولة باله وطريقة إقناعه في الرسالة رقم 81 بتبقى أقل بكتير من أول اليوم",
+      "body_template": "شايف الكلام ده بيحصل عندك فعلاً",
+      "options": [
+        { "id": "agree", "label": "صح الكلام ده، وبيبان جداً في آخر الشيفت", "add_tags": ["burnout_confirmed"], "pain_delta": 15, "next_node_override": "q05_team_persuasion" },
+        { "id": "sometimes", "label": "بيحصل أوقات الضغط والمواسم بس", "add_tags": ["seasonal_burnout"], "pain_delta": 10, "next_node_override": "q05_team_persuasion" },
+        { "id": "disagree", "label": "لأ مش مقتنع، فريقي محافظ على مستواه طول الوقت", "add_tags": ["skeptical"], "pain_delta": 0, "next_node_override": "obj04_team_stamina" }
+      ],
+      "default_next": "q05_team_persuasion"
+    },
+
+    "obj04_team_stamina": {
+      "id": "obj04_team_stamina",
+      "type": "objection_handler",
+      "phase": 2,
+      "title_template": "ممتاز إن عندك فريق منضبط فعلاً، بس السؤال الأهم هنا هو التكلفة والوقت",
+      "body_template": "لو فريقك القوي ده بيضيع 70 في المية من وقته في الرد على أسئلة مكررة عن الأسعار والمواعيد، بدل ما يركز مع {{customer_singular}} الجاهز يدفع، إنت كده بتصرف مهارة غالية في شغل روتيني",
+      "options": [
+        { "id": "makes_sense", "label": "فعلاً النقطة دي منطقية، خلينا نكمل", "add_tags": ["efficiency_motivated"], "pain_delta": 10 },
+        { "id": "still_checking", "label": "خليني أشوف باقي الفكرة الأول", "add_tags": ["cautious"], "pain_delta": 5 }
+      ],
+      "default_next": "q05_team_persuasion"
+    },
+
+    "q05_team_persuasion": {
+      "id": "q05_team_persuasion",
+      "type": "question",
+      "phase": 2,
+      "title_template": "لما {{customer_singular}} يقول السعر غالي أو هفكر وأرجعلك، الفريق بيتصرف إزاي في أغلب المحادثات",
+      "body_template": "اختار التصرف اللي بيحصل في 80 في المية من الشاتات",
+      "options": [
+        { "id": "closes_well", "label": "بيفتح معاه نقاش ذكي ويشرحله القيمة ويقفل", "add_tags": ["strong_closing"], "pain_delta": 5 },
+        { "id": "drops_chat", "label": "بيقوله تحت أمرك في أي وقت وبيسيب الشات يبرد", "add_tags": ["weak_objection_handling"], "pain_delta": 20 },
+        { "id": "no_followup", "label": "بيرد كويس بس مفيش متابعة منظمة بعد يوم أو اتنين", "add_tags": ["missing_followup"], "pain_delta": 15 }
+      ],
+      "default_next": "ind_q1"
+    },
+
+    "q03_solo_bottleneck": {
+      "id": "q03_solo_bottleneck",
+      "type": "question",
+      "phase": 2,
+      "title_template": "إمتى أكتر وقت بتحس إن واتساب الشغل ساحب يومك ومش مخليك تركز في الإدارة والتطوير",
+      "body_template": "",
+      "options": [
+        { "id": "all_day", "label": "طول اليوم، الموبايل مش بيفصل رسايل مكررة", "add_tags": ["owner_overwhelmed"], "pain_delta": 20 },
+        { "id": "night_weekend", "label": "بالليل وفي الويك إند لما أكون مع أهلي أو نايم", "add_tags": ["night_leak"], "pain_delta": 20 },
+        { "id": "ad_spikes", "label": "أول ما بشغل إعلان، الدنيا بتكركب والردود بتتأخر", "add_tags": ["severe_delay"], "pain_delta": 20 }
+      ],
+      "default_next": "r04_solo_reality"
+    },
+
+    "r04_solo_reality": {
+      "id": "r04_solo_reality",
+      "type": "reaction",
+      "phase": 2,
+      "title_template": "في أغلب الأوقات، إنت مش محتاج تعين موظف براتب شهري ثابت عشان يرد على نفس الـ 10 أسئلة المكررة، إنت محتاج حد يشيل الرد الأولي والتأهيل ويديلك {{customer_singular}} الجاهز على الجاهز",
+      "body_template": "إيه رأيك في الكلام ده",
+      "options": [
+        { "id": "agree", "label": "صح الكلام ده، ده بالظبط اللي بدور عليه", "add_tags": ["automation_ready"], "pain_delta": 15, "next_node_override": "q05_solo_followup" },
+        { "id": "disagree", "label": "لأ مش مقتنع، العميل بيحب يحس إنه بيكلم بني آدم", "add_tags": ["skeptical"], "pain_delta": 5, "next_node_override": "obj04_solo_human" }
+      ],
+      "default_next": "q05_solo_followup"
+    },
+
+    "obj04_solo_human": {
+      "id": "obj04_solo_human",
+      "type": "objection_handler",
+      "phase": 2,
+      "title_template": "عندك حق تماماً، محدش بيطيق البوتات القديمة اللي بترد بقوائم أرقام 1 و 2 و 3",
+      "body_template": "عشان كده التطبيق شغال بموديلات Google Gemini بلهجة طبيعية، بيفهم الفويس نوت والرسايل المتقطعة، وبيرد بنفس أسلوبك في البيع، وبيحولك المحادثة فوراً لو فيها حالة خاصة",
+      "options": [
+        { "id": "got_it", "label": "لو فعلاً بيرد بطبيعية كده يبقى يستاهل التجربة", "add_tags": ["tone_convinced"], "pain_delta": 10 }
+      ],
+      "default_next": "q05_solo_followup"
+    },
+
+    "q05_solo_followup": {
+      "id": "q05_solo_followup",
+      "type": "question",
+      "phase": 2,
+      "title_template": "كام في المية من {{customer_plural}} اللي سألوا عن السعر واختفوا بتلحق ترجع تتابع معاهم تاني يوم",
+      "body_template": "",
+      "options": [
+        { "id": "almost_none", "label": "ولا حد تقريباً، اليوم بيخلص في الرسايل الجديدة", "add_tags": ["missing_followup"], "pain_delta": 20 },
+        { "id": "some", "label": "بنفتكر شوية والباقي بيتوه وسط الشاتات", "add_tags": ["missing_followup"], "pain_delta": 15 },
+        { "id": "most", "label": "بتابع أغلبهم يدوي بس بياخد مجهود كبير", "add_tags": ["manual_effort"], "pain_delta": 10 }
+      ],
+      "default_next": "ind_q1"
+    },
+
+    "q03_bot_frustration": {
+      "id": "q03_bot_frustration",
+      "type": "question",
+      "phase": 2,
+      "title_template": "إيه أكتر حاجة مضايقاك حالياً في المنصة أو الـ Business API اللي شغال بيها",
+      "body_template": "",
+      "options": [
+        { "id": "high_saas", "label": "الاشتراك الشهري غالي جداً بالدولار أو بالآلاف", "add_tags": ["cost_pain"], "pain_delta": 20 },
+        { "id": "per_msg", "label": "فواتير رسايل التسويق والمتابعة وعمولات الوسطاء", "add_tags": ["api_billing_pain"], "pain_delta": 20 },
+        { "id": "dumb_bot", "label": "البوت غبي وبيطفش {{customer_plural}} ومش بيفهم اللهجة", "add_tags": ["quality_pain"], "pain_delta": 15 },
+        { "id": "data_lock", "label": "بيانات عملائي كلها عند طرف تالت ومفيش مرونة", "add_tags": ["privacy_pain"], "pain_delta": 15 }
+      ],
+      "default_next": "r04_bot_ownership"
+    },
+
+    "r04_bot_ownership": {
+      "id": "r04_bot_ownership",
+      "type": "reaction",
+      "phase": 2,
+      "title_template": "بتدفع كل شهر إيجار لمنصة عشان تشغللك AI على رقمك، في حين إنك تقدر تشغل وكيلك الخاص Self-Hosted على سيرفر بـ 5 دولار وتملك بياناتك للأبد",
+      "body_template": "شايف المعادلة دي أوفر وأمن لشغلك",
+      "options": [
+        { "id": "agree", "label": "صح الكلام ده، أنا عايز أخرج من دوامة الاشتراكات", "add_tags": ["switch_ready"], "pain_delta": 15, "next_node_override": "q05_bot_cost" },
+        { "id": "disagree", "label": "لأ مش مقتنع، الـ Self-Hosted بيبقى وجع دماغ تقني", "add_tags": ["skeptical"], "pain_delta": 5, "next_node_override": "obj04_bot_tech" }
+      ],
+      "default_next": "q05_bot_cost"
+    },
+
+    "obj04_bot_tech": {
+      "id": "obj04_bot_tech",
+      "type": "objection_handler",
+      "phase": 2,
+      "title_template": "تخوفك في محله لو هتعمل كل حاجة لوحدك",
+      "body_template": "عشان كده التطبيق نفسه مجاني للي عايز يشغله بنفسه، ولأصحاب البيزنس بنقدم باقة متابعة وصيانة شهرية بسيطة جداً بتخلي السيرفر شغال ومحدث من غير ما تكتب سطر كود واحد",
+      "options": [
+        { "id": "fair_enough", "label": "كده المعادلة اتظبطت، خلينا نكمل", "add_tags": ["retainer_fit"], "pain_delta": 10 }
+      ],
+      "default_next": "q05_bot_cost"
+    },
+
+    "q05_bot_cost": {
+      "id": "q05_bot_cost",
+      "type": "question",
+      "phase": 2,
+      "title_template": "تقريباً بتصرف كام في الشهر دلوقتي على اشتراك المنصة ورسايل الـ API",
+      "body_template": "",
+      "options": [
+        { "id": "under_50", "label": "أقل من 50 دولار (حوالي 2500 جنيه)", "add_tags": ["mid_spend"], "pain_delta": 10 },
+        { "id": "50_to_150", "label": "من 50 لـ 150 دولار شهرياً", "add_tags": ["high_spend"], "pain_delta": 20 },
+        { "id": "over_150", "label": "أكتر من 150 دولار شهرياً", "add_tags": ["enterprise_spend"], "pain_delta": 25 }
+      ],
+      "default_next": "ind_q1"
+    },
+
+    "q11_daily_volume": {
+      "id": "q11_daily_volume",
+      "type": "question",
+      "phase": 3,
+      "title_template": "تقريباً بيجيلك كام محادثة جديدة في اليوم على واتساب",
+      "body_template": "الرقم ده بيحددلك مواصفات الجهاز أو الـ VPS الأنسب عشان متدفعش في إمكانيات مش محتاجها",
+      "options": [
+        { "id": "vol_low", "label": "أقل من 20 محادثة في اليوم", "add_tags": ["vol_low"], "pain_delta": 5 },
+        { "id": "vol_mid", "label": "من 20 لـ 100 محادثة في اليوم", "add_tags": ["vol_mid"], "pain_delta": 10 },
+        { "id": "vol_high", "label": "أكتر من 100 محادثة وضغط إعلانات مستمر", "add_tags": ["vol_high"], "pain_delta": 15 }
+      ],
+      "default_next": "q12_hosting_pref"
+    },
+
+    "q12_hosting_pref": {
+      "id": "q12_hosting_pref",
+      "type": "question",
+      "phase": 3,
+      "title_template": "تحب التطبيق يشتغل فين بالظبط",
+      "body_template": "التطبيق خفيف ومجاني في الحالتين، وبياناتك بتفضل عندك",
+      "options": [
+        { "id": "host_local", "label": "على جهاز عندي في المكتب أو المكان", "add_tags": ["host_local"], "pain_delta": 0 },
+        { "id": "host_vps", "label": "على VPS رخيص خاص بيا عشان يفضل شغال 24 ساعة", "add_tags": ["host_vps"], "pain_delta": 0 },
+        { "id": "host_managed", "label": "محتاجكم ترشحولي وتجهزولي السيرفر وتتابعوه معايا", "add_tags": ["needs_full_setup", "retainer_fit"], "pain_delta": 0 },
+        { "id": "host_diy", "label": "أنا تقني وعندي سيرفر وعايز أنزل النسخة المجانية بنفسي", "add_tags": ["self_hosted_diy"], "pain_delta": 0 }
+      ],
+      "default_next": "q13_vertex_ai"
+    },
+
+    "q13_vertex_ai": {
+      "id": "q13_vertex_ai",
+      "type": "question",
+      "phase": 4,
+      "title_template": "بخصوص تشغيل الذكاء الاصطناعي (Google Gemini)، هل عندك حساب Google Cloud جديد وكارت بنكي ينفع للتحقق",
+      "body_template": "جوجل بتدي للحسابات الجديدة المؤهلة رصيد تجريبي رسمي بقيمة 300 دولار صالح لمدة 90 يوم على Vertex AI، وبنساعدك تفعله وتربطه بالتطبيق",
+      "options": [
+        { "id": "eligible", "label": "أيوه، أول مرة أستخدم Google Cloud ومعايا كارت للتحقق", "add_tags": ["vertex_eligible"], "pain_delta": 0 },
+        { "id": "has_key", "label": "عندي حساب Google Cloud أو Gemini Key جاهز فعلاً", "add_tags": ["has_api_key"], "pain_delta": 0 },
+        { "id": "need_help", "label": "معرفش التفاصيل دي ومحتاج مساعدة في التجهيز", "add_tags": ["needs_full_setup"], "pain_delta": 0 }
+      ],
+      "default_next": "r14_final_check"
+    },
+
+    "r14_final_check": {
+      "id": "r14_final_check",
+      "type": "reaction",
+      "phase": 4,
+      "title_template": "التطبيق الأساسي مجاني، وبنساعدك تستفيد برصيد 300 دولار الرسمي من جوجل أول 3 شهور، ومعاك باقة متابعة وصيانة اختيارية بتكلفة رمزية بدل اشتراكات الآلاف",
+      "body_template": "جاهز تشوف خطة التشغيل والموديول المقترح لمجال {{industry_label}}",
+      "options": [
+        { "id": "show_plan", "label": "وريني الخطة المخصصة لشغلي دلوقتي", "add_tags": ["ready_for_result"], "pain_delta": 0 }
+      ],
+      "default_next": "loader_15"
+    },
+
+    "loader_15": {
+      "id": "loader_15",
+      "type": "loader",
+      "phase": 4,
+      "title_template": "بنجهز خطة التشغيل المناسبة لنشاطك في {{industry_label}}",
+      "body_template": "جاري ضبط قواعد الرد والـ Guardrails، تحديد مواصفات الاستضافة لحجم رسايلك، وفحص خطوات ربط Vertex AI",
+      "options": [],
+      "default_next": "result_blueprint"
+    }
+  }
+}

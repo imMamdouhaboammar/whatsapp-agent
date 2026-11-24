@@ -1,0 +1,207 @@
+ALGORITHM InteractiveLeadFunnelEngine
+
+STRUCT UserSession:
+    session_id          : STRING
+    industry_id         : STRING        // medical | ecommerce | real_estate | tourism | hospitality | education
+    ops_mode            : STRING        // solo | team | existing_bot
+    current_node_id     : STRING
+    history             : LIST<STRING>  // Stack of visited node IDs for Back navigation
+    answers             : MAP<STRING, STRING>
+    tags                : SET<STRING>   // e.g. high_volume, night_leak, paying_saas, vertex_eligible
+    pain_score          : INTEGER       // 0 to 100 calculated dynamically
+    objections_raised   : LIST<STRING>  // Tracks every time user clicked "لا مش مقتنع"
+    estimated_loss_tier : STRING        // low | medium | high
+
+STRUCT Node:
+    id                  : STRING
+    type                : ENUM("question", "reaction", "objection_handler", "loader", "result")
+    phase               : INTEGER       // 1: Routing, 2: Reality Check, 3: Cost & Ops, 4: AI & Setup
+    title_template      : STRING        // Supports {{customer_term}}, {{peak_pain}}, etc.
+    body_template       : STRING
+    options             : LIST<Option>
+    default_next        : STRING
+
+STRUCT Option:
+    id                  : STRING
+    label               : STRING
+    sublabel            : STRING
+    add_tags            : LIST<STRING>
+    pain_delta          : INTEGER
+    set_field           : OPTIONAL<PAIR<STRING, STRING>>
+    next_node_override  : OPTIONAL<STRING>   // Forces branch (e.g. to objection_handler or ops branch)
+
+// =========================================================
+// INITIALIZATION
+// =========================================================
+FUNCTION initSession(session_id):
+    session = NEW UserSession(
+        session_id = session_id,
+        current_node_id = "q01_industry",
+        history = [],
+        answers = {},
+        tags = {},
+        pain_score = 0,
+        objections_raised = []
+    )
+    RETURN renderNode(session, "q01_industry")
+
+// =========================================================
+// CORE TRANSITION ENGINE
+// =========================================================
+FUNCTION handleOptionSelect(session, node_id, option_id):
+    node = resolveNode(session.industry_id, node_id)
+    option = findOption(node.options, option_id)
+
+    IF option IS NULL:
+        THROW Error("Invalid option selected")
+
+    // 1. Record state & history
+    session.history.PUSH(node_id)
+    session.answers[node_id] = option_id
+    session.pain_score = CLAMP(session.pain_score + option.pain_delta, 0, 100)
+
+    FOR tag IN option.add_tags:
+        session.tags.ADD(tag)
+
+    // 2. Capture core routing fields (Industry / Ops Mode)
+    IF option.set_field IS NOT NULL:
+        field_name, field_value = option.set_field
+        IF field_name == "industry_id":
+            session.industry_id = field_value
+        ELSE IF field_name == "ops_mode":
+            session.ops_mode = field_value
+
+    // 3. Track skepticism for tailored closing
+    IF "skeptical" IN option.add_tags:
+        session.objections_raised.APPEND(node_id)
+
+    // 4. Determine next node (Priority: Option Override > Conditional Rules > Default Next)
+    next_id = determineNextNode(session, node, option)
+    session.current_node_id = next_id
+
+    // 5. Emit analytics event (for drop-off tracking per step)
+    emitAnalytics("funnel_step_completed", {
+        session_id: session.session_id,
+        industry: session.industry_id,
+        node_id: node_id,
+        option_id: option_id,
+        next_id: next_id
+    })
+
+    IF next_id == "result_blueprint":
+        RETURN buildFinalBlueprint(session)
+
+    RETURN renderNode(session, next_id)
+
+// =========================================================
+// CONDITIONAL ROUTING LOGIC
+// =========================================================
+FUNCTION determineNextNode(session, current_node, selected_option):
+    // Priority 1: Explicit branch (e.g., "لا مش مقتنع" -> objection_handler)
+    IF selected_option.next_node_override IS NOT NULL:
+        RETURN selected_option.next_node_override
+
+    // Priority 2: Branch after Ops Mode (q02)
+    IF current_node.id == "q02_ops_mode":
+        IF session.ops_mode == "team":
+            RETURN "q03_team_speed"
+        ELSE IF session.ops_mode == "solo":
+            RETURN "q03_solo_bottleneck"
+        ELSE IF session.ops_mode == "existing_bot":
+            RETURN "q03_bot_frustration"
+
+    // Priority 3: Inject Industry-Specific Pack after Ops Reality Check
+    IF current_node.id IN ["q05_team_persuasion", "q05_solo_followup", "q05_bot_cost"]:
+        RETURN "ind_q1"   // Dynamically resolved from active industry pack
+
+    // Priority 4: Return from Industry Pack to Shared Tech & Cost Spine
+    IF current_node.id == "ind_react2" OR current_node.id == "ind_obj2":
+        RETURN "q11_daily_volume"
+
+    // Default linear spine progression
+    RETURN current_node.default_next
+
+// =========================================================
+// DYNAMIC NODE RESOLUTION & INTERPOLATION
+// =========================================================
+FUNCTION resolveNode(industry_id, node_id):
+    IF node_id STARTS_WITH "ind_":
+        industry_pack = LOAD_INDUSTRY_PACK(industry_id)
+        RETURN industry_pack.nodes[node_id]
+    ELSE:
+        RETURN CORE_SPINE.nodes[node_id]
+
+FUNCTION renderNode(session, node_id):
+    node = resolveNode(session.industry_id, node_id)
+    vocab = LOAD_INDUSTRY_VOCAB(session.industry_id) // fallback to generic if industry not yet selected
+
+    rendered_title = interpolate(node.title_template, vocab, session.answers)
+    rendered_body  = interpolate(node.body_template, vocab, session.answers)
+
+    progress_percent = calculateProgress(node.phase, session.history.LENGTH, TOTAL_ESTIMATED_STEPS = 16)
+
+    RETURN {
+        node_id: node.id,
+        type: node.type,
+        progress: progress_percent,
+        title: rendered_title,
+        body: rendered_body,
+        options: node.options
+    }
+
+// =========================================================
+// FINAL BLUEPRINT GENERATOR (REAL PERSONALIZATION)
+// =========================================================
+FUNCTION buildFinalBlueprint(session):
+    pack = LOAD_INDUSTRY_PACK(session.industry_id)
+
+    // 1. Infrastructure recommendation based on volume + hosting preference
+    IF "vol_high" IN session.tags:
+        infra = "VPS اقتصادي (2GB RAM) + خيار Meta Cloud API للحملات الكبيرة"
+    ELSE IF "host_local" IN session.tags:
+        infra = "تشغيل مباشر على جهاز المكتب الحالي بإمكانيات بسيطة"
+    ELSE:
+        infra = "VPS اقتصادي (1-2GB RAM) شغال 24 ساعة بأقل تكلفة"
+
+    // 2. Vertex AI $300 Eligibility
+    IF "vertex_eligible" IN session.tags:
+        ai_plan = "مؤهل لتفعيل رصيد 300 دولار رسمي من Google Cloud Vertex AI لأول 90 يوم (بنساعدك في تفعيله خطوة بخطوة)"
+    ELSE IF "has_api_key" IN session.tags:
+        ai_plan = "ربط مباشر بمفتاح Gemini / Google Cloud الحالي في نفس اليوم"
+    ELSE:
+        ai_plan = "باقة تجهيز كاملة بنظبطلك فيها الاستضافة وربط موديلات Gemini من الألف للياء"
+
+    // 3. Recommended Tier
+    IF "self_hosted_diy" IN session.tags:
+        cta_mode = "DOWNLOAD_FREE_CORE"
+        recommended_tier = "النسخة المجانية Self-Hosted (تشغيل ذاتي)"
+    ELSE IF "vol_high" IN session.tags OR "needs_full_setup" IN session.tags:
+        cta_mode = "WHATSAPP_PILOT_PRO"
+        recommended_tier = "التطبيق مجاناً + باقة التجهيز والدعم الكامل (Pilot)"
+    ELSE:
+        cta_mode = "WHATSAPP_PILOT_STARTER"
+        recommended_tier = "التطبيق مجاناً + باقة المتابعة الشهرية الاقتصادية"
+
+    // 4. Build pre-filled WhatsApp summary for sales handoff
+    wa_summary = FORMAT(
+        "أهلاً، خلصت التقييم التفاعلي:\n" +
+        "- المجال: {pack.name_ar}\n" +
+        "- وضع الرد الحالي: {session.ops_mode}\n" +
+        "- حجم الرسايل: {session.answers['q11_daily_volume']}\n" +
+        "- موقف رصيد Vertex AI: {session.answers['q13_vertex_ai']}\n" +
+        "- درجة الضغط التشغيلي: {session.pain_score}/100\n" +
+        "حابب أبدأ في تجهيز نسخة الـ Pilot."
+    )
+
+    RETURN {
+        type: "result",
+        industry_name: pack.name_ar,
+        module_name: pack.recommended_module_name,
+        pain_score: session.pain_score,
+        infra_recommendation: infra,
+        ai_plan: ai_plan,
+        recommended_tier: recommended_tier,
+        sample_conversation: pack.sample_conversation,
+        cta_mode: cta_mode,
+        whatsapp_url: "https://wa.me/" + SALES_NUMBER + "?text=" + URL_ENCODE(wa_summary)
+    }
