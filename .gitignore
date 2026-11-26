@@ -68,6 +68,7 @@ __pycache__/
 .coverage
 htmlcov/
 .ruff_cache/
+.mypy_cache/
 
 # Quality, Linter & Cache Tools
 .qlty/
@@ -143,6 +144,7 @@ Thumbs.db
 .fable/reflex/
 .fable/incidents/
 .fable/watchdog-heartbeat.json
+.fable/state.json
 docs/session-learnings/
 
 # Zero-Slop & Environment Hygiene
