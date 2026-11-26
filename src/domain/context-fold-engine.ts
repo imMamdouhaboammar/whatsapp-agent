@@ -42,6 +42,8 @@ export class ContextFoldEngine {
   private tier2Threshold: number;
   private tier3Threshold: number;
   private inFlight = new Map<string, Promise<ConversationFold | null>>();
+  private inFlightTier1 = new Map<string, Promise<ConversationFold | null>>();
+  private inFlightTier2 = new Map<string, Promise<ConversationFold | null>>();
   private queue: Array<{ chatId: string; resolve: (fold: ConversationFold | null) => void }> = [];
   private activeJobs = 0;
   private readonly maxConcurrentJobs = 2;
@@ -124,11 +126,26 @@ export class ContextFoldEngine {
       factsExtracted: verifiedFacts,
       createdAt: this.now()
     };
-    this.options.memoryStore.saveFold(fold);
-    return this.options.memoryStore.getFold(fold.id)!;
+    try {
+      this.options.memoryStore.saveFold(fold);
+      return this.options.memoryStore.getFold(fold.id)!;
+    } catch (err: unknown) {
+      if (err instanceof Error && err.message.includes('already coalesced')) {
+        return null;
+      }
+      throw err;
+    }
   }
 
-  async coalesceTier1Folds(chatId: string): Promise<ConversationFold | null> {
+  coalesceTier1Folds(chatId: string): Promise<ConversationFold | null> {
+    const existing = this.inFlightTier1.get(chatId);
+    if (existing) return existing;
+    const task = this.executeCoalesceTier1(chatId);
+    this.inFlightTier1.set(chatId, task);
+    return task.finally(() => this.inFlightTier1.delete(chatId));
+  }
+
+  private async executeCoalesceTier1(chatId: string): Promise<ConversationFold | null> {
     const pending = this.options.memoryStore.getPendingTier1Folds(chatId, this.tier2Threshold);
     if (pending.length < this.tier2Threshold) return null;
     // Created timestamps can be identical in tests; sort by canonical message timestamps.
@@ -159,11 +176,26 @@ export class ContextFoldEngine {
       factsExtracted: [...new Set(selected.flatMap(item => item.factsExtracted))].slice(0, 20),
       createdAt: this.now()
     };
-    this.options.memoryStore.saveFold(fold);
-    return this.options.memoryStore.getFold(fold.id)!;
+    try {
+      this.options.memoryStore.saveFold(fold);
+      return this.options.memoryStore.getFold(fold.id)!;
+    } catch (err: unknown) {
+      if (err instanceof Error && err.message.includes('already coalesced')) {
+        return null;
+      }
+      throw err;
+    }
   }
 
-  async coalesceTier2Folds(chatId: string): Promise<ConversationFold | null> {
+  coalesceTier2Folds(chatId: string): Promise<ConversationFold | null> {
+    const existing = this.inFlightTier2.get(chatId);
+    if (existing) return existing;
+    const task = this.executeCoalesceTier2(chatId);
+    this.inFlightTier2.set(chatId, task);
+    return task.finally(() => this.inFlightTier2.delete(chatId));
+  }
+
+  private async executeCoalesceTier2(chatId: string): Promise<ConversationFold | null> {
     const pending = this.options.memoryStore.getPendingTier2Folds(chatId, this.tier3Threshold);
     if (pending.length < this.tier3Threshold) return null;
     const byOrder = pending.map(item => ({
@@ -191,8 +223,15 @@ export class ContextFoldEngine {
       factsExtracted: [...new Set(selected.flatMap(item => item.factsExtracted))].slice(0, 20),
       createdAt: this.now()
     };
-    this.options.memoryStore.saveFold(fold);
-    return this.options.memoryStore.getFold(fold.id)!;
+    try {
+      this.options.memoryStore.saveFold(fold);
+      return this.options.memoryStore.getFold(fold.id)!;
+    } catch (err: unknown) {
+      if (err instanceof Error && err.message.includes('already coalesced')) {
+        return null;
+      }
+      throw err;
+    }
   }
 
   triggerFoldCheck(chatId: string): Promise<ConversationFold | null> {

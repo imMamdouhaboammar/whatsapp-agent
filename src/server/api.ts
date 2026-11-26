@@ -279,8 +279,15 @@ export function createApiServer(deps: ApiDependencies): Hono {
       chatId = await deps.whatsappClient.canonicalizeJid(chatId);
     }
     c.header('Cache-Control', 'no-store');
-    const engine = deps.moderatorAgent.getContextFoldEngine();
-    const status = engine?.getContextBudgetStatus(chatId, deps.moderatorAgent.getPersona().model);
+    const engine = typeof deps.moderatorAgent?.getContextFoldEngine === 'function'
+      ? deps.moderatorAgent.getContextFoldEngine()
+      : null;
+    const model = typeof deps.moderatorAgent?.getPersona === 'function'
+      ? deps.moderatorAgent.getPersona()?.model
+      : (typeof (deps.moderatorAgent as any)?.getPreferredModel === 'function'
+        ? (deps.moderatorAgent as any).getPreferredModel()
+        : undefined);
+    const status = engine?.getContextBudgetStatus(chatId, model);
     return c.json({ chatId, status: status ?? null });
   });
 
@@ -289,7 +296,7 @@ export function createApiServer(deps: ApiDependencies): Hono {
     if (deps.whatsappClient?.canonicalizeJid) {
       chatId = await deps.whatsappClient.canonicalizeJid(chatId);
     }
-    const query = String(c.req.query('query') ?? '');
+    const query = String(c.req.query('query') ?? c.req.query('q') ?? '');
     const limit = Math.max(1, Math.min(50, Number(c.req.query('limit') ?? 25)));
     c.header('Cache-Control', 'no-store');
     return c.json({ chatId, query, results: deps.memoryStore.searchMemory(chatId, query, limit) });

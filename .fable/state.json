@@ -1,6 +1,6 @@
 {
   "schemaVersion": 3,
-  "stateRevision": 165,
+  "stateRevision": 166,
   "workspaceId": "e6e371de2623bf032ba0feec",
   "phase": "complete",
   "currentSkill": null,
@@ -754,7 +754,19 @@
       "generation": 34,
       "timestamp": "2026-11-26T08:57:09.729Z",
       "workspaceId": "e6e371de2623bf032ba0feec"
+    },
+    {
+      "kind": "test",
+      "source": "bun test",
+      "result": "pass",
+      "detail": "Added aggressive behavioral test suite tests/acp-behavioral-adversarial.test.ts (20 passed, 0 failed)",
+      "repositoryRevision": "4a4960ec96517c05d2ce41b456d12ad2be816346",
+      "commandCategory": "test",
+      "scope": "workspace",
+      "generation": 34,
+      "timestamp": "2026-11-26T09:06:14.164Z",
+      "workspaceId": "e6e371de2623bf032ba0feec"
     }
   ],
-  "updatedAt": "2026-11-26T08:57:09.729Z"
+  "updatedAt": "2026-11-26T09:06:14.164Z"
 }
