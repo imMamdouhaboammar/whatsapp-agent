@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { CheckCircle2, Play, ShieldCheck, Bot, X } from 'lucide-react';
 import type { AgentDecision } from '../api/types';
 import { useLocale } from '../locale-context';
@@ -20,16 +20,15 @@ export function SimulatorModal({ isOpen, onClose, onSimulate }: SimulatorModalPr
   const [result, setResult] = useState<SimulationResult | null>(null);
   const [error, setError] = useState('');
 
-  useModalDismiss(isOpen, onClose);
+  const handleClose = () => {
+    setResult(null);
+    setError('');
+    setTestText('');
+    setSenderName('');
+    onClose();
+  };
 
-  useEffect(() => {
-    if (!isOpen) {
-      setResult(null);
-      setError('');
-      setTestText('');
-      setSenderName('');
-    }
-  }, [isOpen]);
+  const dialogRef = useModalDismiss(isOpen, handleClose);
 
   if (!isOpen) return null;
 
@@ -60,9 +59,8 @@ export function SimulatorModal({ isOpen, onClose, onSimulate }: SimulatorModalPr
   };
 
   return (
-    <div className="wa-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      {/* react-doctor-disable-next-line react-doctor/prefer-html-dialog */}
-      <section className="wa-modal wa-modal-medium" role="dialog" aria-modal="true" aria-labelledby="sim-title">
+    <div className="wa-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) handleClose(); }}>
+      <dialog className="wa-modal wa-modal-medium" ref={dialogRef} open tabIndex={-1} style={{ position: 'relative', margin: 0, maxHeight: 'min(90dvh, 720px)', overflowY: 'auto' }} aria-modal="true" aria-labelledby="sim-title">
         <div className="wa-modal-header">
           <div className="wa-modal-heading">
             <span className="wa-modal-icon"><Bot size={20} /></span>
@@ -71,7 +69,7 @@ export function SimulatorModal({ isOpen, onClose, onSimulate }: SimulatorModalPr
               <p>{tr('شوف المساعد هيتصرف إزاي مع رسالة عميل', 'See how the assistant would handle a customer message')}</p>
             </div>
           </div>
-          <button type="button" className="wa-icon-button" onClick={onClose} aria-label={tr('إغلاق', 'Close')}><X size={20} /></button>
+          <button type="button" className="wa-icon-button" onClick={handleClose} aria-label={tr('إغلاق', 'Close')}><X size={20} /></button>
         </div>
         <div className="wa-modal-content wa-sim-content">
           <p className="wa-sim-privacy"><ShieldCheck size={17} aria-hidden="true" /><span><strong>{tr('معاينة خاصة', 'Private preview')}</strong> {tr('مش بيبعت رسائل ولا بيحفظ محادثات', 'No messages are sent or saved')}</span></p>
@@ -105,7 +103,7 @@ export function SimulatorModal({ isOpen, onClose, onSimulate }: SimulatorModalPr
             </section>
           )}
         </div>
-      </section>
+      </dialog>
     </div>
   );
 }

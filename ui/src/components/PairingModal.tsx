@@ -19,14 +19,13 @@ export function PairingModal({ status, isOpen, onClose, onConnect, onDisconnect 
   const [phoneNumber, setPhoneNumber] = useState('');
   const isConnecting = status?.state === 'connecting';
 
-  useModalDismiss(isOpen, onClose);
+  const dialogRef = useModalDismiss(isOpen, onClose);
 
   if (!isOpen) return null;
 
   return (
     <div className="wa-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      {/* react-doctor-disable-next-line react-doctor/prefer-html-dialog */}
-      <section className="wa-modal" role="dialog" aria-modal="true" aria-labelledby="pairing-title">
+      <dialog className="wa-modal" ref={dialogRef} open tabIndex={-1} style={{ position: 'relative', margin: 0, maxHeight: 'min(90dvh, 720px)', overflowY: 'auto' }} aria-modal="true" aria-labelledby="pairing-title">
         <div className="wa-modal-header">
           <div className="wa-modal-heading">
             <span className="wa-modal-icon"><QrCode size={20} /></span>
@@ -50,10 +49,10 @@ export function PairingModal({ status, isOpen, onClose, onConnect, onDisconnect 
             </div>
           ) : (
             <>
-              <div className="wa-modal-tabs" role="group" aria-label={tr('طريقة الربط', 'Pairing method')}>
+              <fieldset className="wa-modal-tabs" style={{ minInlineSize: 0, marginInline: 0 }} aria-label={tr('طريقة الربط', 'Pairing method')}>
                 <button type="button" className={tab === 'qr' ? 'is-active' : ''} aria-pressed={tab === 'qr'} onClick={() => setTab('qr')}><QrCode size={16} /> {tr('رمز QR', 'QR code')}</button>
                 <button type="button" className={tab === 'phone' ? 'is-active' : ''} aria-pressed={tab === 'phone'} onClick={() => setTab('phone')}><Phone size={16} /> {tr('كود الهاتف', 'Phone code')}</button>
-              </div>
+              </fieldset>
               {tab === 'qr' ? (
                 <div className="wa-qr-panel">
                   <div className="wa-qr-frame">
@@ -93,7 +92,7 @@ export function PairingModal({ status, isOpen, onClose, onConnect, onDisconnect 
           )}
           {status?.error && <p className="wa-inline-error" role="alert"><AlertCircle size={15} /> {status.error}</p>}
         </div>
-      </section>
+      </dialog>
     </div>
   );
 }

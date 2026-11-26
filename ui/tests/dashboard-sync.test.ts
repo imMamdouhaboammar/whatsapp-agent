@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { describe, expect, it } from 'bun:test';
 import { DashboardSync } from '../src/lib/dashboard-sync';
 import { api, ApiError } from '../src/api/client';
@@ -74,16 +75,15 @@ describe('WA-026 API error classification', () => {
   const originalFetch = globalThis.fetch;
 
   it('HTTP failures carry their status so the dashboard can classify them', async () => {
-    globalThis.fetch = (async () =>
-      new Response(JSON.stringify({ error: 'Service unavailable' }), { status: 503 })
-    ) as typeof fetch;
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({ error: 'Service unavailable' }), { status: 503 });
     try {
       await api.listChats();
       throw new Error('listChats should have rejected');
     } catch (err) {
-      expect(err).toBeInstanceOf(ApiError);
-      expect((err as ApiError).status).toBe(503);
-      expect((err as Error).message).toBe('Service unavailable');
+      assert.ok(err instanceof ApiError);
+      expect(err.status).toBe(503);
+      expect(err.message).toBe('Service unavailable');
     } finally {
       globalThis.fetch = originalFetch;
     }

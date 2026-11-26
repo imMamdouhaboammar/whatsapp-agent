@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Activity, AlertTriangle, ArrowLeft, ArrowRight, BookOpen, Bot, CheckCircle2, ChevronDown,
   CircleHelp, Database, HardDrive, Headphones, LockKeyhole, LogOut, MessageCircle,
@@ -8,11 +8,10 @@ import {
 import type { ModeratorPersona, PolicyConfig, SystemStatus, WorkspaceStats } from '../api/types';
 import { SUPPORTED_GEMINI_MODELS } from '../api/types';
 import { api } from '../api/client';
-import { useModalDismiss } from '../hooks/useModalDismiss';
 import { Gemini, Google, ModelIcon } from '@lobehub/icons';
 import { AgentAvatar } from '@lobehub/ui';
 import { useLocale } from '../locale-context';
-import './persona-settings.css';
+import settingsCss from './persona-settings.css?url';
 
 type SettingsSection = 'assistant' | 'models' | 'data';
 
@@ -48,6 +47,7 @@ export function PersonaSettingsPage(props: PersonaSettingsPageProps) {
   if (!props.initialPersona) {
     return (
       <main className="wa-premium-settings wa-premium-settings-loading" dir={direction} aria-busy={!props.error}>
+        <link rel="stylesheet" href={settingsCss} precedence="page" />
         <section className="wa-ps-loading-panel" role={props.error ? 'alert' : 'status'}>
           <Settings2 size={26} />
           <h1>{tr('إعدادات المساعد', 'Assistant settings')}</h1>
@@ -76,14 +76,22 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
   const [feedbackNotice, setFeedbackNotice] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [showFactoryConfirm, setShowFactoryConfirm] = useState(false);
+  const factoryDialogRef = useRef<HTMLDialogElement>(null);
   const [factoryConfirmText, setFactoryConfirmText] = useState('');
   const dirty = JSON.stringify(persona) !== JSON.stringify(savedPersona);
   const connected = connectionState === 'connected';
 
-  useModalDismiss(showFactoryConfirm, () => {
-    setShowFactoryConfirm(false);
-    setFactoryConfirmText('');
-  });
+  useEffect(() => {
+    const dialog = factoryDialogRef.current;
+    if (!showFactoryConfirm || !dialog) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    dialog.showModal();
+    document.body.style.overflow = 'hidden';
+    return () => {
+      dialog.close();
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [showFactoryConfirm]);
 
   const fetchStats = async () => {
     setStatsLoading(true);
@@ -98,9 +106,20 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
   };
 
   useEffect(() => {
-    if (active === 'data') {
-      void fetchStats();
-    }
+    if (active !== 'data') return undefined;
+    let mounted = true;
+    const loadInitialStats = async () => {
+      try {
+        const data = await api.getWorkspaceStats();
+        if (mounted) setStats(data);
+      } finally {
+        if (mounted) setStatsLoading(false);
+      }
+    };
+    void loadInitialStats().catch(() => undefined);
+    return () => {
+      mounted = false;
+    };
   }, [active]);
 
   const handleCleanWorkspace = async () => {
@@ -186,7 +205,7 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
   }, []);
 
   useEffect(() => {
-    if (!dirty) return;
+    if (!dirty) return undefined;
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
     window.addEventListener('beforeunload', warn);
     return () => window.removeEventListener('beforeunload', warn);
@@ -249,6 +268,7 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
 
   return (
     <main className="wa-premium-settings" dir={direction} aria-label={tr('الإعدادات', 'Settings')}>
+      <link rel="stylesheet" href={settingsCss} precedence="page" />
       <nav className="wa-ps-rail" aria-label={tr('التنقل الرئيسي', 'Primary navigation')}>
         <button type="button" className="wa-ps-rail-button" onClick={() => leave(onClose)} title={tr('المحادثات', 'Chats')} aria-label={tr('المحادثات', 'Chats')}><MessageCircle size={21} /><span>{tr('محادثات', 'Chats')}</span></button>
         <span className="wa-ps-rail-button is-disabled" aria-disabled="true" title={tr('قريبًا', 'Coming soon')}><Activity size={21} /><span>{tr('نشاط', 'Activity')}</span></span>
@@ -291,7 +311,7 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
             <p>{pageIntro}</p>
           </div>
           <div className="wa-ps-header-actions">
-            <span className={`wa-ps-save-status ${dirty ? 'is-unsaved' : ''}`} role="status">{dirty ? tr('تغييرات غير محفوظة', 'Unsaved changes') : savedNotice ? tr('تم حفظ التغييرات', 'Changes saved') : tr('كل التغييرات محفوظة', 'All changes saved')}</span>
+            <output className={`wa-ps-save-status ${dirty ? 'is-unsaved' : ''}`}>{dirty ? tr('تغييرات غير محفوظة', 'Unsaved changes') : savedNotice ? tr('تم حفظ التغييرات', 'Changes saved') : tr('كل التغييرات محفوظة', 'All changes saved')}</output>
             <button type="button" className="wa-ps-button wa-ps-button-quiet" onClick={reset} disabled={!dirty || saving}><RotateCcw size={16} />{tr('تراجع', 'Discard')}</button>
             <button type="button" className="wa-ps-button wa-ps-button-primary" onClick={() => void save()} disabled={!dirty || saving}><Save size={16} />{saving ? tr('جارٍ الحفظ', 'Saving') : tr('حفظ التغييرات', 'Save changes')}</button>
           </div>
@@ -363,7 +383,7 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
                   <section className="wa-ps-card">
                     <div className="wa-ps-card-head"><div><h2>{tr('التحكم في الاستجابة', 'Response controls')}</h2><p>{tr('اضبط شروط الرد والتوقيت في المحادثات', 'Fine-tune when and how the agent responds')}</p></div></div>
                     <label className="wa-ps-range"><span>{tr('الحد الأدنى للثقة', 'Minimum confidence')}</span><strong dir="ltr">{Math.round(persona.minConfidence * 100)}%</strong><input type="range" min="0.5" max="0.95" step="0.05" value={persona.minConfidence} onChange={(event) => setField('minConfidence', Number(event.target.value))} /><small>{tr('الحد المطلوب قبل إرسال رد تلقائي', 'Confidence required before sending an automatic reply')}</small></label>
-                    <label className="wa-ps-switch-row"><span><strong>{tr('محاكاة الكتابة الطبيعية', 'Natural typing delay')}</strong><small>{tr('انتظار قصير قبل إرسال الردود التلقائية', 'Pause briefly before sending automatic replies')}</small></span><input type="checkbox" role="switch" checked={persona.simulateTypingDelay} onChange={(event) => setField('simulateTypingDelay', event.target.checked)} /></label>
+                    <label className="wa-ps-switch-row" htmlFor="wa-ps-typing-delay" aria-labelledby="wa-ps-typing-delay-label"><span><strong id="wa-ps-typing-delay-label">{tr('محاكاة الكتابة الطبيعية', 'Natural typing delay')}</strong><small>{tr('انتظار قصير قبل إرسال الردود التلقائية', 'Pause briefly before sending automatic replies')}</small></span><input id="wa-ps-typing-delay" type="checkbox" role="switch" aria-checked={persona.simulateTypingDelay} checked={persona.simulateTypingDelay} onChange={(event) => setField('simulateTypingDelay', event.target.checked)} /></label>
                   </section>
                 </>
               ) : (
@@ -608,6 +628,17 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
           <div className="wa-ps-bottom-space" />
         </div>
         {showFactoryConfirm && (
+          <dialog
+            ref={factoryDialogRef}
+            aria-modal="true"
+            aria-labelledby="factory-reset-title"
+            className="fixed inset-0 m-0 h-full max-h-none w-full max-w-none border-0 bg-transparent p-0 text-inherit backdrop:bg-transparent"
+            onCancel={(event) => {
+              event.preventDefault();
+              setShowFactoryConfirm(false);
+              setFactoryConfirmText('');
+            }}
+          >
           <div
             className="wa-modal-backdrop"
             role="presentation"
@@ -618,12 +649,8 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
               }
             }}
           >
-            {/* react-doctor-disable-next-line react-doctor/prefer-html-dialog */}
             <section
               className="wa-modal"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="factory-reset-title"
               style={{ maxHeight: 'min(90dvh, 720px)', overflowY: 'auto' }}
             >
               <div className="wa-modal-header">
@@ -691,6 +718,7 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
               </div>
             </section>
           </div>
+          </dialog>
         )}
       </section>
     </main>

@@ -1,4 +1,5 @@
-import type { ChatMessage, ChatSummary, ModeratorPersona, PolicyConfig, SystemStatus, AgentDraft, ContactDossier, WorkspaceStats, WorkspaceCleanResult, ContextBudgetStatus, ConversationFold } from './types';
+import type { ChatMessage, ChatSummary, ModeratorPersona, PolicyConfig, SystemStatus, AgentDraft, ContactDossier, WorkspaceStats, WorkspaceCleanResult, ContextBudgetStatus, ConversationFold, BroadcastCampaignSummary, BroadcastRecipient, EligibleBroadcastContact, BroadcastTransport, BroadcastApprovalMode, BroadcastRichContent, AgentDecision } from './types';
+import { record, responseContracts, type ResponseContract } from './response-contracts';
 
 const BASE_URL = '/api';
 
@@ -13,12 +14,23 @@ export class ApiError extends Error {
   }
 }
 
-async function handleResponse<T>(res: Response, fallbackError: string): Promise<T> {
+async function handleResponse<T>(res: Response, fallbackError: string, matches: ResponseContract<T>): Promise<T> {
+  const contentType = res.headers.get('content-type') ?? '';
   if (!res.ok) {
-    const errorBody = (await res.json().catch(() => null)) as { error?: string; message?: string } | null;
-    throw new ApiError(errorBody?.error || errorBody?.message || fallbackError, res.status);
+    const errorBody: unknown = await res.json().catch(() => null);
+    const error = record(errorBody) ? errorBody.error : undefined;
+    const message = record(errorBody) ? errorBody.message : undefined;
+    throw new ApiError(
+      (typeof error === 'string' && error) || (typeof message === 'string' && message) || fallbackError,
+      res.status,
+    );
   }
-  return res.json() as Promise<T>;
+  if (contentType && !contentType.includes('application/json')) {
+    throw new ApiError(`${fallbackError} (unexpected ${contentType.split(';')[0]} response)`, res.status);
+  }
+  const value: unknown = await res.json();
+  if (!matches(value)) throw new ApiError(`${fallbackError} (invalid response body)`, res.status);
+  return value;
 }
 
 export interface FunnelMethodMeta {
@@ -54,6 +66,14 @@ export interface ContactMemoryItem {
   created_at: number;
 }
 
+interface SimulationResult {
+  success: boolean;
+  simulatedMessage: ChatMessage;
+  decision?: AgentDecision;
+  draftCreated?: AgentDraft;
+  shouldSendImmediately: boolean;
+}
+
 export interface StickerResult {
   success?: boolean;
   bytes?: number;
@@ -65,7 +85,7 @@ export interface StickerResult {
 export const api = {
   async getDashboardStatus(): Promise<{ required: boolean; authenticated: boolean }> {
     const res = await fetch(`${BASE_URL}/auth/status`, { cache: 'no-store' });
-    return handleResponse<{ required: boolean; authenticated: boolean }>(res, 'Owner access status unavailable');
+    return handleResponse(res, 'Owner access status unavailable', responseContracts.dashboardStatus);
   },
 
   async startDashboardSession(token: string): Promise<void> {
@@ -84,12 +104,12 @@ export const api = {
 
   async getStatus(): Promise<SystemStatus> {
     const res = await fetch(`${BASE_URL}/status`);
-    return handleResponse<SystemStatus>(res, 'Failed to fetch status');
+    return handleResponse(res, 'Failed to fetch status', responseContracts.systemStatus);
   },
 
   async getDossier(chatId: string): Promise<{ dossier: ContactDossier }> {
     const res = await fetch(`${BASE_URL}/contacts/${encodeURIComponent(chatId)}/dossier`);
-    return handleResponse<{ dossier: ContactDossier }>(res, 'Failed to fetch dossier');
+    return handleResponse(res, 'Failed to fetch dossier', responseContracts.dossier);
   },
 
   async addFact(chatId: string, fact: string): Promise<{ success: boolean; dossier: ContactDossier }> {
@@ -98,7 +118,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fact })
     });
-    return handleResponse<{ success: boolean; dossier: ContactDossier }>(res, 'Failed to add contact fact');
+    return handleResponse(res, 'Failed to add contact fact', responseContracts.updatedDossier);
   },
 
   async addCommitment(chatId: string, commitment: string): Promise<{ success: boolean; dossier: ContactDossier }> {
@@ -107,7 +127,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ commitment })
     });
-    return handleResponse<{ success: boolean; dossier: ContactDossier }>(res, 'Failed to add contact commitment');
+    return handleResponse(res, 'Failed to add contact commitment', responseContracts.updatedDossier);
   },
 
   async connect(phoneNumber?: string, refresh?: boolean): Promise<{ status: string }> {
@@ -116,7 +136,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ pairingPhoneNumber: phoneNumber, refresh })
     });
-    return handleResponse<{ status: string }>(res, 'Failed to initiate WhatsApp connection');
+    return handleResponse(res, 'Failed to initiate WhatsApp connection', responseContracts.status);
   },
 
   async disconnect(clearSession: boolean = true): Promise<{ status: string }> {
@@ -125,22 +145,22 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ clearSession })
     });
-    return handleResponse<{ status: string }>(res, 'Failed to disconnect WhatsApp');
+    return handleResponse(res, 'Failed to disconnect WhatsApp', responseContracts.status);
   },
 
   async getRuntimeCapabilities(): Promise<{ capabilities: Array<{ capability: string; enabled: boolean; reason: string }> }> {
     const res = await fetch(`${BASE_URL}/runtime/capabilities`, { cache: 'no-store' });
-    return handleResponse<{ capabilities: Array<{ capability: string; enabled: boolean; reason: string }> }>(res, 'Failed to fetch runtime capabilities');
+    return handleResponse(res, 'Failed to fetch runtime capabilities', responseContracts.capabilities);
   },
 
   async listChats(): Promise<{ chats: ChatSummary[] }> {
     const res = await fetch(`${BASE_URL}/chats`);
-    return handleResponse<{ chats: ChatSummary[] }>(res, 'Failed to list chats');
+    return handleResponse(res, 'Failed to list chats', responseContracts.chats);
   },
 
   async getMessages(chatId: string, options?: { signal?: AbortSignal }): Promise<{ messages: ChatMessage[] }> {
     const res = await fetch(`${BASE_URL}/chats/${encodeURIComponent(chatId)}/messages`, { signal: options?.signal });
-    return handleResponse<{ messages: ChatMessage[] }>(res, 'Failed to fetch messages');
+    return handleResponse(res, 'Failed to fetch messages', responseContracts.chatMessages);
   },
 
   async sendMessage(chatId: string, text: string, replyToMessageId?: string, clientMutationId?: string): Promise<{ success: boolean; message?: ChatMessage; state: string; intentId: string }> {
@@ -149,7 +169,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, replyToMessageId, clientMutationId: clientMutationId || crypto.randomUUID() })
     });
-    return handleResponse<{ success: boolean; message?: ChatMessage; state: string; intentId: string }>(res, 'Failed to send message');
+    return handleResponse(res, 'Failed to send message', responseContracts.sendMessage);
   },
 
   async retrySendIntent(intentId: string, clientMutationId: string): Promise<{ success: boolean; state: string; intentId: string }> {
@@ -158,7 +178,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ confirm: true, clientMutationId })
     });
-    return handleResponse<{ success: boolean; state: string; intentId: string }>(res, 'Failed to retry send intent');
+    return handleResponse(res, 'Failed to retry send intent', responseContracts.sendIntent);
   },
 
   async setChatMode(chatId: string, mode: 'autopilot' | 'copilot' | 'human'): Promise<{ success: boolean }> {
@@ -167,7 +187,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode })
     });
-    return handleResponse<{ success: boolean }>(res, 'Failed to set chat mode');
+    return handleResponse(res, 'Failed to set chat mode', responseContracts.success);
   },
 
   async sendReaction(chatId: string, messageId: string, emoji: string): Promise<{ success: boolean }> {
@@ -176,12 +196,12 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ messageId, emoji })
     });
-    return handleResponse<{ success: boolean }>(res, 'Failed to send reaction');
+    return handleResponse(res, 'Failed to send reaction', responseContracts.success);
   },
 
   async listDrafts(): Promise<{ drafts: AgentDraft[] }> {
     const res = await fetch(`${BASE_URL}/drafts`);
-    return handleResponse<{ drafts: AgentDraft[] }>(res, 'Failed to list drafts');
+    return handleResponse(res, 'Failed to list drafts', responseContracts.drafts);
   },
 
   async approveDraft(draftId: string, editedText?: string, asVoice?: boolean): Promise<{ success: boolean }> {
@@ -190,17 +210,17 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ editedText, asVoice })
     });
-    return handleResponse<{ success: boolean }>(res, 'Failed to approve draft');
+    return handleResponse(res, 'Failed to approve draft', responseContracts.success);
   },
 
   async rejectDraft(draftId: string): Promise<{ success: boolean }> {
     const res = await fetch(`${BASE_URL}/drafts/${draftId}/reject`, { method: 'POST' });
-    return handleResponse<{ success: boolean }>(res, 'Failed to reject draft');
+    return handleResponse(res, 'Failed to reject draft', responseContracts.success);
   },
 
   async getPersona(): Promise<{ persona: ModeratorPersona; policy: PolicyConfig }> {
     const res = await fetch(`${BASE_URL}/persona`);
-    return handleResponse<{ persona: ModeratorPersona; policy: PolicyConfig }>(res, 'Failed to fetch persona');
+    return handleResponse(res, 'Failed to fetch persona', responseContracts.persona);
   },
 
   async updatePersona(persona: Partial<ModeratorPersona>, policy?: Partial<PolicyConfig>): Promise<{ success: boolean }> {
@@ -209,26 +229,26 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ persona, policy })
     });
-    return handleResponse<{ success: boolean }>(res, 'Failed to update persona');
+    return handleResponse(res, 'Failed to update persona', responseContracts.success);
   },
 
-  async simulate(text: string, senderName?: string): Promise<any> {
+  async simulate(text: string, senderName?: string): Promise<SimulationResult> {
     const res = await fetch(`${BASE_URL}/simulate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, senderName })
     });
-    return handleResponse<any>(res, 'Could not preview assistant response');
+    return handleResponse(res, 'Could not preview assistant response', responseContracts.simulation);
   },
 
   async getFunnelMethods(): Promise<{ methods: FunnelMethodMeta[] }> {
     const res = await fetch(`${BASE_URL}/funnel/methods`);
-    return handleResponse<{ methods: FunnelMethodMeta[] }>(res, 'Failed to fetch funnel methods');
+    return handleResponse(res, 'Failed to fetch funnel methods', responseContracts.funnelMethods);
   },
 
   async getFunnelStats(): Promise<{ circuitBreakers: CircuitBreakerStatus[]; activeMethodsCount: number }> {
     const res = await fetch(`${BASE_URL}/funnel/stats`);
-    return handleResponse<{ circuitBreakers: CircuitBreakerStatus[]; activeMethodsCount: number }>(res, 'Failed to fetch funnel stats');
+    return handleResponse(res, 'Failed to fetch funnel stats', responseContracts.funnelStats);
   },
 
   async dispatchFunnel(data: { method: string; payload?: unknown; queryParams?: Record<string, string>; timeoutMs?: number }): Promise<FunnelDispatchResult> {
@@ -237,7 +257,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
     });
-    return handleResponse<FunnelDispatchResult>(res, 'Failed to dispatch funnel request');
+    return handleResponse(res, 'Failed to dispatch funnel request', responseContracts.funnelDispatch);
   },
 
   async resetCircuitBreaker(targetId: string): Promise<{ success: boolean; targetId: string }> {
@@ -246,12 +266,12 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ targetId })
     });
-    return handleResponse<{ success: boolean; targetId: string }>(res, 'Failed to reset circuit breaker');
+    return handleResponse(res, 'Failed to reset circuit breaker', responseContracts.circuitBreakerReset);
   },
 
   async getMemories(chatId: string): Promise<{ memories: ContactMemoryItem[] }> {
     const res = await fetch(`${BASE_URL}/contacts/${encodeURIComponent(chatId)}/memories`);
-    return handleResponse<{ memories: ContactMemoryItem[] }>(res, 'Failed to fetch contact memories');
+    return handleResponse(res, 'Failed to fetch contact memories', responseContracts.contactMemories);
   },
 
   async addMemory(chatId: string, content: string): Promise<{ status: string; message?: string; memories?: ContactMemoryItem[] }> {
@@ -260,19 +280,19 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content })
     });
-    return handleResponse<{ status: string; message?: string; memories?: ContactMemoryItem[] }>(res, 'Failed to save contact memory');
+    return handleResponse(res, 'Failed to save contact memory', responseContracts.savedMemory);
   },
 
   async deleteMemory(chatId: string, memoryId: string): Promise<{ success: boolean }> {
     const res = await fetch(`${BASE_URL}/contacts/${encodeURIComponent(chatId)}/memories/${encodeURIComponent(memoryId)}`, {
       method: 'DELETE'
     });
-    return handleResponse<{ success: boolean }>(res, 'Failed to delete contact memory');
+    return handleResponse(res, 'Failed to delete contact memory', responseContracts.success);
   },
 
   async getChatStyle(chatId: string): Promise<{ style: string }> {
     const res = await fetch(`${BASE_URL}/chats/${encodeURIComponent(chatId)}/style`);
-    return handleResponse<{ style: string }>(res, 'Failed to fetch chat style');
+    return handleResponse(res, 'Failed to fetch chat style', responseContracts.style);
   },
 
   async setChatStyle(chatId: string, style: string): Promise<{ success: boolean; style: string }> {
@@ -281,7 +301,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ style })
     });
-    return handleResponse<{ success: boolean; style: string }>(res, 'Failed to update chat style');
+    return handleResponse(res, 'Failed to update chat style', responseContracts.updatedStyle);
   },
 
   async createSticker(data: { imageBase64: string; mimeType: string; crop?: boolean; text?: string }): Promise<StickerResult> {
@@ -290,33 +310,33 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
     });
-    return handleResponse<StickerResult>(res, 'Failed to generate sticker');
+    return handleResponse(res, 'Failed to generate sticker', responseContracts.sticker);
   },
 
   async deleteChat(chatId: string): Promise<{ success: boolean; chatId: string }> {
     const res = await fetch(`${BASE_URL}/chats/${encodeURIComponent(chatId)}`, {
       method: 'DELETE'
     });
-    return handleResponse<{ success: boolean; chatId: string }>(res, 'Failed to delete chat');
+    return handleResponse(res, 'Failed to delete chat', responseContracts.chatMutation);
   },
 
   async clearChatMessages(chatId: string): Promise<{ success: boolean; chatId: string }> {
     const res = await fetch(`${BASE_URL}/chats/${encodeURIComponent(chatId)}/messages`, {
       method: 'DELETE'
     });
-    return handleResponse<{ success: boolean; chatId: string }>(res, 'Failed to clear chat messages');
+    return handleResponse(res, 'Failed to clear chat messages', responseContracts.chatMutation);
   },
 
   async getWorkspaceStats(): Promise<WorkspaceStats> {
     const res = await fetch(`${BASE_URL}/workspace/stats`);
-    return handleResponse<WorkspaceStats>(res, 'Failed to fetch workspace storage stats');
+    return handleResponse(res, 'Failed to fetch workspace storage stats', responseContracts.workspaceStats);
   },
 
   async cleanWorkspace(): Promise<WorkspaceCleanResult> {
     const res = await fetch(`${BASE_URL}/workspace/clean`, {
       method: 'POST'
     });
-    return handleResponse<WorkspaceCleanResult>(res, 'Failed to clean workspace cache');
+    return handleResponse(res, 'Failed to clean workspace cache', responseContracts.workspaceClean);
   },
 
   async resetWorkspace(target: 'all' | 'session' | 'chats' | 'drafts' | 'memories' | 'learning' | 'cache'): Promise<{ success: boolean; target: string; [key: string]: unknown }> {
@@ -325,33 +345,97 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ target })
     });
-    return handleResponse<{ success: boolean; target: string }>(res, `Failed to reset workspace ${target}`);
+    return handleResponse(res, `Failed to reset workspace ${target}`, responseContracts.workspaceReset);
   },
 
   async getContextStatus(chatId: string): Promise<{ chatId: string; status: ContextBudgetStatus | null }> {
     const res = await fetch(`${BASE_URL}/chats/${encodeURIComponent(chatId)}/context-status`);
-    return handleResponse<{ chatId: string; status: ContextBudgetStatus | null }>(res, 'Failed to fetch context status');
+    return handleResponse(res, 'Failed to fetch context status', responseContracts.contextStatus);
   },
 
   async getFolds(chatId: string, tier?: number): Promise<{ chatId: string; folds: ConversationFold[] }> {
     const q = tier ? `?tier=${tier}` : '';
     const res = await fetch(`${BASE_URL}/chats/${encodeURIComponent(chatId)}/folds${q}`);
-    return handleResponse<{ chatId: string; folds: ConversationFold[] }>(res, 'Failed to fetch folds');
+    return handleResponse(res, 'Failed to fetch folds', responseContracts.folds);
   },
 
   async foldNow(chatId: string): Promise<{ chatId: string; status: string }> {
     const res = await fetch(`${BASE_URL}/chats/${encodeURIComponent(chatId)}/fold-now`, { method: 'POST' });
-    return handleResponse<{ chatId: string; status: string }>(res, 'Failed to trigger context compression');
+    return handleResponse(res, 'Failed to trigger context compression', responseContracts.foldCompression);
   },
 
   async searchMemory(chatId: string, query: string, limit = 25): Promise<{ chatId: string; query: string; results: { messages: ChatMessage[]; folds: ConversationFold[] } }> {
     const res = await fetch(`${BASE_URL}/chats/${encodeURIComponent(chatId)}/memory-search?query=${encodeURIComponent(query)}&limit=${limit}`);
-    return handleResponse<{ chatId: string; query: string; results: { messages: ChatMessage[]; folds: ConversationFold[] } }>(res, 'Failed to search memory');
+    return handleResponse(res, 'Failed to search memory', responseContracts.memorySearch);
   },
 
   async decompressFold(chatId: string, foldId: string, aroundId?: string): Promise<{ foldId: string; chatId: string; total: number; messages: ChatMessage[] }> {
     const q = aroundId ? `?around=${encodeURIComponent(aroundId)}` : '';
     const res = await fetch(`${BASE_URL}/chats/${encodeURIComponent(chatId)}/folds/${encodeURIComponent(foldId)}/decompress${q}`);
-    return handleResponse<{ foldId: string; chatId: string; total: number; messages: ChatMessage[] }>(res, 'Failed to decompress fold');
+    return handleResponse(res, 'Failed to decompress fold', responseContracts.decompressedFold);
+  },
+
+  async listBroadcasts(): Promise<{ campaigns: BroadcastCampaignSummary[] }> {
+    const res = await fetch(`${BASE_URL}/broadcasts`);
+    return handleResponse(res, 'Failed to load broadcasts', responseContracts.broadcasts);
+  },
+
+  async previewBroadcastAudience(audiencePrompt?: string): Promise<{ contacts: EligibleBroadcastContact[] }> {
+    const res = await fetch(`${BASE_URL}/broadcasts/audience`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audiencePrompt })
+    });
+    return handleResponse(res, 'Failed to preview audience', responseContracts.broadcastAudience);
+  },
+
+  async createBroadcast(payload: {
+    name: string;
+    goal: string;
+    transport: BroadcastTransport;
+    approvalMode: BroadcastApprovalMode;
+    audiencePrompt?: string;
+    richContent: BroadcastRichContent;
+    followUp?: { enabled: boolean; delayMinutes: number; triggerOn: 'read_no_reply' | 'delivered_no_reply'; messagePrompt: string };
+  }): Promise<{ campaign: BroadcastCampaignSummary; recipients: BroadcastRecipient[] }> {
+    const res = await fetch(`${BASE_URL}/broadcasts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    return handleResponse(res, 'Failed to create broadcast', responseContracts.broadcastDetails);
+  },
+
+  async getBroadcast(id: string): Promise<{ campaign: BroadcastCampaignSummary; recipients: BroadcastRecipient[] }> {
+    const res = await fetch(`${BASE_URL}/broadcasts/${encodeURIComponent(id)}`);
+    return handleResponse(res, 'Failed to load broadcast details', responseContracts.broadcastDetails);
+  },
+
+  async updateBroadcastRecipient(
+    campaignId: string,
+    recipientId: string,
+    patch: { personalizedText?: string; status?: 'draft' | 'approved' | 'skipped' }
+  ): Promise<{ recipient: BroadcastRecipient }> {
+    const res = await fetch(`${BASE_URL}/broadcasts/${encodeURIComponent(campaignId)}/recipients/${encodeURIComponent(recipientId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch)
+    });
+    return handleResponse(res, 'Failed to update recipient', responseContracts.broadcastRecipient);
+  },
+
+  async approveBroadcast(id: string): Promise<{ campaign: BroadcastCampaignSummary }> {
+    const res = await fetch(`${BASE_URL}/broadcasts/${encodeURIComponent(id)}/approve`, { method: 'POST' });
+    return handleResponse(res, 'Failed to approve broadcast', responseContracts.broadcastCampaign);
+  },
+
+  async pauseBroadcast(id: string): Promise<{ campaign: BroadcastCampaignSummary }> {
+    const res = await fetch(`${BASE_URL}/broadcasts/${encodeURIComponent(id)}/pause`, { method: 'POST' });
+    return handleResponse(res, 'Failed to pause broadcast', responseContracts.broadcastCampaign);
+  },
+
+  async cancelBroadcast(id: string): Promise<{ campaign: BroadcastCampaignSummary }> {
+    const res = await fetch(`${BASE_URL}/broadcasts/${encodeURIComponent(id)}/cancel`, { method: 'POST' });
+    return handleResponse(res, 'Failed to cancel broadcast', responseContracts.broadcastCampaign);
   }
 };

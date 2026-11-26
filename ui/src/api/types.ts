@@ -51,7 +51,7 @@ export interface ModelRoutingTrace {
 }
 
 export interface AgentDecision {
-  action: 'reply' | 'draft' | 'ignore' | 'human';
+  action: 'reply' | 'draft' | 'ignore' | 'human' | 'act';
   intent: string;
   replyText?: string;
   reasoning: string;
@@ -90,7 +90,7 @@ export interface ContactDossier {
   chatId: string;
   name: string;
   phone?: string;
-  stage?: 'lead' | 'qualified' | 'negotiation' | 'customer' | 'vip';
+  stage?: 'lead' | 'qualified' | 'negotiation' | 'customer' | 'vip' | 'archived';
   facts: string[];
   commitments: string[];
   preferredTone?: string;
@@ -99,7 +99,7 @@ export interface ContactDossier {
 }
 
 export interface SystemStatus {
-  state: 'disconnected' | 'connecting' | 'qr_ready' | 'pairing_code_ready' | 'connected' | 'failed';
+  state: 'disconnected' | 'connecting' | 'qr_ready' | 'pairing_code_ready' | 'connected' | 'failed' | 'disabled';
   qrDataUrl?: string;
   pairingCode?: string;
   connectedUser?: {
@@ -108,8 +108,11 @@ export interface SystemStatus {
     phone?: string;
   };
   error?: string;
-  pendingDraftsCount: number;
-  updatedAt: number;
+  pendingDraftsCount?: number;
+  updatedAt?: number;
+  transportMode?: string;
+  metaCloudConfigured?: boolean;
+  reason?: string;
 }
 
 export interface GeminiModelOption {
@@ -222,8 +225,8 @@ export interface WorkspaceStats {
   memoriesCount: number;
   foldsCount: number;
   dbSizeBytes: number;
-  connectionState: SystemStatus['state'];
-  connectedUser?: SystemStatus['connectedUser'];
+  connectionState: SystemStatus['state'] | null;
+  connectedUser?: SystemStatus['connectedUser'] | null;
   transportMode: string;
 }
 
@@ -266,4 +269,93 @@ export interface ContextBudgetStatus {
   uncompressedMessageCount: number;
   preservedRecentCount: number;
   nudgeDecision: 'idle' | 'soft' | 'strong';
+}
+
+export type BroadcastTransport = 'auto' | 'baileys' | 'meta-cloud';
+export type BroadcastApprovalMode = 'preview_approve' | 'autonomous';
+export type BroadcastRichKind = 'text' | 'image' | 'video' | 'document' | 'voice_note' | 'template';
+export type BroadcastCampaignStatus = 'draft' | 'approved' | 'running' | 'paused' | 'completed' | 'cancelled';
+export type BroadcastRecipientStatus =
+  | 'draft'
+  | 'approved'
+  | 'queued'
+  | 'sent'
+  | 'delivered'
+  | 'read'
+  | 'replied'
+  | 'followed_up'
+  | 'skipped'
+  | 'failed'
+  | 'opted_out';
+
+export interface BroadcastRichContent {
+  kind: BroadcastRichKind;
+  messageGoal: string;
+  mediaUrl?: string;
+  mediaBase64?: string;
+  mimeType?: string;
+  fileName?: string;
+  templateName?: string;
+  templateLanguage?: string;
+  templateHeaderMediaType?: 'image' | 'video' | 'document';
+  templateHeaderMediaUrl?: string;
+  templateButtons?: Array<{ type: 'url' | 'quick_reply'; text: string; urlOrPayload?: string }>;
+}
+
+export interface BroadcastCampaignStats {
+  total: number;
+  draft: number;
+  approved: number;
+  queued: number;
+  sent: number;
+  delivered: number;
+  read: number;
+  replied: number;
+  followedUp: number;
+  skipped: number;
+  failed: number;
+  optedOut: number;
+}
+
+export interface BroadcastCampaignSummary {
+  id: string;
+  name: string;
+  goal: string;
+  transport: BroadcastTransport;
+  approvalMode: BroadcastApprovalMode;
+  status: BroadcastCampaignStatus;
+  richContent: BroadcastRichContent;
+  followUp: {
+    enabled: boolean;
+    delayMinutes: number;
+    maxFollowUps: number;
+    triggerOn: 'read_no_reply' | 'delivered_no_reply';
+    messagePrompt: string;
+  };
+  createdBy: 'owner' | 'agent';
+  createdAt: number;
+  updatedAt: number;
+  stats: BroadcastCampaignStats;
+}
+
+export interface BroadcastRecipient {
+  id: string;
+  campaignId: string;
+  chatId: string;
+  contactName: string;
+  phoneNumber?: string;
+  transportUsed?: 'baileys' | 'meta-cloud';
+  personalizedText: string;
+  status: BroadcastRecipientStatus;
+  followUpCount: number;
+  error?: string;
+}
+
+export interface EligibleBroadcastContact {
+  chatId: string;
+  name: string;
+  phoneNumber?: string;
+  stage: string;
+  messageCount: number;
+  lastMessageAtMs?: number;
 }

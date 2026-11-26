@@ -57,7 +57,7 @@ export const ChatList = memo(function ChatList({ chats, selectedChatId, pendingD
             placeholder={tr('ابحث عن محادثة', 'Search chats')}
           />
         </label>
-        <div className="wa-filters" role="group" aria-label={tr('تصفية المحادثات', 'Chat filters')}>
+        <fieldset className="wa-filters" style={{ minInlineSize: 0, border: 0, marginInline: 0, paddingInline: 0, paddingTop: 0 }} aria-label={tr('تصفية المحادثات', 'Chat filters')}>
           {([
             ['all', tr('الكل', 'All')],
             ['unread', tr('غير المقروءة', 'Unread')],
@@ -76,7 +76,7 @@ export const ChatList = memo(function ChatList({ chats, selectedChatId, pendingD
               )}
             </button>
           ))}
-        </div>
+        </fieldset>
       </div>
 
       <div className="wa-chat-list">

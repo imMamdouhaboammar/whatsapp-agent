@@ -40,7 +40,7 @@ function buttonByClass(html, cls) {
   return { open: match[0].slice(0, match[0].indexOf('>') + 1), visible: text(match[1]) };
 }
 
-test('buttons with visible text keep that text in their accessible name (WCAG 2.5.3)', () => {
+await test('buttons with visible text keep that text in their accessible name (WCAG 2.5.3)', () => {
   for (const language of ['ar', 'en']) {
     const login = render(language, React.createElement(OwnerAccessLogin, { onLogin: async () => {}, onRetry: () => {} }));
     const lang = buttonByClass(login, 'wa-owner-language');
@@ -55,7 +55,7 @@ test('buttons with visible text keep that text in their accessible name (WCAG 2.
   }
 });
 
-test('decorative model icons are hidden from assistive technology', () => {
+await test('decorative model icons are hidden from assistive technology', () => {
   const moderator = render('en', React.createElement(ModeratorDrawer, {
     view: 'assistant',
     drafts: [],
@@ -100,7 +100,7 @@ test('decorative model icons are hidden from assistive technology', () => {
   assert.equal(unlabelled.length, 0, `unlabelled role="img" found outside aria-hidden: ${unlabelled.join(', ')}`);
 });
 
-test('dialog headings are not page-level banner landmarks', () => {
+await test('dialog headings are not page-level banner landmarks', () => {
   const pairing = render('en', React.createElement(PairingModal, {
     status: { state: 'disconnected', pendingDraftsCount: 0, updatedAt: 0 }, isOpen: true, onClose() {}, onConnect: async () => {}, onDisconnect: async () => {}
   }));
@@ -143,9 +143,9 @@ function luminance(hex) {
     .map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
   return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
 }
-const contrast = (a, b) => { const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x); return (hi + 0.05) / (lo + 0.05); };
+const contrast = (a, b) => { const [hi, lo] = [luminance(a), luminance(b)].toSorted((x, y) => y - x); return (hi + 0.05) / (lo + 0.05); };
 
-test('message timestamps meet AA contrast on the outgoing bubble', () => {
+await test('message timestamps meet AA contrast on the outgoing bubble', () => {
   const css = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8');
   const stylesheet = parseCSS(css);
   const outgoing = stylesheet.getPropertyValue(':root', '--wa-outgoing');

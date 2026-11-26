@@ -8,10 +8,16 @@ import type { AgentDecision, AgentDraft, AgentMode, ContactDossier, ModeratorPer
 import { api } from '../api/client';
 import { useLocale } from '../locale-context';
 
+export interface ModeratorThought {
+  chatId: string;
+  messageId: string;
+  decision: Pick<AgentDecision, 'intent' | 'reasoning' | 'confidence' | 'modelRouting'>;
+}
+
 interface ModeratorDrawerProps {
   view: 'assistant' | 'drafts' | 'memory';
   drafts: AgentDraft[];
-  latestThought?: { chatId: string; messageId: string; decision: AgentDecision };
+  latestThought?: ModeratorThought;
   persona?: ModeratorPersona;
   selectedChatId?: string;
   selectedChatMode?: AgentMode;
@@ -45,40 +51,52 @@ export function ModeratorDrawer({
   const [addingMemory, setAddingMemory] = useState(false);
   const [chatStyle, setChatStyle] = useState<string>('casual');
 
+  const contactThought = latestThought?.chatId === selectedChatId ? latestThought : undefined;
   useEffect(() => {
-    if (!selectedChatId) {
-      return;
-    }
+    const chatId = contactThought?.chatId ?? selectedChatId;
+    if (!chatId) return undefined;
     let active = true;
-    api.getDossier(selectedChatId)
-      .then((response) => { if (active) setDossier(response.dossier); })
-      .catch((err) => {
+    const getDossier = async () => {
+      try {
+        const response = await api.getDossier(chatId);
+        if (active) setDossier(response.dossier);
+      } catch (err) {
         if (active) {
           setDossier(null);
           console.warn('Failed to fetch contact dossier:', err);
         }
-      });
+      }
+    };
+    void getDossier();
 
-    api.getMemories(selectedChatId)
-      .then((res) => { if (active) setMemories(res.memories || []); })
-      .catch((err) => {
+    const getMemories = async () => {
+      try {
+        const res = await api.getMemories(chatId);
+        if (active) setMemories(res.memories || []);
+      } catch (err) {
         if (active) {
           setMemories([]);
           console.warn('Failed to fetch contact memories:', err);
         }
-      });
+      }
+    };
+    void getMemories();
 
-    api.getChatStyle(selectedChatId)
-      .then((res) => { if (active) setChatStyle(res.style || 'casual'); })
-      .catch((err) => {
+    const getChatStyle = async () => {
+      try {
+        const res = await api.getChatStyle(chatId);
+        if (active) setChatStyle(res.style || 'casual');
+      } catch (err) {
         if (active) {
           setChatStyle('casual');
           console.warn('Failed to fetch chat style:', err);
         }
-      });
+      }
+    };
+    void getChatStyle();
 
     return () => { active = false; };
-  }, [selectedChatId, latestThought]);
+  }, [selectedChatId, contactThought]);
 
   const addMemoryEntry = async (e: FormEvent) => {
     e.preventDefault();
@@ -290,7 +308,7 @@ export function ModeratorDrawer({
                   <div className="wa-memory-group-heading">
                     <span><SlidersHorizontal size={15} /> {tr('نبرة وأسلوب المحادثة', 'Conversation style')}</span>
                   </div>
-                  <div className="flex flex-wrap gap-1.5 pt-1" role="group" aria-label={tr('نبرة وأسلوب المحادثة', 'Conversation style')}>
+                  <fieldset className="flex flex-wrap gap-1.5 pt-1" style={{ minInlineSize: 0, border: 0, margin: 0, paddingInline: 0, paddingBottom: 0 }} aria-label={tr('نبرة وأسلوب المحادثة', 'Conversation style')}>
                     {(['casual', 'professional', 'playful', 'assertive', 'empathetic'] as const).map((st) => {
                       const active = chatStyle === st;
                       return (
@@ -313,7 +331,7 @@ export function ModeratorDrawer({
                         </button>
                       );
                     })}
-                  </div>
+                  </fieldset>
                 </div>
 
                 {/* Explicit Contact Memories (Privacy Protected) */}
@@ -358,7 +376,7 @@ export function ModeratorDrawer({
                     <span><BookOpenText size={15} /> {tr('معلومات محفوظة', 'Saved facts')}</span>
                     <button type="button" onClick={() => setAddingFact(!addingFact)} aria-label={tr('إضافة معلومة', 'Add fact')}><Plus size={16} /> {tr('إضافة', 'Add')}</button>
                   </div>
-                  {dossier?.facts?.map((fact, index) => <p className="wa-memory-item" dir="auto" key={fact + index}>{fact}</p>)}
+                  {Array.from(new Set(dossier?.facts), (fact) => <p className="wa-memory-item" dir="auto" key={fact}>{fact}</p>)}
                   {!dossier?.facts?.length && <p className="wa-agent-hint">{tr('مافيش معلومات محفوظة لسه', 'No saved facts yet')}</p>}
                   {addingFact && (
                     <form className="wa-memory-form" onSubmit={(event) => void addEntry(event, 'fact')}>
@@ -372,7 +390,7 @@ export function ModeratorDrawer({
                     <span><CalendarCheck size={15} /> {tr('الوعود والالتزامات', 'Commitments')}</span>
                     <button type="button" onClick={() => setAddingCommitment(!addingCommitment)} aria-label={tr('إضافة التزام', 'Add commitment')}><Plus size={16} /> {tr('إضافة', 'Add')}</button>
                   </div>
-                  {dossier?.commitments?.map((item, index) => <p className="wa-memory-item" dir="auto" key={item + index}><CheckCircle2 size={15} />{item}</p>)}
+                  {Array.from(new Set(dossier?.commitments), (item) => <p className="wa-memory-item" dir="auto" key={item}><CheckCircle2 size={15} />{item}</p>)}
                   {!dossier?.commitments?.length && <p className="wa-agent-hint">{tr('مافيش التزامات محفوظة لسه', 'No saved commitments yet')}</p>}
                   {addingCommitment && (
                     <form className="wa-memory-form" onSubmit={(event) => void addEntry(event, 'commitment')}>

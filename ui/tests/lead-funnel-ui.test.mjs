@@ -27,7 +27,7 @@ const { OwnerAccessGate } = await vite.ssrLoadModule('/src/components/OwnerAcces
 const renderWithLocale = (language, component) =>
   renderToStaticMarkup(React.createElement(LocaleProvider, { initial: language }, component));
 
-test('LandingPage renders without crashing during SSR across eg, gcc, and en locales with matching dir', () => {
+await test('LandingPage renders without crashing during SSR across eg, gcc, and en locales with matching dir', () => {
   // 1. Egyptian Arabic (eg)
   const egHtml = renderToStaticMarkup(
     React.createElement(LandingPage, {
@@ -39,7 +39,7 @@ test('LandingPage renders without crashing during SSR across eg, gcc, and en loc
   assert.ok(egHtml.includes('dir="rtl"'), 'eg locale must have dir="rtl"');
   assert.ok(egHtml.includes('lang="ar-EG"'), 'eg locale must have lang="ar-EG"');
   assert.ok(egHtml.includes('وكيل واتساب ذكي لعيادتك'), 'eg locale must render Egyptian headline');
-  assert.ok(egHtml.includes('role="progressbar"'), 'must include embedded assessment progressbar');
+  assert.ok(/<progress\b[^>]*aria-label="Funnel progress"/.test(egHtml), 'must include embedded assessment progressbar');
 
   // 2. GCC Arabic (gcc)
   const gccHtml = renderToStaticMarkup(
@@ -66,7 +66,7 @@ test('LandingPage renders without crashing during SSR across eg, gcc, and en loc
   assert.ok(enHtml.includes('Put Your Clinic’s WhatsApp on Instant Response'), 'en locale must render English headline');
 });
 
-test('InteractiveLeadFunnel renders cleanly in SSR with progressbar accessibility attributes', () => {
+await test('InteractiveLeadFunnel renders cleanly in SSR with progressbar accessibility attributes', () => {
   // Default cold traffic (starts at q01_industry)
   const coldHtml = renderToStaticMarkup(
     React.createElement(InteractiveLeadFunnel, {
@@ -74,10 +74,12 @@ test('InteractiveLeadFunnel renders cleanly in SSR with progressbar accessibilit
       freeDownloadUrl: 'https://github.com/imMamdouhaboammar/whatsapp-agent',
     }),
   );
-  assert.ok(coldHtml.includes('role="progressbar"'), 'must have role="progressbar"');
-  assert.ok(coldHtml.includes('aria-valuenow="'), 'must have aria-valuenow');
-  assert.ok(coldHtml.includes('aria-valuemin="0"'), 'must have aria-valuemin="0"');
-  assert.ok(coldHtml.includes('aria-valuemax="100"'), 'must have aria-valuemax="100"');
+  assert.ok(/<progress\b[^>]*aria-label="Funnel progress"/.test(coldHtml), 'must expose a native, labelled progressbar');
+  const progress = coldHtml.match(/<progress\b[^>]*>/)?.[0];
+  assert.ok(progress, 'must render native progress element');
+  const value = progress.match(/\bvalue="(\d+(?:\.\d+)?)"/)?.[1];
+  assert.ok(value !== undefined && Number(value) >= 0 && Number(value) <= 100, 'must expose a bounded progress value');
+  assert.match(progress, /\bmax="100"/, 'native progress max is 100 and minimum is implicitly 0');
   assert.ok(coldHtml.includes('ميديكال وعيادات ومراكز طبية'), 'cold funnel must render industry options');
 
   // Pre-seeded vertical assessment (initialIndustry="medical", starts at q02_ops_mode)
@@ -88,17 +90,17 @@ test('InteractiveLeadFunnel renders cleanly in SSR with progressbar accessibilit
       freeDownloadUrl: 'https://github.com/imMamdouhaboammar/whatsapp-agent',
     }),
   );
-  assert.ok(preseededHtml.includes('role="progressbar"'));
+  assert.ok(/<progress\b[^>]*aria-label="Funnel progress"/.test(preseededHtml));
   assert.ok(preseededHtml.includes('عندي فريق موديريشن أو سيلز بيرد'), 'must start at ops_mode question');
   // canGoBack is false when pre-seeded
   assert.ok(!preseededHtml.includes('الرجوع للسؤال السابق'), 'canGoBack button must not be visible on step 1');
 });
 
-test('public routes (/start and /lp/clinics) render without requiring OwnerAccessGate authentication', () => {
+await test('public routes (/start and /lp/clinics) render without requiring OwnerAccessGate authentication', () => {
   // Test /start route
   const startHtml = renderWithLocale('ar', React.createElement(App, { initialPath: '/start' }));
   assert.ok(startHtml.includes('تقييم تفاعلي فوري'), 'must render standalone funnel header');
-  assert.ok(startHtml.includes('role="progressbar"'), 'must render funnel progressbar');
+  assert.ok(/<progress\b[^>]*aria-label="Funnel progress"/.test(startHtml), 'must render funnel progressbar');
   assert.ok(!startHtml.includes('wa-owner-access-screen'), 'must NOT render owner access screen on /start');
   assert.ok(!startHtml.includes('wa-owner-token'), 'must NOT render password input on /start');
 
@@ -117,6 +119,6 @@ test('public routes (/start and /lp/clinics) render without requiring OwnerAcces
       React.createElement(OwnerAccessGate, null, React.createElement(App, { initialPath: '/start' })),
     ),
   );
-  assert.ok(gateWrappedStart.includes('role="progressbar"'), 'must render public funnel through gate');
+  assert.ok(/<progress\b[^>]*aria-label="Funnel progress"/.test(gateWrappedStart), 'must render public funnel through gate');
   assert.ok(!gateWrappedStart.includes('wa-owner-access-screen'), 'gate must bypass on public route');
 });

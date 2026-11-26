@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { BookOpen, CheckCheck, ContactRound, MessageCircle, Network, Play, Settings2, Smartphone, Smile, Wifi, WifiOff, X } from 'lucide-react';
+import { BookOpen, CheckCheck, ContactRound, MessageCircle, Network, Play, Radio, Settings2, Smartphone, Smile, Wifi, WifiOff, X } from 'lucide-react';
 import { Gemini } from '@lobehub/icons';
 import { WhatsApp } from '@lobehub/ui/icons';
 import { Badge as AstryxBadge } from '@astryxdesign/core/Badge';
@@ -8,12 +8,13 @@ import { api } from '../api/client';
 import { ChatRequestCoordinator } from '../lib/chat-request-coordinator';
 import { DashboardSync, type SyncHealth } from '../lib/dashboard-sync';
 import { featureEnabled, type CapabilityRow } from '../lib/capabilities';
-import type { AgentDecision, AgentDraft, AgentMode, ChatMessage, ChatSummary, ModeratorPersona, PolicyConfig, SystemStatus } from '../api/types';
+import type { AgentDraft, AgentMode, ChatMessage, ChatSummary, ModeratorPersona, PolicyConfig, SystemStatus } from '../api/types';
 import { ChatList } from './ChatList';
 import { BrandBrainPage } from './BrandBrainPage';
+import { BroadcastPage } from './BroadcastPage';
 import { ChatThread } from './ChatThread';
 import { FunnelPage } from './FunnelPage';
-import { ModeratorDrawer } from './ModeratorDrawer';
+import { ModeratorDrawer, type ModeratorThought } from './ModeratorDrawer';
 import { PairingModal } from './PairingModal';
 import { PersonaSettingsPage } from './PersonaSettingsPage';
 import { SimulatorModal } from './SimulatorModal';
@@ -21,6 +22,103 @@ import { StickerStudioModal } from './StickerStudioModal';
 import { OwnerSignOutButton } from './OwnerAccessGate';
 import { useOwnerAccess } from './owner-access-context';
 import { useLocale } from '../locale-context';
+
+const handleSimulate = (text: string, senderName?: string) => api.simulate(text, senderName);
+
+const handleConnect = async (phone?: string, refresh?: boolean) => {
+  await api.connect(phone, refresh);
+};
+
+const handleDisconnect = async () => {
+  await api.disconnect();
+};
+
+type EventPayload = Record<string, unknown>;
+
+function isRecord(value: unknown): value is EventPayload {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function optionalString(value: unknown) {
+  return value === undefined || typeof value === 'string';
+}
+
+function readEvent(event: MessageEvent<unknown>) {
+  if (typeof event.data !== 'string') return undefined;
+  const value: unknown = JSON.parse(event.data);
+  return isRecord(value) ? value : undefined;
+}
+
+function isMessageStatus(value: unknown): value is NonNullable<ChatMessage['status']> {
+  return value === 'pending' || value === 'sent' || value === 'delivered' || value === 'read';
+}
+
+function isChatMessage(value: EventPayload): value is EventPayload & ChatMessage {
+  const { type, status, quotedMessage, reactions, deliveryState } = value;
+  return typeof value.id === 'string' && typeof value.chatId === 'string' &&
+    typeof value.sender === 'string' && typeof value.text === 'string' &&
+    typeof value.timestamp === 'number' && typeof value.isFromMe === 'boolean' &&
+    (type === 'text' || type === 'audio' || type === 'image' || type === 'video' || type === 'document' || type === 'other') &&
+    (status === undefined || isMessageStatus(status)) &&
+    (deliveryState === undefined || deliveryState === 'queued' || deliveryState === 'attempting' ||
+      deliveryState === 'uncertain' || deliveryState === 'failed') &&
+    (value.lastAttemptAt === undefined || typeof value.lastAttemptAt === 'number') &&
+    [value.senderName, value.mediaUrl, value.transcription, value.replyToId,
+      value.sendIntentId, value.nativeMessageId].every(optionalString) &&
+    (reactions === undefined || (Array.isArray(reactions) && reactions.every((emoji: unknown) => typeof emoji === 'string'))) &&
+    (quotedMessage === undefined || (isRecord(quotedMessage) && typeof quotedMessage.id === 'string' &&
+      typeof quotedMessage.sender === 'string' && typeof quotedMessage.text === 'string' &&
+      optionalString(quotedMessage.senderName) && optionalString(quotedMessage.type)));
+}
+
+function isRoutingTrace(value: unknown) {
+  return value === undefined || (isRecord(value) && typeof value.selectedModel === 'string' &&
+    (value.tier === 'trivial' || value.tier === 'standard' || value.tier === 'complex') &&
+    typeof value.confidence === 'number' && typeof value.routerLatencyMs === 'number' &&
+    typeof value.reason === 'string' && (value.bypassed === undefined || typeof value.bypassed === 'boolean'));
+}
+
+function isDraft(value: EventPayload): value is EventPayload & AgentDraft {
+  const { status, toolCall } = value;
+  return [value.id, value.chatId, value.incomingMessageId, value.incomingText,
+    value.proposedReply, value.reasoning].every((field) => typeof field === 'string') &&
+    typeof value.confidence === 'number' && typeof value.createdAt === 'number' &&
+    (status === 'pending' || status === 'approved' || status === 'rejected' || status === 'sent') &&
+    (value.sendAsVoiceNote === undefined || typeof value.sendAsVoiceNote === 'boolean') &&
+    isRoutingTrace(value.modelRouting) &&
+    (toolCall === undefined || (isRecord(toolCall) && typeof toolCall.namespacedName === 'string' &&
+      typeof toolCall.serverName === 'string' && typeof toolCall.toolName === 'string' && isRecord(toolCall.args) &&
+      (toolCall.risk === 'readOnly' || toolCall.risk === 'mutating') &&
+      optionalString(toolCall.reason) && optionalString(toolCall.proposedFollowUp)));
+}
+
+function isThoughtDecision(value: unknown): value is ModeratorThought['decision'] {
+  return isRecord(value) && typeof value.intent === 'string' &&
+    typeof value.reasoning === 'string' && typeof value.confidence === 'number' &&
+    isRoutingTrace(value.modelRouting);
+}
+
+function isConnectionState(value: unknown): value is SystemStatus['state'] {
+  return value === 'disconnected' || value === 'connecting' || value === 'qr_ready' ||
+    value === 'pairing_code_ready' || value === 'connected' || value === 'failed';
+}
+
+function readConnectedUser(value: unknown) {
+  if (isRecord(value) && typeof value.id === 'string') {
+    return { id: value.id, name: typeof value.name === 'string' ? value.name : undefined,
+      phone: typeof value.phone === 'string' ? value.phone : undefined };
+  }
+  return undefined;
+}
+
+async function refreshChats(setChats: (chats: ChatSummary[]) => void) {
+  try {
+    const response = await api.listChats();
+    if (response.chats) setChats(response.chats);
+  } catch (error) {
+    console.warn('Failed to refresh chats:', error);
+  }
+}
 
 export function DashboardCockpit() {
   const { language, setLanguage, direction, tr } = useLocale();
@@ -48,7 +146,7 @@ export function DashboardCockpit() {
   const [syncHealth, setSyncHealth] = useState<SyncHealth>('loading');
   const retryTimerRef = useRef<number | undefined>(undefined);
   const streamDroppedRef = useRef(false);
-  const [latestThought, setLatestThought] = useState<{ chatId: string; messageId: string; decision: AgentDecision } | undefined>();
+  const [latestThought, setLatestThought] = useState<ModeratorThought>();
 
   // Ref to always have the latest selectedChatId in SSE and polling callbacks
   const selectedChatIdRef = useRef<string | undefined>(selectedChatId);
@@ -62,10 +160,11 @@ export function DashboardCockpit() {
 
   // Modals state
   const [isPairingOpen, setIsPairingOpen] = useState(false);
-  const [page, setPage] = useState<'chats' | 'settings' | 'brain' | 'funnel'>(() =>
+  const [page, setPage] = useState<'chats' | 'settings' | 'brain' | 'funnel' | 'broadcast'>(() =>
     typeof window !== 'undefined' && window.location.pathname.startsWith('/settings/') ? 'settings' :
     typeof window !== 'undefined' && window.location.pathname === '/brand-brain' ? 'brain' :
-    typeof window !== 'undefined' && window.location.pathname === '/funnel' ? 'funnel' : 'chats'
+    typeof window !== 'undefined' && window.location.pathname === '/funnel' ? 'funnel' :
+    typeof window !== 'undefined' && window.location.pathname === '/broadcast' ? 'broadcast' : 'chats'
   );
   const [isSimulatorOpen, setIsSimulatorOpen] = useState(false);
   const [isStickerStudioOpen, setIsStickerStudioOpen] = useState(false);
@@ -80,7 +179,8 @@ export function DashboardCockpit() {
     const onPopState = () => setPage(
       window.location.pathname.startsWith('/settings/') ? 'settings' :
       window.location.pathname === '/brand-brain' ? 'brain' :
-      window.location.pathname === '/funnel' ? 'funnel' : 'chats'
+      window.location.pathname === '/funnel' ? 'funnel' :
+      window.location.pathname === '/broadcast' ? 'broadcast' : 'chats'
     );
     window.addEventListener('popstate', onPopState);
     const query = window.matchMedia('(max-width: 1160px)');
@@ -100,41 +200,43 @@ export function DashboardCockpit() {
   // flip the dashboard to stale/error; they are never converted to empty lists.
   const loadInitialData = useCallback(async () => {
     const sync = syncRef.current;
-    const [statusRes, chatsRes, draftsRes, personaRes, capsRes] = await Promise.all([
-      api.getStatus().catch((err: unknown) => err as Error),
-      api.listChats().catch((err: unknown) => err as Error),
-      api.listDrafts().catch((err: unknown) => err as Error),
-      api.getPersona().catch(() => null),
-      api.getRuntimeCapabilities().catch(() => null)
+    const [statusRes, chatsRes, draftsRes, personaRes, capsRes] = await Promise.allSettled([
+      api.getStatus(),
+      api.listChats(),
+      api.listDrafts(),
+      api.getPersona(),
+      api.getRuntimeCapabilities()
     ]);
 
     let coreFailure: unknown = null;
-    if (statusRes instanceof Error) coreFailure = statusRes;
-    else setStatus(statusRes);
-    if (capsRes?.capabilities) setCapabilityRows(capsRes.capabilities);
-    if (chatsRes instanceof Error) {
-      coreFailure = coreFailure ?? chatsRes;
-    } else if (Array.isArray(chatsRes.chats)) {
+    if (statusRes.status === 'rejected') coreFailure = statusRes.reason;
+    else setStatus(statusRes.value);
+    if (capsRes.status === 'fulfilled' && capsRes.value.capabilities) setCapabilityRows(capsRes.value.capabilities);
+    if (chatsRes.status === 'rejected') {
+      coreFailure = coreFailure ?? chatsRes.reason;
+    } else if (Array.isArray(chatsRes.value.chats)) {
       sync.noteSnapshot();
-      setChats(chatsRes.chats);
+      setChats(chatsRes.value.chats);
       setSelectedChatId((prev) => {
-        const exists = chatsRes.chats.some((c: { id: string }) => c.id === prev);
-        return (!prev || !exists) && chatsRes.chats.length > 0 ? chatsRes.chats[0].id : prev;
+        const exists = chatsRes.value.chats.some((c: { id: string }) => c.id === prev);
+        const firstChat = chatsRes.value.chats[0];
+        return (!prev || !exists) && firstChat ? firstChat.id : prev;
       });
     }
-    if (draftsRes instanceof Error) {
-      coreFailure = coreFailure ?? draftsRes;
-    } else if (draftsRes.drafts) {
-      setDrafts(draftsRes.drafts);
+    if (draftsRes.status === 'rejected') {
+      coreFailure = coreFailure ?? draftsRes.reason;
+    } else if (draftsRes.value.drafts) {
+      setDrafts(draftsRes.value.drafts);
     }
-    if (personaRes) {
-      setPersona(personaRes.persona);
-      policyRef.current = personaRes.policy;
+    if (personaRes.status === 'fulfilled') {
+      setPersona(personaRes.value.persona);
+      policyRef.current = personaRes.value.policy;
       setPersonaLoadFailed(false);
     } else {
       setPersonaLoadFailed(true);
     }
-    setSyncHealth(coreFailure ? sync.noteLoadFailure(coreFailure) : sync.noteLoadSuccess());
+    const failed = statusRes.status === 'rejected' || chatsRes.status === 'rejected' || draftsRes.status === 'rejected';
+    setSyncHealth(failed ? sync.noteLoadFailure(coreFailure) : sync.noteLoadSuccess());
   }, []);
 
   // WA-026: bounded automatic resync while the live stream is down. The budget
@@ -164,7 +266,7 @@ export function DashboardCockpit() {
 
   // Continuous Harvest Sync: Poll active chat messages every 2.5s for seamless resilience
   useEffect(() => {
-    if (!selectedChatId) return;
+    if (!selectedChatId) return undefined;
 
     // WA-020: begin a new request cycle; the previous chat's outstanding
     // fetches are aborted and their late responses are ignored.
@@ -172,12 +274,15 @@ export function DashboardCockpit() {
     const token = sync.begin(selectedChatId);
 
     // Immediately fetch messages when chat is selected
-    api.getMessages(selectedChatId, { signal: token.signal }).then((res) => {
-      if (!sync.isCurrent(token)) return;
-      setMessages(res.messages || []);
-    }).catch((err) => {
-      if (!token.signal.aborted) console.error(err);
-    });
+    const loadMessages = async () => {
+      try {
+        const res = await api.getMessages(selectedChatId, { signal: token.signal });
+        if (sync.isCurrent(token)) setMessages(res.messages || []);
+      } catch (error) {
+        if (!token.signal.aborted) console.error(error);
+      }
+    };
+    void loadMessages();
 
     const harvestTimer = setInterval(async () => {
       if (!sync.isCurrent(token)) return;
@@ -222,7 +327,8 @@ export function DashboardCockpit() {
           setChats(res.chats);
           setSelectedChatId((prev) => {
             const exists = res.chats.some((c: { id: string }) => c.id === prev);
-            return (!prev || !exists) && res.chats.length > 0 ? res.chats[0].id : prev;
+            const firstChat = res.chats[0];
+            return (!prev || !exists) && firstChat ? firstChat.id : prev;
           });
         }
         setSyncHealth(syncRef.current.noteLoadSuccess());
@@ -243,43 +349,42 @@ export function DashboardCockpit() {
 
     eventSource.addEventListener('state_change', (e: MessageEvent) => {
       try {
-        const updatedState = JSON.parse(e.data);
-        setStatus((prev) => {
-          if (!prev) return updatedState;
-          return {
-            ...prev,
-            ...updatedState,
-            error: updatedState.error ?? undefined,
-            qrDataUrl: updatedState.qrDataUrl ?? undefined,
-            pairingCode: updatedState.pairingCode ?? undefined
-          };
-        });
+        const update = readEvent(e);
+        if (!update || !isConnectionState(update.state) || typeof update.updatedAt !== 'number') return;
+        const { state, updatedAt } = update;
+        setStatus((prev) => ({
+          ...prev,
+          state,
+          updatedAt,
+          pendingDraftsCount: prev?.pendingDraftsCount ?? 0,
+          connectedUser: 'connectedUser' in update ? readConnectedUser(update.connectedUser) : prev?.connectedUser,
+          error: typeof update.error === 'string' ? update.error : undefined,
+          qrDataUrl: typeof update.qrDataUrl === 'string' ? update.qrDataUrl : undefined,
+          pairingCode: typeof update.pairingCode === 'string' ? update.pairingCode : undefined
+        }));
       } catch {
-        // Ignore malformed message
+        console.debug('[Dashboard] Ignored malformed state change');
       }
     });
 
-    eventSource.onopen = () => {
+    eventSource.addEventListener('open', () => {
       syncRef.current.noteStreamOpen();
       if (streamDroppedRef.current) {
         streamDroppedRef.current = false;
-        // Reconnected: reconcile anything missed while the stream was down.
         void loadInitialData();
       }
-    };
+    });
 
-    eventSource.onerror = () => {
-      // Mark retained data stale and resync with a bounded retry budget instead
-      // of firing a full reload on every error event.
+    eventSource.addEventListener('error', () => {
       streamDroppedRef.current = true;
       setSyncHealth(syncRef.current.noteStreamDrop());
       scheduleResync();
-    };
+    });
 
     eventSource.addEventListener('new_message', (e: MessageEvent) => {
       try {
-        const newMsg = JSON.parse(e.data) as ChatMessage;
-        if (!newMsg || typeof newMsg !== 'object' || typeof newMsg.id !== 'string' || typeof newMsg.chatId !== 'string') return;
+        const newMsg = readEvent(e);
+        if (!newMsg || !isChatMessage(newMsg)) return;
         const activeId = selectedChatIdRef.current;
         if (activeId === newMsg.chatId) {
           setMessages((prev) => {
@@ -288,71 +393,70 @@ export function DashboardCockpit() {
           });
         }
 
-        api.listChats().then((res) => {
-          if (res.chats) setChats(res.chats);
-        }).catch((err) => console.warn('Failed to refresh chats after new message:', err));
+        void refreshChats(setChats);
       } catch {
-        // Ignore malformed SSE message
+        console.debug('[Dashboard] Ignored malformed event');
       }
     });
 
     eventSource.addEventListener('message_status', (e: MessageEvent) => {
       try {
-        const payload = JSON.parse(e.data);
-        if (!payload || typeof payload !== 'object') return;
-        const { chatId, messageId, status } = payload as {
-          chatId: string;
-          messageId: string;
-          status: ChatMessage['status'];
-        };
+        const payload = readEvent(e);
+        if (!payload) return;
+        const { chatId, messageId, status: messageStatus } = payload;
+        if (typeof chatId !== 'string' || typeof messageId !== 'string' || !isMessageStatus(messageStatus)) return;
         if (selectedChatIdRef.current !== chatId) return;
         setMessages((prev) => prev.map((message) =>
-          message.id === messageId && message.isFromMe ? { ...message, status } : message
+          message.id === messageId && message.isFromMe ? { ...message, status: messageStatus } : message
         ));
       } catch {
-        // Ignore malformed SSE message
+        console.debug('[Dashboard] Ignored malformed event');
       }
     });
 
     eventSource.addEventListener('send_intent', (e: MessageEvent) => {
+      let chatId: unknown;
       try {
-        const data = JSON.parse(e.data) as { chatId: string };
-        if (data.chatId !== selectedChatIdRef.current) return;
-        void api.getMessages(data.chatId).then((response) => {
-          // The selection may have changed while the fetch was in flight.
-          if (selectedChatIdRef.current !== data.chatId) return;
-          setMessages(response.messages);
-        }).catch((error) => {
-          console.warn('[Delivery] Could not refresh message states:', error);
-        });
+        chatId = readEvent(e)?.chatId;
       } catch {
-        // Ignore malformed SSE message
+        console.debug('[Dashboard] Ignored malformed send intent');
+        return;
       }
+      const refreshMessages = async () => {
+        try {
+          if (typeof chatId !== 'string' || chatId !== selectedChatIdRef.current) return;
+          const response = await api.getMessages(chatId);
+          if (chatId === selectedChatIdRef.current) setMessages(response.messages);
+        } catch (error) {
+          console.warn('[Delivery] Could not refresh message states:', error);
+        }
+      };
+      void refreshMessages();
     });
 
     eventSource.addEventListener('agent_thought', (e: MessageEvent) => {
       try {
-        const thoughtData = JSON.parse(e.data);
-        if (thoughtData && typeof thoughtData === 'object') {
-          setLatestThought(thoughtData);
+        const thought = readEvent(e);
+        if (thought && typeof thought.chatId === 'string' && typeof thought.messageId === 'string' && isThoughtDecision(thought.decision)) {
+          setLatestThought({ chatId: thought.chatId, messageId: thought.messageId, decision: thought.decision });
         }
       } catch {
-        // Ignore malformed SSE message
+        console.debug('[Dashboard] Ignored malformed event');
       }
     });
 
     eventSource.addEventListener('message_reaction', (e: MessageEvent) => {
       try {
-        const payload = JSON.parse(e.data);
-        if (!payload || typeof payload !== 'object') return;
+        const payload = readEvent(e);
+        if (!payload) return;
         const { chatId, messageId, emoji } = payload;
         const activeId = selectedChatIdRef.current;
-        if (activeId === chatId) {
+        if (typeof chatId === 'string' && activeId === chatId && typeof messageId === 'string') {
           setMessages((prev) =>
             prev.map((m) => {
               if (m.id === messageId) {
                 const current = m.reactions || [];
-                const updated = emoji
+                const updated = typeof emoji === 'string' && emoji
                   ? Array.from(new Set([...current, emoji]))
                   : current;
                 return { ...m, reactions: updated };
@@ -362,42 +466,40 @@ export function DashboardCockpit() {
           );
         }
       } catch {
-        // Ignore malformed SSE message
+        console.debug('[Dashboard] Ignored malformed event');
       }
     });
 
     eventSource.addEventListener('new_draft', (e: MessageEvent) => {
       try {
-        const draft = JSON.parse(e.data) as AgentDraft;
-        if (draft && draft.id) {
+        const draft = readEvent(e);
+        if (draft && isDraft(draft)) {
           setDrafts((prev) => [draft, ...prev.filter((d) => d.id !== draft.id)]);
         }
       } catch {
-        // Ignore malformed SSE message
+        console.debug('[Dashboard] Ignored malformed event');
       }
     });
 
     eventSource.addEventListener('draft_updated', (e: MessageEvent) => {
       try {
-        const payload = JSON.parse(e.data);
-        if (payload && payload.draftId) {
+        const payload = readEvent(e);
+        if (typeof payload?.draftId === 'string') {
           setDrafts((prev) => prev.filter((d) => d.id !== payload.draftId));
         }
       } catch {
-        // Ignore malformed SSE message
+        console.debug('[Dashboard] Ignored malformed event');
       }
     });
 
     eventSource.addEventListener('chat_updated', () => {
-      api.listChats().then((res) => {
-        if (res.chats) setChats(res.chats);
-      }).catch((err) => console.warn('Failed to refresh chats after new message:', err));
+      void refreshChats(setChats);
     });
 
     eventSource.addEventListener('chat_deleted', (e: MessageEvent) => {
       try {
-        const payload = JSON.parse(e.data) as { chatId?: string };
-        if (payload?.chatId) {
+        const payload = readEvent(e);
+        if (typeof payload?.chatId === 'string') {
           setChats((prev) => prev.filter((c) => c.id !== payload.chatId));
           if (selectedChatIdRef.current === payload.chatId) {
             setSelectedChatId(undefined);
@@ -406,18 +508,18 @@ export function DashboardCockpit() {
           }
         }
       } catch {
-        // Ignore malformed SSE message
+        console.debug('[Dashboard] Ignored malformed event');
       }
     });
 
     eventSource.addEventListener('messages_cleared', (e: MessageEvent) => {
       try {
-        const payload = JSON.parse(e.data) as { chatId?: string };
-        if (payload?.chatId && selectedChatIdRef.current === payload.chatId) {
+        const payload = readEvent(e);
+        if (typeof payload?.chatId === 'string' && selectedChatIdRef.current === payload.chatId) {
           setMessages([]);
         }
       } catch {
-        // Ignore malformed SSE message
+        console.debug('[Dashboard] Ignored malformed event');
       }
     });
 
@@ -496,18 +598,6 @@ export function DashboardCockpit() {
     if (policyRef.current && updatedPolicy) policyRef.current = { ...policyRef.current, ...updatedPolicy };
   };
 
-  const handleSimulate = async (text: string, senderName?: string) => {
-    return api.simulate(text, senderName);
-  };
-
-  const handleConnect = async (phone?: string, refresh?: boolean) => {
-    await api.connect(phone, refresh);
-  };
-
-  const handleDisconnect = async () => {
-    await api.disconnect();
-  };
-
   const selectedChat = chats.find((c) => c.id === selectedChatId);
   const pendingDraftChatIds = drafts.filter((draft) => draft.status === 'pending').map((draft) => draft.chatId);
 
@@ -560,6 +650,16 @@ export function DashboardCockpit() {
     if (window.history.state?.waFunnel) window.history.back();
     else { window.history.replaceState(null, '', '/'); setPage('chats'); }
   };
+  const openBroadcast = () => {
+    if (page === 'broadcast') return;
+    window.history.pushState({ waBroadcast: true }, '', '/broadcast');
+    setPage('broadcast');
+    setInspectorOpen(false);
+  };
+  const closeBroadcast = () => {
+    if (window.history.state?.waBroadcast) window.history.back();
+    else { window.history.replaceState(null, '', '/'); setPage('chats'); }
+  };
   const closeSettings = () => {
     window.history.replaceState(null, '', '/');
     setPage('chats');
@@ -573,10 +673,10 @@ export function DashboardCockpit() {
           <strong dir="ltr">WhatsApp <span>Agent</span></strong>
         </div>
         <div className="wa-header-actions">
-          <div className="wa-language-switch" role="group" aria-label={tr('لغة الواجهة', 'Interface language')}>
+          <fieldset className="wa-language-switch" style={{ minInlineSize: 0, margin: 0 }} aria-label={tr('لغة الواجهة', 'Interface language')}>
             <button type="button" aria-pressed={language === 'ar'} className={language === 'ar' ? 'is-active' : ''} onClick={() => setLanguage('ar')}>عربي</button>
             <button type="button" aria-pressed={language === 'en'} className={language === 'en' ? 'is-active' : ''} onClick={() => setLanguage('en')}>EN</button>
-          </div>
+          </fieldset>
           <button type="button" className={'wa-connection ' + (status?.state === 'connected' ? 'is-connected' : 'is-disconnected')} onClick={() => setIsPairingOpen(true)} aria-label={tr('حالة ربط واتساب', 'WhatsApp connection status')}>
             {status?.state === 'connected' ? <Wifi size={16} /> : <WifiOff size={16} />}
             <span>{status?.state === 'connected' ? tr('متصل', 'Connected') : status?.state === 'connecting' ? tr('جارٍ الاتصال', 'Connecting') : tr('ربط واتساب', 'Link WhatsApp')}</span>
@@ -584,6 +684,7 @@ export function DashboardCockpit() {
           <span className="wa-header-separator" aria-hidden="true" />
           <button type="button" className="wa-icon-button wa-simulator-trigger" onClick={() => setIsSimulatorOpen(true)} aria-label={tr('اختبار رد المساعد', 'Test the assistant')} title={tr('اختبار رد المساعد', 'Test the assistant')}><Play size={19} /></button>
           <button type="button" className="wa-icon-button" onClick={() => setIsStickerStudioOpen(true)} aria-label={tr('استوديو الملصقات', 'Sticker Studio')} title={tr('استوديو الملصقات', 'Sticker Studio')}><Smile size={19} /></button>
+          <button type="button" className={'wa-icon-button ' + (page === 'broadcast' ? 'is-active' : '')} onClick={openBroadcast} aria-label={tr('البث الذكي', 'Smart Broadcast')} title={tr('البث الذكي', 'Smart Broadcast')}><Radio size={19} /></button>
           <button type="button" className={'wa-icon-button ' + (page === 'funnel' ? 'is-active' : '')} onClick={openFunnel} aria-label={tr('محرك التوزيع المتوازي', 'Scatter-Gather Funnel')} title={tr('محرك التوزيع المتوازي', 'Scatter-Gather Funnel')}><Network size={19} /></button>
           <button type="button" className={'wa-icon-button ' + (page === 'brain' ? 'is-active' : '')} onClick={openBrain} aria-label={tr('ذاكرة البراند', 'Brand Brain')} title={tr('ذاكرة البراند', 'Brand Brain')}><BookOpen size={19} /></button>
           <button type="button" className={'wa-icon-button ' + (page === 'settings' ? 'is-active' : '')} onClick={openSettings} aria-label={tr('إعدادات المساعد', 'Assistant settings')} title={tr('إعدادات المساعد', 'Assistant settings')}><Settings2 size={19} /></button>
@@ -604,17 +705,19 @@ export function DashboardCockpit() {
         <BrandBrainPage onClose={closeBrain} />
       ) : page === 'funnel' ? (
         <FunnelPage onClose={closeFunnel} />
+      ) : page === 'broadcast' ? (
+        <BroadcastPage onClose={closeBroadcast} />
       ) : (
       <div className={'wa-workspace ' + (mobileView === 'list' ? 'is-list-view' : 'is-chat-view') + (!inspectorExpanded ? ' is-inspector-collapsed' : '')}>
         {syncHealth !== 'live' && syncHealth !== 'loading' && (
-          <div className={'wa-sync-banner is-' + syncHealth} role="status">
-            <span>
+          <div className={'wa-sync-banner is-' + syncHealth}>
+            <output>
                 {syncHealth === 'unauthenticated'
                 ? tr('انتهت جلسة الوصول. سجّل الدخول مجددًا لتحديث البيانات.', 'Owner session expired. Sign in again to refresh data.')
                 : syncHealth === 'error'
                   ? tr('تعذّر تحميل البيانات من الخادم.', 'Could not load data from the server.')
                   : tr('تظهر آخر بيانات معروفة؛ التحديث المباشر متعذّر حاليًا.', 'Showing last known data; live updates are unavailable.')}
-            </span>
+            </output>
               {syncHealth !== 'unauthenticated' && (
               <button type="button" className="wa-sync-retry" onClick={handleSyncRetry}>{tr('إعادة المحاولة', 'Retry')}</button>
               )}

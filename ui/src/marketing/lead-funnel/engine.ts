@@ -136,8 +136,8 @@ export function interpolateTemplate(
 ): string {
   if (!template) return '';
   return template.replace(/\{\{(\w+)\}\}/g, (_match, key: string) => {
-    if (key in vocab) {
-      return vocab[key as keyof IndustryVocab];
+    if (key === 'industry_label' || key === 'customer_singular' || key === 'customer_plural') {
+      return vocab[key];
     }
     return '';
   });

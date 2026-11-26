@@ -41,13 +41,13 @@ describe('WA-020 stale chat requests', () => {
     const controller = new AbortController();
     const originalFetch = globalThis.fetch;
     let seenSignal: AbortSignal | null | undefined;
-    globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+    globalThis.fetch = async (_input: unknown, init?: RequestInit) => {
       seenSignal = init?.signal;
       return new Response(JSON.stringify({ messages: [] }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' }
       });
-    }) as typeof fetch;
+    };
     try {
       await api.getMessages('chat-a', { signal: controller.signal });
     } finally {
