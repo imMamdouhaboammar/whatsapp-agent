@@ -72,13 +72,14 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Install Qlty CLI
         run: curl https://qlty.sh | sh
 
       - name: Run Qlty Check
-        run: ~/.qlty/bin/qlty check
-        continue-on-error: true
+        run: ~/.qlty/bin/qlty check --all --no-formatters
 
   trufflehog:
     name: TruffleHog Secret Scanning
