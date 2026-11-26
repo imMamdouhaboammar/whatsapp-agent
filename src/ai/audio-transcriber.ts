@@ -44,7 +44,8 @@ export class AudioTranscriber {
         responseMimeType: 'application/json'
       });
     } catch {
-      // Graceful fallback to gemini-3.1-flash-lite
+      // Graceful fallback to gemini-3.8-flash or gemini-3.1-flash-lite
+      const fallbackModel = primaryModel === 'gemini-3.8-flash' ? 'gemini-3.1-flash-lite' : 'gemini-3.8-flash';
       response = await this.gemini.generateContent([
         {
           role: 'user',
@@ -59,7 +60,7 @@ export class AudioTranscriber {
           ]
         }
       ], {
-        model: 'gemini-3.1-flash-lite',
+        model: fallbackModel,
         responseMimeType: 'application/json'
       });
     }

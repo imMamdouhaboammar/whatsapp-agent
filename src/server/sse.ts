@@ -164,3 +164,6 @@ export class SSEBroadcaster {
     }
   }
 }
+
+export { SSEBroadcaster as SSEManager };
+

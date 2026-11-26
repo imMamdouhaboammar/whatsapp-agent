@@ -24,6 +24,10 @@ import type { DualMemoryManager } from '../domain/learning-memory';
 import type { ReflectionWorker } from '../agent/reflection-worker';
 import type { ReflectionEngine } from '../ai/reflection-engine';
 import type { DiagnosticsCore } from '../observability/diagnostics-core';
+import type { RsiLedger } from '../domain/rsi-ledger';
+import type { RsiCycleOrchestrator } from '../ai/rsi-loop';
+import type { JepaWorldModel } from '../ai/jepa-world-model';
+import type { McpClientManager } from '../mcp/client-manager';
 
 const allowedOrigins = new Set(['http://localhost:3000','http://127.0.0.1:3000','http://localhost:5173','http://127.0.0.1:5173',...((process.env.AGENT_ALLOWED_ORIGINS??'').split(',').map(v=>v.trim()).filter(Boolean))]);
 const trustedOrigin=(origin:string)=>allowedOrigins.has(origin);
@@ -48,10 +52,14 @@ export interface ApiDependencies {
   dualMemoryManager?: DualMemoryManager;
   reflectionWorker?: ReflectionWorker;
   reflectionEngine?: ReflectionEngine;
+  rsiLedger?: RsiLedger;
+  rsiOrchestrator?: RsiCycleOrchestrator;
+  jepaWorldModel?: JepaWorldModel;
   sendIntents?: SendIntentService;
   diagnostics?: DiagnosticsCore;
   transportMode?: 'baileys' | 'meta-cloud';
   dataDir?: string;
+  mcpClientManager?: McpClientManager;
 }
 
 export function createApiServer(deps: ApiDependencies): Hono {
@@ -260,7 +268,51 @@ export function createApiServer(deps: ApiDependencies): Hono {
       chatId = await deps.whatsappClient.canonicalizeJid(chatId);
     }
     c.header('Cache-Control', 'no-store');
-    return c.json({ chatId, folds: deps.memoryStore.getFolds(chatId) });
+    const rawTier = c.req.query('tier');
+    const tier = rawTier ? (Number(rawTier) as 1 | 2 | 3) : undefined;
+    return c.json({ chatId, folds: deps.memoryStore.getFolds(chatId, tier) });
+  });
+
+  app.get('/api/chats/:chatId/context-status', async (c) => {
+    let chatId = c.req.param('chatId');
+    if (deps.whatsappClient?.canonicalizeJid) {
+      chatId = await deps.whatsappClient.canonicalizeJid(chatId);
+    }
+    c.header('Cache-Control', 'no-store');
+    const engine = deps.moderatorAgent.getContextFoldEngine();
+    const status = engine?.getContextBudgetStatus(chatId, deps.moderatorAgent.getPersona().model);
+    return c.json({ chatId, status: status ?? null });
+  });
+
+  app.get('/api/chats/:chatId/memory-search', async (c) => {
+    let chatId = c.req.param('chatId');
+    if (deps.whatsappClient?.canonicalizeJid) {
+      chatId = await deps.whatsappClient.canonicalizeJid(chatId);
+    }
+    const query = String(c.req.query('query') ?? '');
+    const limit = Math.max(1, Math.min(50, Number(c.req.query('limit') ?? 25)));
+    c.header('Cache-Control', 'no-store');
+    return c.json({ chatId, query, results: deps.memoryStore.searchMemory(chatId, query, limit) });
+  });
+
+  app.get('/api/chats/:chatId/folds/:foldId/decompress', async (c) => {
+    let chatId = c.req.param('chatId');
+    if (deps.whatsappClient?.canonicalizeJid) {
+      chatId = await deps.whatsappClient.canonicalizeJid(chatId);
+    }
+    const foldId = c.req.param('foldId');
+    const fold = deps.memoryStore.getFold(foldId);
+    if (!fold || fold.chatId !== chatId) return c.json({ error: 'Fold not found' }, 404);
+    const raw = deps.memoryStore.getFoldMessages(foldId);
+    const aroundId = c.req.query('around');
+    if (aroundId && !fold.directMessageIds.includes(aroundId)) {
+      return c.json({ error: 'Message outside fold' }, 400);
+    }
+    const messages = aroundId
+      ? deps.memoryStore.getMessageWindow(chatId, aroundId, 2)
+      : raw;
+    c.header('Cache-Control', 'no-store');
+    return c.json({ foldId, chatId, total: raw.length, messages });
   });
 
   app.post('/api/chats/:chatId/fold-now', async (c) => {
@@ -407,27 +459,57 @@ export function createApiServer(deps: ApiDependencies): Hono {
     return c.json({ drafts });
   });
 
+  app.get('/api/mcp/external', (c) => {
+    return c.json({
+      servers: deps.mcpClientManager?.getHealthReport() ?? [],
+      tools: deps.mcpClientManager?.listAvailableTools() ?? []
+    });
+  });
+
   app.post('/api/drafts/:draftId/approve', async (c) => {
     const draftId = c.req.param('draftId');
     const body = await c.req.json().catch(() => ({}));
     const draft = deps.memoryStore.getDraft(draftId);
     if (!draft) return c.json({ error: 'Draft not found' }, 404);
-    const replyText = String(body.editedText || body.replyText || draft.proposedReply);
+    let replyText = String(body.editedText || body.replyText || draft.proposedReply || '');
     const asVoice = Boolean(deps.voiceSynthesizer) &&
       (body.asVoice !== undefined ? Boolean(body.asVoice) : Boolean(draft.sendAsVoiceNote));
+
+    if (draft.toolCall && draft.status === 'pending') {
+      if (!deps.mcpClientManager) {
+        return c.json({ error: 'External MCP client manager is not configured to execute tool draft' }, 503);
+      }
+      const toolResult = await deps.mcpClientManager.callTool(draft.toolCall.namespacedName, draft.toolCall.args);
+      if (!toolResult.ok) {
+        return c.json({ error: toolResult.error || 'External MCP tool execution failed', toolResult }, 502);
+      }
+      if (!replyText.trim()) {
+        replyText = draft.toolCall.proposedFollowUp?.trim() || `Done — executed ${draft.toolCall.toolName}.`;
+      }
+    }
 
     try {
       const approved = await getDelivery().approveDraft(draftId, replyText, 1, asVoice);
       if (!approved.result) return c.json({ error: 'Draft already processed' }, 409);
-      if (approved.created && draft.proposedReply !== replyText && deps.reflectionWorker) {
-        deps.reflectionWorker.recordModerationFeedback({
-          chatId: draft.chatId,
-          draftId,
-          feedbackType: 'edited',
-          originalReply: draft.proposedReply,
-          revisedReply: replyText,
-          humanNote: 'Operator revised draft prior to approval'
-        });
+      if (approved.created && deps.reflectionWorker) {
+        if (draft.proposedReply !== replyText) {
+          deps.reflectionWorker.recordModerationFeedback({
+            chatId: draft.chatId,
+            draftId,
+            feedbackType: 'edited',
+            originalReply: draft.proposedReply,
+            revisedReply: replyText,
+            humanNote: 'Operator revised draft prior to approval'
+          });
+        } else {
+          deps.reflectionWorker.recordModerationFeedback({
+            chatId: draft.chatId,
+            draftId,
+            feedbackType: 'approved',
+            originalReply: draft.proposedReply,
+            humanNote: 'Operator approved draft as-is'
+          });
+        }
       }
       deps.sse.broadcast('draft_updated', {
         draftId,
@@ -522,6 +604,69 @@ export function createApiServer(deps: ApiDependencies): Hono {
       compacted,
       workbook: memoryManager?.getWorkbook()
     });
+  });
+
+  app.get('/api/learning/rsi/status', (c) => {
+    const brandId = c.req.query('brandId') || 'default';
+    if (!deps.rsiLedger || !deps.jepaWorldModel) {
+      return c.json({ error: 'RSI world model not initialized' }, 404);
+    }
+    const recentTransitions = deps.rsiLedger.getRecentTransitions(brandId, 100);
+    const opfDiagnostics = deps.jepaWorldModel.computeOpfDiagnostics(recentTransitions);
+    return c.json({
+      brandId,
+      latestGeneration: deps.rsiLedger.getLatestPromotedGeneration(brandId),
+      recentGenerations: deps.rsiLedger.getRecentGenerations(brandId, 10),
+      recentTransitions: recentTransitions.slice(0, 20),
+      opfDiagnostics
+    });
+  });
+
+  app.post('/api/learning/rsi/cycle', async (c) => {
+    if (!deps.rsiOrchestrator) {
+      return c.json({ error: 'RSI orchestrator not initialized' }, 400);
+    }
+    const body = await c.req.json().catch(() => ({}));
+    const brandId = typeof body?.brandId === 'string' && body.brandId.trim() ? body.brandId.trim() : 'default';
+    const candidates = Array.isArray(body?.candidates) ? body.candidates : [];
+    const result = deps.rsiOrchestrator.runCycle({
+      brandId,
+      chatId: typeof body?.chatId === 'string' ? body.chatId : undefined,
+      candidates,
+      feedbackType: body?.feedbackType,
+      intent: typeof body?.intent === 'string' ? body.intent : undefined
+    });
+    return c.json({ success: true, result });
+  });
+
+  app.get('/api/learning/harness', (c) => {
+    const memoryManager = deps.dualMemoryManager || deps.moderatorAgent.getDualMemoryManager();
+    if (!memoryManager) {
+      return c.json({ error: 'Dual memory manager not initialized' }, 404);
+    }
+    const query = c.req.query('q') || '';
+    const chatId = c.req.query('chatId') || undefined;
+    const store = memoryManager.getHarnessStore();
+    const entries = query
+      ? store.rankEntries(query, { chatId, limit: 25 })
+      : store.listEntries({ chatId });
+    return c.json({ entries });
+  });
+
+  app.post('/api/learning/rsi/rollback', async (c) => {
+    if (!deps.rsiOrchestrator) {
+      return c.json({ error: 'RSI orchestrator not initialized' }, 400);
+    }
+    const body = await c.req.json().catch(() => ({}));
+    const brandId = typeof body?.brandId === 'string' && body.brandId.trim() ? body.brandId.trim() : 'default';
+    const generationId = Number(body?.generationId);
+    if (!Number.isSafeInteger(generationId) || generationId < 1) {
+      return c.json({ error: 'Invalid generationId' }, 400);
+    }
+    const outcome = deps.rsiOrchestrator.rollbackGeneration(brandId, generationId);
+    return outcome.rolledBack
+      ? c.json({ success: true, ...outcome })
+      : c.json({ success: false, ...outcome }, 404);
   });
 
   // Persona & Configuration

@@ -6,6 +6,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { formatDoctorReport, runDoctor, verifyBaileysPatch } from './doctor';
 import { resolveRuntimeDatastore } from './persistence/postgres/runtime-selection';
+import { McpClientManager } from './mcp/client-manager';
 
 resolveRuntimeDatastore();
 
@@ -58,6 +59,15 @@ async function doctor(flags: string[]) {
         const creds = JSON.parse(readFileSync(join(dataDir, 'session', 'creds.json'), 'utf8'));
         return creds?.registered === true;
       } catch { return false; }
+    },
+    checkExternalMcp: async () => {
+      const mcp = new McpClientManager();
+      try {
+        await mcp.initialize();
+        return mcp.getHealthReport();
+      } finally {
+        await mcp.shutdown();
+      }
     }
   }, { preflightOnly, strict: flags.includes('--strict') });
   console.log(formatDoctorReport(report, { preflightOnly }));
@@ -72,19 +82,26 @@ async function simulate(text: string) {
   console.log(`\n🧪 Testing Gemini Moderator Agent with message: "${text}"...\n`);
   const memory = new MemoryStore();
   const gemini = new GeminiClient();
-  const agent = new ModeratorAgent(gemini, memory);
+  const mcpManager = new McpClientManager();
+  await mcpManager.initialize();
+  const agent = new ModeratorAgent(gemini, memory, { mcpClientManager: mcpManager });
 
   const start = performance.now();
-  const result = await agent.processInboundMessage({
-    id: `cli_test_${Date.now()}`,
-    chatId: 'test_user@s.whatsapp.net',
-    sender: 'test_user@s.whatsapp.net',
-    senderName: 'عميل تجريبي',
-    text,
-    timestamp: Date.now(),
-    isFromMe: false,
-    type: 'text'
-  });
+  let result;
+  try {
+    result = await agent.processInboundMessage({
+      id: `cli_test_${Date.now()}`,
+      chatId: 'test_user@s.whatsapp.net',
+      sender: 'test_user@s.whatsapp.net',
+      senderName: 'عميل تجريبي',
+      text,
+      timestamp: Date.now(),
+      isFromMe: false,
+      type: 'text'
+    }, { dryRun: true });
+  } finally {
+    await mcpManager.shutdown();
+  }
   const elapsed = Math.round(performance.now() - start);
 
   console.log('--- Agent Decision ---');
@@ -96,6 +113,12 @@ async function simulate(text: string) {
   console.log(`Intent: ${result.decision.intent}`);
   console.log(`Confidence: ${(result.decision.confidence * 100).toFixed(0)}%`);
   console.log(`Reasoning: ${result.decision.reasoning}`);
+  if (result.decision.externalToolCalls?.length) {
+    console.log('External MCP Tools:');
+    for (const tc of result.decision.externalToolCalls) {
+      console.log(`  - ${tc.namespacedName} [${tc.risk}] -> ${tc.decision}${tc.ok !== undefined ? ` (ok=${tc.ok})` : ''}`);
+    }
+  }
   console.log(`Simulated Typing Delay: ${result.decision.simulatedDelayMs}ms`);
   if (result.decision.replyText) {
     console.log(`\n💬 Proposed Human Reply:\n"${result.decision.replyText}"`);

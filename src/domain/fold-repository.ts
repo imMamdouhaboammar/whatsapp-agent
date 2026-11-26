@@ -10,7 +10,7 @@ type FoldRow = {
 
 function asFold(row: FoldRow): ConversationFold {
   return {
-    id: row.id, chatId: row.chat_id, tier: row.tier as 1 | 2, topic: row.topic,
+    id: row.id, chatId: row.chat_id, tier: row.tier as 1 | 2 | 3, topic: row.topic,
     summary: row.summary, startMessageId: row.start_message_id, endMessageId: row.end_message_id,
     directMessageIds: JSON.parse(row.direct_message_ids) as string[],
     sourceFoldIds: JSON.parse(row.source_fold_ids) as string[],
@@ -50,7 +50,7 @@ export class FoldRepository {
       CREATE TABLE IF NOT EXISTS conversation_folds (
         id TEXT PRIMARY KEY,
         chat_id TEXT NOT NULL,
-        tier INTEGER NOT NULL CHECK (tier IN (1,2)),
+        tier INTEGER NOT NULL CHECK (tier IN (1,2,3)),
         topic TEXT NOT NULL,
         summary TEXT NOT NULL,
         start_message_id TEXT NOT NULL,
@@ -85,7 +85,7 @@ export class FoldRepository {
   }
 
   saveFold(input: ConversationFold): void {
-    if (!input.id || !input.chatId || (input.tier !== 1 && input.tier !== 2)) throw new Error('Invalid fold identity');
+    if (!input.id || !input.chatId || (input.tier !== 1 && input.tier !== 2 && input.tier !== 3)) throw new Error('Invalid fold identity');
     const ids = input.directMessageIds;
     if (!ids.length || ids.length > 512 || ids.length !== new Set(ids).size) throw new Error('Invalid fold lineage');
     if (input.startMessageId !== ids[0] || input.endMessageId !== ids.at(-1)) throw new Error('Fold boundary mismatch');
@@ -113,7 +113,7 @@ export class FoldRepository {
           LIMIT 1
         `).get(input.chatId, ...ids);
         if (overlapping) throw new Error('Tier-one fold overlaps existing lineage');
-      } else {
+      } else if (input.tier === 2) {
         if (input.sourceFoldIds.length < 2 || input.sourceFoldIds.length !== new Set(input.sourceFoldIds).size) {
           throw new Error('Tier-two fold requires distinct source folds');
         }
@@ -123,6 +123,21 @@ export class FoldRepository {
         }
         const expanded = sources.flatMap(source => source!.directMessageIds);
         if (JSON.stringify(expanded) !== JSON.stringify(ids)) throw new Error('Tier-two lineage mismatch');
+        const alreadyCoalesced = this.db.query(`
+          SELECT 1 FROM conversation_fold_sources
+          WHERE source_fold_id IN (${input.sourceFoldIds.map(() => '?').join(',')}) LIMIT 1
+        `).get(...input.sourceFoldIds);
+        if (alreadyCoalesced) throw new Error('Source fold already coalesced');
+      } else if (input.tier === 3) {
+        if (input.sourceFoldIds.length < 2 || input.sourceFoldIds.length !== new Set(input.sourceFoldIds).size) {
+          throw new Error('Tier-three fold requires distinct source folds');
+        }
+        const sources = input.sourceFoldIds.map(id => this.getFold(id));
+        if (sources.some(source => !source || source.chatId !== input.chatId || source.tier !== 2)) {
+          throw new Error('Tier-three source fold identity mismatch');
+        }
+        const expanded = sources.flatMap(source => source!.directMessageIds);
+        if (JSON.stringify(expanded) !== JSON.stringify(ids)) throw new Error('Tier-three lineage mismatch');
         const alreadyCoalesced = this.db.query(`
           SELECT 1 FROM conversation_fold_sources
           WHERE source_fold_id IN (${input.sourceFoldIds.map(() => '?').join(',')}) LIMIT 1
@@ -149,7 +164,7 @@ export class FoldRepository {
         VALUES (?, ?, ?, ?)
       `);
       ids.forEach((id, index) => membership.run(input.id, input.chatId, id, index));
-      if (input.tier === 2) {
+      if (input.tier === 2 || input.tier === 3) {
         const relation = this.db.prepare(`
           INSERT INTO conversation_fold_sources (tier_two_fold_id, source_fold_id) VALUES (?, ?)
         `);
@@ -163,7 +178,7 @@ export class FoldRepository {
     return row ? asFold(row) : undefined;
   }
 
-  getFolds(chatId: string, tier?: 1 | 2, limit = 500): ConversationFold[] {
+  getFolds(chatId: string, tier?: 1 | 2 | 3, limit = 500): ConversationFold[] {
     const capped = Math.max(1, Math.min(500, Math.floor(limit) || 500));
     const rows = tier
       ? this.db.query(`SELECT * FROM conversation_folds WHERE chat_id = ? AND tier = ?
@@ -186,7 +201,20 @@ export class FoldRepository {
     return rows.map(asFold);
   }
 
-  getRecentFolds(chatId: string, tier: 1 | 2, limit = 20): ConversationFold[] {
+  getPendingTier2Folds(chatId: string, limit = 5): ConversationFold[] {
+    const capped = Math.max(2, Math.min(10, Math.floor(limit) || 5));
+    const rows = this.db.query(`
+      SELECT f.* FROM conversation_folds f
+      WHERE f.chat_id = ? AND f.tier = 2
+        AND NOT EXISTS (
+          SELECT 1 FROM conversation_fold_sources s WHERE s.source_fold_id = f.id
+        )
+      ORDER BY f.created_at ASC, f.rowid ASC LIMIT ?
+    `).all(chatId, capped) as FoldRow[];
+    return rows.map(asFold);
+  }
+
+  getRecentFolds(chatId: string, tier: 1 | 2 | 3, limit = 20): ConversationFold[] {
     const capped = Math.max(1, Math.min(100, Math.floor(limit) || 20));
     const rows = this.db.query(`
       SELECT * FROM conversation_folds WHERE chat_id = ? AND tier = ?

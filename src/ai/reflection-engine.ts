@@ -2,11 +2,17 @@ import type { GeminiClient } from './gemini-client';
 import { DualMemoryManager, type FailureLogEntry } from '../domain/learning-memory';
 import type { ChatMessage } from '../domain/types';
 import { executeWithModelFallback, resolveModelChain } from './model-fallback';
+import type { RsiCycleOrchestrator } from './rsi-loop';
+import {
+  extractConversationalFeedback,
+  formatConversationalFeedbackForReflection,
+  type ConversationalFeedbackSignal
+} from './conversational-feedback';
 
 export interface ModerationFeedbackEvent {
   chatId: string;
   draftId?: string;
-  feedbackType: 'rejected' | 'edited' | 'manual_override';
+  feedbackType: 'approved' | 'rejected' | 'edited' | 'manual_override';
   originalReply?: string;
   revisedReply?: string;
   humanNote?: string;
@@ -16,13 +22,16 @@ export interface ReflectionEvaluationParams {
   chatId: string;
   messages: ChatMessage[];
   moderationFeedback?: ModerationFeedbackEvent[];
+  conversationalSignals?: ConversationalFeedbackSignal[];
 }
 
 export interface ReflectionResult {
   selfCorrectionsDetected: number;
   rulesAdded: number;
   bestPracticesAdded: number;
+  localTacticsAdded?: number;
   factsAdded: number;
+  conversationalSignalsDetected?: number;
   summary: string;
   compacted?: boolean;
 }
@@ -58,15 +67,19 @@ export class ReflectionEngine {
   private gemini: GeminiClient;
   private memoryManager: DualMemoryManager;
   private model: string;
+  private rsiOrchestrator?: RsiCycleOrchestrator;
+  private brandId: string;
 
   constructor(
     gemini: GeminiClient,
     memoryManager: DualMemoryManager,
-    options: { model?: string } = {}
+    options: { model?: string; rsiOrchestrator?: RsiCycleOrchestrator; brandId?: string } = {}
   ) {
     this.gemini = gemini;
     this.memoryManager = memoryManager;
     this.model = options.model || process.env.GEMINI_REFLECTION_MODEL || 'gemini-4-argon';
+    this.rsiOrchestrator = options.rsiOrchestrator;
+    this.brandId = options.brandId ?? 'default';
   }
 
   async evaluateThread(params: ReflectionEvaluationParams): Promise<ReflectionResult> {
@@ -83,6 +96,7 @@ export class ReflectionEngine {
 
     // Format human moderation feedback
     const scopedFeedback = (moderationFeedback ?? []).filter((fb) => fb && fb.chatId === chatId);
+    const conversationalSignals = params.conversationalSignals ?? extractConversationalFeedback(messages);
     let feedbackText = 'None recorded.';
     if (scopedFeedback.length > 0) {
       feedbackText = scopedFeedback.map(fb => {
@@ -99,6 +113,9 @@ ${transcriptText || 'No conversation messages.'}
 
 === HUMAN OPERATOR MODERATION SIGNALS ===
 ${feedbackText}
+
+=== IMPLICIT CONVERSATIONAL FEEDBACK SIGNALS ===
+${formatConversationalFeedbackForReflection(conversationalSignals)}
 
 === CURRENT ACTIVE WORKBOOK RULES ===
 Enforced Rules:
@@ -124,6 +141,9 @@ Analyze this data and return your evaluation strictly in the following JSON stru
   ],
   "newBestPractices": [
     "Crisp operational guideline"
+  ],
+  "localTactics": [
+    "Thread-specific phrasing or tactical adjustment for this customer only"
   ],
   "customerInsights": [
     {
@@ -165,6 +185,7 @@ Analyze this data and return your evaluation strictly in the following JSON stru
     let selfCorrectionsDetected = 0;
     let rulesAdded = 0;
     let bestPracticesAdded = 0;
+    let localTacticsAdded = 0;
     let factsAdded = 0;
 
     // WA-003 trust boundaries for model output. The transcript is untrusted input: every entry is
@@ -200,10 +221,34 @@ Analyze this data and return your evaluation strictly in the following JSON stru
     // moderation feedback is present. This prevents untrusted customer prompt injection from
     // authoring global execution guardrails for other customers.
     if (hasHumanFeedback && Array.isArray(parsed.newEnforcedRules)) {
-      for (const rule of parsed.newEnforcedRules.slice(0, MAX_PER_REFLECTION)) {
-        if (bounded(rule, 500)) {
-          this.memoryManager.addEnforcedRule(rule.trim());
-          rulesAdded++;
+      const candidateRules = parsed.newEnforcedRules
+        .slice(0, MAX_PER_REFLECTION)
+        .filter((rule: unknown): rule is string => bounded(rule, 500))
+        .map((r: string) => r.trim());
+      if (candidateRules.length > 0) {
+        if (this.rsiOrchestrator) {
+          const cycle = this.rsiOrchestrator.runCycle({
+            brandId: this.brandId,
+            chatId,
+            messages,
+            candidates: [{
+              id: `rsi_rules_${Date.now()}`,
+              kind: 'add_rule',
+              payload: candidateRules,
+              summary: `Add ${candidateRules.length} enforced rule(s) from human feedback`,
+              sourceIntent: 'reflection',
+              requiresHumanAuthorization: true,
+              authorizedByHuman: hasHumanFeedback
+            }],
+            feedbackType: chatFeedback[0]?.feedbackType,
+            intent: 'reflection'
+          });
+          if (cycle.promoted) rulesAdded += candidateRules.length;
+        } else {
+          for (const rule of candidateRules) {
+            this.memoryManager.addEnforcedRule(rule);
+            rulesAdded++;
+          }
         }
       }
     }
@@ -211,10 +256,44 @@ Analyze this data and return your evaluation strictly in the following JSON stru
     // 3. Process New Best Practices — same trust tier as enforced rules: they are injected into
     // every future prompt, so untrusted transcripts must not install them.
     if (hasHumanFeedback && Array.isArray(parsed.newBestPractices)) {
-      for (const bp of parsed.newBestPractices.slice(0, MAX_PER_REFLECTION)) {
-        if (bounded(bp, 500)) {
-          this.memoryManager.addBestPractice(bp.trim());
-          bestPracticesAdded++;
+      const candidatePractices = parsed.newBestPractices
+        .slice(0, MAX_PER_REFLECTION)
+        .filter((bp: unknown): bp is string => bounded(bp, 500))
+        .map((bp: string) => bp.trim());
+      if (candidatePractices.length > 0) {
+        if (this.rsiOrchestrator) {
+          const cycle = this.rsiOrchestrator.runCycle({
+            brandId: this.brandId,
+            chatId,
+            messages,
+            candidates: [{
+              id: `rsi_bp_${Date.now()}`,
+              kind: 'add_best_practice',
+              payload: candidatePractices,
+              summary: `Add ${candidatePractices.length} best practice(s) from human feedback`,
+              sourceIntent: 'reflection',
+              requiresHumanAuthorization: true,
+              authorizedByHuman: hasHumanFeedback
+            }]
+          });
+          if (cycle.promoted) bestPracticesAdded += candidatePractices.length;
+        } else {
+          for (const bp of candidatePractices) {
+            this.memoryManager.addBestPractice(bp);
+            bestPracticesAdded++;
+          }
+        }
+      }
+    }
+
+    // 3b. Process Thread-Scoped Local Tactics — isolated to this chatId only, so conversational
+    // back-and-forth can refine local tactics without polluting global rules (WA-003 preserved).
+    if (Array.isArray(parsed.localTactics)) {
+      for (const tactic of parsed.localTactics.slice(0, MAX_PER_REFLECTION)) {
+        if (bounded(tactic, 320)) {
+          if (this.memoryManager.recordLocalTactic(chatId, tactic.trim(), 'reflection_local_tactic')) {
+            localTacticsAdded++;
+          }
         }
       }
     }
@@ -260,7 +339,9 @@ Analyze this data and return your evaluation strictly in the following JSON stru
       selfCorrectionsDetected,
       rulesAdded,
       bestPracticesAdded,
+      localTacticsAdded,
       factsAdded,
+      conversationalSignalsDetected: conversationalSignals.length,
       summary: parsed.threadSemanticSummary || `Reflected on ${messages.length} messages`,
       compacted
     };
@@ -295,6 +376,21 @@ Return JSON:
       );
       const parsed = JSON.parse(response.text);
       if (Array.isArray(parsed.distilledRules) && parsed.distilledRules.length > 0) {
+        if (this.rsiOrchestrator) {
+          const cycle = this.rsiOrchestrator.runCycle({
+            brandId: this.brandId,
+            candidates: [{
+              id: `rsi_compact_${Date.now()}`,
+              kind: 'compact_rules',
+              payload: parsed.distilledRules,
+              summary: `Distill ${wb.enforcedRules.length} rules to ${parsed.distilledRules.length}`,
+              sourceIntent: 'compaction',
+              requiresHumanAuthorization: false,
+              authorizedByHuman: true
+            }]
+          });
+          return cycle.promoted;
+        }
         this.memoryManager.compactWorkbook(parsed.distilledRules);
         return true;
       }

@@ -4,14 +4,23 @@ import type { MemoryStore } from '../domain/memory-store';
 import type { AgentDecision, AgentDraft, AutonomyAction, ChatMessage, ModeratorPersona, PolicyConfig } from '../domain/types';
 import type { GeminiClient } from './gemini-client';
 import { formatWhatsAppMessage } from '../domain/whatsapp-formatter';
-import { executeWithModelFallback, resolveModelChain } from './model-fallback';
+import { executeWithModelFallback } from './model-fallback';
+import { orchestrateModel, toRoutingTrace } from './model-orchestrator';
 import { formatMemoriesForPrompt } from '../domain/user-memory';
 import { detectConversationStyle, getStylePromptDirective, isExplicitStyleRequest, type ConversationStyle } from './adaptive-style';
 import type { DualMemoryManager } from '../domain/learning-memory';
 import { ContextFoldEngine } from '../domain/context-fold-engine';
 import { buildFoldContext } from '../domain/context-fold-prompt';
+import { crushMessageForPrompt } from '../domain/content-cached-retrieval';
 import { createGeminiFoldSummarizer } from './fold-summarizer';
 import { routeTurnModel, type RoutingDecision, type JevRouteRequest } from './model-router';
+import type { JepaWorldModel } from './jepa-world-model';
+import { DignityGuardian } from './dignity-guardian';
+import { extractDynamicsInput, planConversation, compileDynamicsPrompt } from './conversation-dynamics';
+import { compileHumanRealismLayer } from './human-realism';
+import { evaluateSpontaneousReaction } from '../domain/whatsapp-rhythm';
+import type { McpClientManager } from '../mcp/client-manager';
+import { executeGeminiToolLoop } from '../mcp/gemini-tool-adapter';
 
 export const DEFAULT_MODERATOR_PERSONA: ModeratorPersona = {
   name: 'ممدوح (الموديرتور الذكي)',
@@ -22,7 +31,7 @@ export const DEFAULT_MODERATOR_PERSONA: ModeratorPersona = {
 
 القواعد الأساسية:
 1. لا تذكر إطلاقاً أنك ذكاء اصطناعي أو بوت أو روبوت أو نظام آلي.
-2. اكتب بلغة عامية مصرية طبيعية وسلسة وودودة، واستخدم أسلوب التحدث اليومي على واتساب (جمل قصيرة ومباشرة، بدون رغي أو مقالات طويلة).
+2. اكتب بلغة عامية مصرية طبيعية وسلسة وودودة، واستخدم أسلوب التحدث اليومي على واتساب (جمل قصيرة ومباشرة، بدون رغي أو مقالات طويلة، ويمكنك تقسيم الرد إلى فقاعات متتالية بالرمز "|||" لتبدو كرسائل واتساب متتالية واقعية).
 3. تفاعل مع السياق السابق للحديث وافهم قصد المتصل بدقة.
 4. إذا سأل المتصل عن أمر حساس أو مالي أو طلب قرار مصيري لا تعرفه، اختر الأكشن "draft" أو "human" ليراجعه صاحب الحساب.
 5. لا تتجاهل رسائل العملاء أو الأصدقاء، بل رد بما يفيد ويسهل التعامل.
@@ -63,6 +72,10 @@ export class ModeratorAgent {
   private dualMemoryManager?: DualMemoryManager;
   private contextFoldEngine?: ContextFoldEngine;
   private router: (input: JevRouteRequest) => Promise<RoutingDecision>;
+  private worldModel?: JepaWorldModel;
+  private dignityGuardian: DignityGuardian;
+  private mcpClientManager?: McpClientManager;
+  private brandId?: string;
 
   constructor(
     private gemini: GeminiClient,
@@ -74,6 +87,10 @@ export class ModeratorAgent {
       dualMemoryManager?: DualMemoryManager;
       contextFoldEngine?: ContextFoldEngine;
       router?: (input: JevRouteRequest) => Promise<RoutingDecision>;
+      worldModel?: JepaWorldModel;
+      dignityGuardian?: DignityGuardian;
+      mcpClientManager?: McpClientManager;
+      brandId?: string;
     } = {}
   ) {
     this.persona = { ...DEFAULT_MODERATOR_PERSONA, ...options.persona };
@@ -84,6 +101,10 @@ export class ModeratorAgent {
     });
     this.dualMemoryManager = options.dualMemoryManager;
     this.router = options.router ?? routeTurnModel;
+    this.worldModel = options.worldModel;
+    this.dignityGuardian = options.dignityGuardian ?? new DignityGuardian();
+    this.mcpClientManager = options.mcpClientManager;
+    this.brandId = options.brandId;
     this.contextFoldEngine = options.contextFoldEngine ?? (
       process.env.CONTEXT_FOLD_ENABLED === 'false' ? undefined :
         new ContextFoldEngine({
@@ -97,12 +118,20 @@ export class ModeratorAgent {
     return this.contextFoldEngine;
   }
 
+  getDignityGuardian(): DignityGuardian {
+    return this.dignityGuardian;
+  }
+
   getDualMemoryManager(): DualMemoryManager | undefined {
     return this.dualMemoryManager;
   }
 
   setDualMemoryManager(manager: DualMemoryManager): void {
     this.dualMemoryManager = manager;
+  }
+
+  setMcpClientManager(manager: McpClientManager): void {
+    this.mcpClientManager = manager;
   }
 
   getPersona(): ModeratorPersona {
@@ -129,17 +158,52 @@ export class ModeratorAgent {
     draftCreated?: AgentDraft;
     shouldSendImmediately: boolean;
   }> {
-    // 1. Fetch conversation history for context
-    const history = this.memoryStore.getMessages(message.chatId, 10);
-    const foldContext = buildFoldContext(this.memoryStore, message.chatId);
+    const inboundText = message.text || message.transcription || '';
+
+    // 0. Boundary & Dignity Defense Check
+    const dignityResult = this.dignityGuardian.evaluateTurn(message.chatId, inboundText);
+    if (dignityResult.isBlocked) {
+      return {
+        decision: {
+          action: 'ignore',
+          intent: 'blocked_boundary',
+          reasoning: 'Contact blocked due to dignity/boundary violation',
+          confidence: 1,
+          simulatedDelayMs: 0
+        },
+        shouldSendImmediately: false
+      };
+    }
+
+    if (dignityResult.boundaryMessage) {
+      return {
+        decision: {
+          action: 'reply',
+          intent: 'boundary_enforcement',
+          replyText: dignityResult.boundaryMessage,
+          reasoning: `Dignity boundary warning triggered (${dignityResult.violationType ?? 'boundary'})`,
+          confidence: 1,
+          simulatedDelayMs: 1200
+        },
+        shouldSendImmediately: true
+      };
+    }
+
+    // 1. Fetch conversation history for context with dynamic context window sizing
+    const referencedId = message.quotedMessage?.id || message.replyToId;
+    const budgetStatus = this.contextFoldEngine?.getContextBudgetStatus(message.chatId, this.persona.model);
+    const dynamicRecentCount = budgetStatus ? budgetStatus.preservedRecentCount : 10;
+    const history = this.memoryStore.getMessages(message.chatId, dynamicRecentCount);
+    const foldContext = buildFoldContext(this.memoryStore, message.chatId, referencedId);
     const chatSummary = this.memoryStore.getChat(message.chatId);
     const agentMode = chatSummary?.agentMode ?? 'autopilot';
 
-    // 2. Build Gemini prompt with history and persona
+    // 2. Build Gemini prompt with history and persona (applying CCR for oversized content)
     const historyText = history
       .map((m) => {
+        const crushed = crushMessageForPrompt(m);
         const sender = m.isFromMe ? 'أنا (صاحب الحساب/الموديرتور)' : `${m.senderName || 'الطرف الآخر'}`;
-        const content = m.text || (m.transcription ? `[رسالة صوتية مفرغة: ${m.transcription}]` : `[${m.type}]`);
+        const content = crushed.transcription ? `[رسالة صوتية مفرغة: ${crushed.transcription}]` : (crushed.text || `[${m.type}]`);
         return `${sender}: ${content}`;
       })
       .join('\n');
@@ -186,7 +250,6 @@ ${commitmentsList}\n`;
     const memoryPrompt = memoryContext ? `\n📌 ${memoryContext}\n` : '';
 
     // Detect or update conversation style
-    const inboundText = message.text || message.transcription || '';
     const detectedStyle = detectConversationStyle(inboundText);
     if (!options.dryRun && isExplicitStyleRequest(inboundText)) {
       this.memoryStore.setChatStyle(message.chatId, detectedStyle);
@@ -201,17 +264,28 @@ ${commitmentsList}\n`;
       if (nbContext) {
         notebookPrompt = `\n📌 الذاكرة التراكمية وسياق الدفتر (Notebook Context):\n${nbContext}\n`;
       }
-      const wbRules = this.dualMemoryManager.getActiveRulesForPrompt();
+      const wbRules = this.dualMemoryManager.getActiveRulesForPrompt(inboundText, message.chatId);
       if (wbRules) {
         workbookRulesPrompt = `\n\n=== قواعد وإرشادات التعلم التراكمي (Workbook Rules & Guardrails) ===\n${wbRules}`;
       }
     }
+
+    const isGroup = message.chatId.endsWith('@g.us');
+    const dynamicsInput = extractDynamicsInput(inboundText, 1);
+    const conversationPlan = planConversation(dynamicsInput);
+    const dynamicsPrompt = compileDynamicsPrompt(conversationPlan);
+    const humanRealismLayer = compileHumanRealismLayer({
+      personaName: this.persona.name,
+      isGroup
+    });
 
     const prompt = `${foldContext ? `${foldContext}\n\n` : ''}سياق المحادثة السابقة بين الطرفين:\n${historyText}
 ${quotedContextPrompt}
 ${dossierPrompt}
 ${memoryPrompt}
 ${notebookPrompt}
+${dynamicsPrompt}
+
 الرسالة الجديدة الواردة الآن:
 من: ${message.senderName || message.sender}
 نص الرسالة: ${message.text || message.transcription || `[${message.type}]`}
@@ -240,38 +314,152 @@ ${notebookPrompt}
   "contactStage": "lead | qualified | negotiation | customer | vip"
 }`;
 
-    const systemInstruction = `${this.persona.systemPrompt}\nالنبرة المطلوبة: ${this.persona.tone}\n${styleDirective}\nالقواعد:\n${this.persona.rules.map((r) => `- ${r}`).join('\n')}${workbookRulesPrompt}`;
+    const systemInstruction = `${this.persona.systemPrompt}\nالنبرة المطلوبة: ${this.persona.tone}\n${styleDirective}\n\n${humanRealismLayer}\n\nالقواعد:\n${this.persona.rules.map((r) => `- ${r}`).join('\n')}${workbookRulesPrompt}`;
 
     let parsedDecision: AgentDecision;
 
-    // Route inbound turn with Jev to dynamically select the optimal model
-    let routing: RoutingDecision;
+    const externalTools = agentMode !== 'human' && this.mcpClientManager
+      ? this.mcpClientManager.listAvailableTools(this.brandId)
+      : [];
+
+    // Route inbound turn with optional external Jev router, then orchestrate local model selection
+    let jevDecision: RoutingDecision | undefined;
     try {
       const recentContext = history.slice(-3).map((m) => m.text || m.transcription || '').filter(Boolean);
-      routing = await this.router({
+      jevDecision = await this.router({
         message: inboundText,
         threadContext: recentContext,
         senderName: message.senderName || message.sender
       });
     } catch {
-      routing = {
-        selectedModel: 'gemini-3.8-flash',
-        tier: 'standard',
-        confidence: 0,
-        routerLatencyMs: 0,
-        reason: 'Router call threw unexpected error; bypassed to gemini-3.8-flash',
-        bypassed: true
-      };
+      jevDecision = undefined;
     }
 
-    try {
-      const preferredModel = routing.selectedModel || this.persona.model || 'gemini-3.8-flash';
-      const fallbackModels = resolveModelChain(
-        preferredModel,
-        process.env.GEMINI_FALLBACK_MODELS,
-        this.persona.model
-      );
+    const orchestration = orchestrateModel({
+      message,
+      historyLength: history.length,
+      personaModel: this.persona.model,
+      hasExternalTools: externalTools.length > 0,
+      jevDecision
+    });
 
+    const routing: RoutingDecision =
+      jevDecision && !jevDecision.bypassed ? jevDecision : toRoutingTrace(orchestration);
+
+    try {
+      const preferredModel = orchestration.selectedModel;
+      const fallbackModels = orchestration.fallbackChain;
+      const thinkingConfig = orchestration.thinkingLevel
+        ? { thinkingLevel: orchestration.thinkingLevel }
+        : undefined;
+
+      if (externalTools.length > 0 && this.mcpClientManager) {
+        const loopResult = await executeGeminiToolLoop({
+          gemini: this.gemini,
+          mcpManager: this.mcpClientManager,
+          tools: externalTools,
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          agentMode,
+          generateOptions: {
+            temperature: this.persona.temperature,
+            systemInstruction,
+            ...(thinkingConfig ? { thinkingConfig } : {})
+          },
+          preferredModel,
+          fallbackModels,
+          dryRun: options.dryRun,
+          brandId: this.brandId
+        });
+
+        const routingTrace = `[Jev: ${routing.tier} -> ${loopResult.activeModel} (${Math.round(routing.confidence * 100)}%, ${routing.routerLatencyMs}ms)]`;
+
+        if (loopResult.status === 'approval_required' && loopResult.pendingApproval) {
+          const pending = loopResult.pendingApproval;
+          const draftCreated: AgentDraft = {
+            id: `draft_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+            chatId: message.chatId,
+            incomingMessageId: message.id,
+            incomingText: message.text || message.transcription || '',
+            proposedReply: loopResult.text ? formatWhatsAppMessage(loopResult.text) : '',
+            reasoning: `${routingTrace} External MCP tool '${pending.namespacedName}' requires human approval (${pending.reason}).`,
+            confidence: 0.9,
+            status: 'pending',
+            createdAt: Date.now(),
+            modelRouting: routing,
+            toolCall: {
+              namespacedName: pending.namespacedName,
+              serverName: pending.serverName,
+              toolName: pending.toolName,
+              args: pending.args,
+              risk: pending.risk,
+              reason: pending.reason
+            }
+          };
+          if (!options.dryRun) this.memoryStore.saveDraft(draftCreated);
+          return {
+            decision: {
+              action: 'draft',
+              intent: 'external_tool_action',
+              replyText: draftCreated.proposedReply,
+              reasoning: draftCreated.reasoning,
+              confidence: 0.9,
+              simulatedDelayMs: 0,
+              modelRouting: routing,
+              externalToolCalls: loopResult.toolTrace
+            },
+            draftCreated,
+            shouldSendImmediately: false
+          };
+        }
+
+        if (loopResult.status === 'blocked_human') {
+          return {
+            decision: {
+              action: 'human',
+              intent: 'external_tool_blocked',
+              reasoning: `${routingTrace} External MCP tool execution blocked in human mode.`,
+              confidence: 1,
+              simulatedDelayMs: 0,
+              modelRouting: routing,
+              externalToolCalls: loopResult.toolTrace
+            },
+            shouldSendImmediately: false
+          };
+        }
+
+        // Completed with or without read-only/autopilot tool calls.
+        let parsedJson: Record<string, any> | null = null;
+        try {
+          parsedJson = JSON.parse(loopResult.text);
+        } catch {
+          parsedJson = null;
+        }
+
+        const rawReply = parsedJson?.replyText ?? loopResult.text;
+        const formattedReply = rawReply ? formatWhatsAppMessage(String(rawReply)) : '';
+        const simulatedDelay = this.persona.simulateTypingDelay
+          ? this.rateLimiter.calculateTypingDelay(formattedReply)
+          : 500;
+        const toolSummary = loopResult.toolTrace.length > 0
+          ? ` Tools: ${loopResult.toolTrace.map((t) => `${t.namespacedName}(${t.decision})`).join(', ')}.`
+          : '';
+
+        parsedDecision = {
+          action: parsedJson?.action || 'reply',
+          intent: parsedJson?.intent || 'general_faq',
+          replyText: formattedReply,
+          sendAsVoiceNote: Boolean(parsedJson?.sendAsVoiceNote),
+          reasoning: `${routingTrace}${toolSummary} ${parsedJson?.reasoning || 'Synthesized reply via external MCP tool loop.'}`.trim(),
+          confidence: Number(parsedJson?.confidence ?? 0.9),
+          simulatedDelayMs: simulatedDelay,
+          suggestedReaction: parsedJson?.suggestedReaction,
+          extractedFacts: Array.isArray(parsedJson?.extractedFacts) ? parsedJson.extractedFacts : undefined,
+          extractedCommitments: Array.isArray(parsedJson?.extractedCommitments) ? parsedJson.extractedCommitments : undefined,
+          contactStage: parsedJson?.contactStage,
+          modelRouting: routing,
+          externalToolCalls: loopResult.toolTrace
+        };
+      } else {
       const fallbackRes = await executeWithModelFallback(
         fallbackModels,
         async (model) => {
@@ -281,7 +469,8 @@ ${notebookPrompt}
               model,
               temperature: this.persona.temperature,
               systemInstruction,
-              responseMimeType: 'application/json'
+              responseMimeType: 'application/json',
+              ...(thinkingConfig ? { thinkingConfig } : {})
             }
           );
         },
@@ -294,6 +483,14 @@ ${notebookPrompt}
       // Apply WhatsApp native markdown formatting to reply
       if (json.replyText) {
         json.replyText = formatWhatsAppMessage(json.replyText);
+      }
+
+      // Spontaneous natural reaction if model did not propose one
+      if (!json.suggestedReaction) {
+        const spontaneous = evaluateSpontaneousReaction({ text: inboundText, style: activeStyle });
+        if (spontaneous) {
+          json.suggestedReaction = spontaneous.emoji;
+        }
       }
 
       const simulatedDelay = this.persona.simulateTypingDelay
@@ -320,15 +517,16 @@ ${notebookPrompt}
 
       // Persist newly discovered facts, commitments, and stage in a single atomic update
       if (!options.dryRun && (
-        (Array.isArray(json.extractedFacts) && json.extractedFacts.length > 0) ||
-        (Array.isArray(json.extractedCommitments) && json.extractedCommitments.length > 0) ||
-        json.contactStage
+        (Array.isArray(parsedDecision.extractedFacts) && parsedDecision.extractedFacts.length > 0) ||
+        (Array.isArray(parsedDecision.extractedCommitments) && parsedDecision.extractedCommitments.length > 0) ||
+        parsedDecision.contactStage
       )) {
         this.memoryStore.updateDossierExtracts(message.chatId, {
-          facts: Array.isArray(json.extractedFacts) ? json.extractedFacts : undefined,
-          commitments: Array.isArray(json.extractedCommitments) ? json.extractedCommitments : undefined,
-          stage: typeof json.contactStage === 'string' ? json.contactStage : undefined
+          facts: parsedDecision.extractedFacts,
+          commitments: parsedDecision.extractedCommitments,
+          stage: parsedDecision.contactStage
         });
+      }
       }
     } catch (err: any) {
       parsedDecision = {
@@ -350,6 +548,23 @@ ${notebookPrompt}
 
     const finalAction: AutonomyAction = evalResult.action;
     parsedDecision.action = finalAction;
+
+    if (this.worldModel) {
+      const worldState = this.worldModel.encodeObservation({
+        messages: history,
+        dossier,
+        intent: parsedDecision.intent,
+        inboundText,
+        confidence: parsedDecision.confidence
+      });
+      const prediction = this.worldModel.predictOutcome(worldState, finalAction, parsedDecision.confidence);
+      parsedDecision.worldPrediction = {
+        factors: worldState.factors,
+        predictedOverrideProb: prediction.predictedOverrideProb,
+        predictedUtility: prediction.predictedUtility,
+        uncertainty: prediction.uncertainty
+      };
+    }
 
     // 4. Check Chat Agent Mode
     let shouldSendImmediately = false;

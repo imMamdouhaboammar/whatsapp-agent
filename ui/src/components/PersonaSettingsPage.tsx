@@ -6,6 +6,7 @@ import {
   SlidersHorizontal, Sparkles, Trash2, Users, Wifi, Zap
 } from 'lucide-react';
 import type { ModeratorPersona, PolicyConfig, SystemStatus, WorkspaceStats } from '../api/types';
+import { SUPPORTED_GEMINI_MODELS } from '../api/types';
 import { api } from '../api/client';
 import { useModalDismiss } from '../hooks/useModalDismiss';
 import { Gemini, Google, ModelIcon } from '@lobehub/icons';
@@ -333,7 +334,26 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
                 <>
                   <section className="wa-ps-card">
                     <div className="wa-ps-card-head"><div><h2 className="flex items-center gap-2"><Gemini.Color size={22} /> {tr('النموذج الأساسي', 'Primary AI model')}</h2><p>{tr('النموذج المستخدم لفهم الرسائل واتخاذ قرار الرد', 'Select the Gemini model used for conversation decisions')}</p></div></div>
-                    <label className="wa-ps-field"><span>{tr('نموذج Gemini', 'Gemini model')}</span><select dir="ltr" value={persona.model} onChange={(event) => setField('model', event.target.value)}><option value="gemini-4-argon">gemini-4-argon</option><option value="gemini-3.8-flash">gemini-3.8-flash</option><option value="gemini-3.1-pro">gemini-3.1-pro</option>{!['gemini-4-argon', 'gemini-3.8-flash', 'gemini-3.1-pro'].includes(persona.model) && <option value={persona.model}>{persona.model}</option>}</select></label>
+                    <label className="wa-ps-field">
+                      <span>{tr('نموذج Gemini', 'Gemini model')}</span>
+                      <select dir="ltr" value={persona.model} onChange={(event) => setField('model', event.target.value)}>
+                        <optgroup label={tr('موديلات Gemini 4 الحديثة', 'Gemini 4 Models (Next-Gen)')}>
+                          <option value="gemini-4-carbon">gemini-4-carbon (Deep Reasoning / Flagship)</option>
+                          <option value="gemini-4-argon">gemini-4-argon (Frontier Workhorse)</option>
+                          <option value="gemini-4-hydrogen">gemini-4-hydrogen (Fast Execution / Agentic)</option>
+                          <option value="gemini-4-neon">gemini-4-neon (Low-Latency Multimodal)</option>
+                          <option value="gemini-4-flash">gemini-4-flash</option>
+                          <option value="gemini-4-pro">gemini-4-pro</option>
+                        </optgroup>
+                        <optgroup label={tr('موديلات الجيل السابق', 'Previous Generation')}>
+                          <option value="gemini-3.8-flash">gemini-3.8-flash</option>
+                          <option value="gemini-3.1-pro">gemini-3.1-pro</option>
+                        </optgroup>
+                        {!SUPPORTED_GEMINI_MODELS.some((m) => m.id === persona.model) && (
+                          <option value={persona.model}>{persona.model}</option>
+                        )}
+                      </select>
+                    </label>
                     <div className="wa-ps-detail-row"><span>{tr('مزود الخدمة', 'API provider')}</span><strong className="flex items-center gap-1.5"><Google.Color size={16} /><span aria-hidden="true" style={{ display: 'contents' }}><ModelIcon model={persona.model} size={16} /></span> Google Gemini</strong></div>
                   </section>
                   <section className="wa-ps-card">

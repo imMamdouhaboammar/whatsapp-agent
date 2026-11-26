@@ -28,6 +28,9 @@ import { ContactIdentityDirectory } from './identity/contact-directory';
 import { createDefaultFunnelEngine } from './funnel/default-engine';
 import { DualMemoryManager } from './domain/learning-memory';
 import { ReflectionEngine } from './ai/reflection-engine';
+import { RsiLedger } from './domain/rsi-ledger';
+import { JepaWorldModel } from './ai/jepa-world-model';
+import { RsiCycleOrchestrator } from './ai/rsi-loop';
 import { resolveRuntimeProfile, capabilityMatrix } from './runtime-profile';
 import { ReflectionWorker } from './agent/reflection-worker';
 import { PostgresLearningStore } from './persistence/postgres/learning-store';
@@ -36,6 +39,7 @@ import { resolveRuntimeDatastore } from './persistence/postgres/runtime-selectio
 import { join } from 'node:path';
 import { describeBurst, describeError, hashChatId, logEvent } from './observability/safe-log';
 import { defaultLifecycle } from './server/lifecycle';
+import { McpClientManager } from './mcp/client-manager';
 
 export async function createFableWhatsAppAgent(options: {
   port?: number;
@@ -110,35 +114,57 @@ export async function createFableWhatsAppAgent(options: {
     }
   }
 
+  const learningBrandId = options.capabilityAutopilotBrandId ?? process.env.AGENT_AUTOPILOT_BRAND_ID ?? 'default';
   const dualMemoryManager = new DualMemoryManager({
     storageDir: dataDir === ':memory:' ? './data/learning' : join(dataDir, 'learning'),
     persistenceStore: postgresLearningStore,
     sqliteStore: postgresLearningStore ? undefined : memoryStore.getSqliteStore(),
     persistSqlite: !postgresLearningStore,
-    brandId: options.capabilityAutopilotBrandId ?? process.env.AGENT_AUTOPILOT_BRAND_ID ?? 'default'
+    brandId: learningBrandId
   });
   await dualMemoryManager.hydrateFromPersistence();
+
+  const rsiLedger = new RsiLedger({
+    dbPath: dataDir === ':memory:' ? ':memory:' : join(dataDir, 'rsi-ledger.sqlite')
+  });
+  const jepaWorldModel = new JepaWorldModel({
+    initialWeights: rsiLedger.loadWorldWeights(learningBrandId)
+  });
+  const rsiOrchestrator = new RsiCycleOrchestrator({
+    worldModel: jepaWorldModel,
+    memoryManager: dualMemoryManager,
+    ledger: rsiLedger
+  });
 
   // WA-023: reflection owns a periodic sweep timer; construct it only when the profile
   // enables the capability so CORE_MINIMAL boots with no reflection timers or workers.
   let reflectionEngine: ReflectionEngine | undefined;
   let reflectionWorker: ReflectionWorker | undefined;
   if (runtimeProfile.reflectionEnabled) {
-    reflectionEngine = new ReflectionEngine(geminiClient, dualMemoryManager);
+    reflectionEngine = new ReflectionEngine(geminiClient, dualMemoryManager, {
+      rsiOrchestrator,
+      brandId: learningBrandId
+    });
     reflectionWorker = new ReflectionWorker({
       memoryStore,
       memoryManager: dualMemoryManager,
       reflectionEngine,
       persistenceStore: postgresLearningStore,
-      brandId: options.capabilityAutopilotBrandId ?? process.env.AGENT_AUTOPILOT_BRAND_ID ?? 'default',
+      brandId: learningBrandId,
       idleThresholdMs: 15 * 60 * 1000 // 15 mins cold thread threshold
     });
     reflectionWorker.startPeriodicSweep(60_000);
   }
 
+  const mcpClientManager = new McpClientManager({ brandId: learningBrandId });
+  await mcpClientManager.initialize();
+
   const moderatorAgent = new ModeratorAgent(geminiClient, memoryStore, {
     rateLimiter,
-    dualMemoryManager
+    dualMemoryManager,
+    worldModel: jepaWorldModel,
+    mcpClientManager,
+    brandId: learningBrandId
   });
 
   const inboundPlanner = createInboundPlanner({
@@ -593,10 +619,14 @@ export async function createFableWhatsAppAgent(options: {
     dualMemoryManager,
     reflectionWorker,
     reflectionEngine,
+    rsiLedger,
+    rsiOrchestrator,
+    jepaWorldModel,
     transportMode,
     runtimeProfile: runtimeProfile.name,
     capabilityMatrix: capabilityMatrix(runtimeProfile, transportMode),
-    funnelDisabled: !runtimeProfile.funnelEnabled
+    funnelDisabled: !runtimeProfile.funnelEnabled,
+    mcpClientManager
   });
 
   registerCapabilityRoutes(app, capabilities, options.capabilityToken ?? process.env.AGENT_CAPABILITIES_OWNER_TOKEN ?? '');
@@ -658,8 +688,10 @@ export async function createFableWhatsAppAgent(options: {
       await whatsappClient?.disconnect(false);
     }
     memoryStore.close();
+    rsiLedger.close();
     recipientDirectory?.close();
     capabilities.followups.close();
+    await mcpClientManager.shutdown();
   };
 
   const unregSchedulers = defaultLifecycle.register('schedulers', 'stop_ingestion', async () => {
@@ -684,8 +716,10 @@ export async function createFableWhatsAppAgent(options: {
   const unregDatastores = defaultLifecycle.register('datastores', 'close_datastores', async () => {
     await dualMemoryManager.flushPendingWrites();
     memoryStore.close();
+    rsiLedger.close();
     recipientDirectory?.close();
     capabilities.followups.close();
+    await mcpClientManager.shutdown();
   });
 
   return {
@@ -695,6 +729,7 @@ export async function createFableWhatsAppAgent(options: {
     memoryStore,
     whatsappClient,
     metaClient,
+    mcpClientManager,
     runtimeProfile: runtimeProfile.name,
     capabilityMatrix: capabilityMatrix(runtimeProfile, transportMode),
     recipientDirectory,

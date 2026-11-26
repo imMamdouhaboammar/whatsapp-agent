@@ -135,9 +135,15 @@ export class SqliteStore {
         reasoning TEXT NOT NULL,
         confidence REAL NOT NULL,
         status TEXT NOT NULL,
-        created_at INTEGER NOT NULL
+        created_at INTEGER NOT NULL,
+        tool_call TEXT
       );
     `);
+    try {
+      this.db.run(`ALTER TABLE drafts ADD COLUMN tool_call TEXT;`);
+    } catch {
+      // Column already exists on upgraded databases.
+    }
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_drafts_pending ON drafts(status, created_at DESC);`);
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_drafts_chat_status ON drafts(chat_id, status, created_at DESC);`);
 
@@ -572,11 +578,12 @@ export class SqliteStore {
   // --- Drafts ---
   saveDraft(draft: AgentDraft) {
     const stmt = this.db.prepare(`
-      INSERT INTO drafts (id, chat_id, incoming_message_id, incoming_text, proposed_reply, reasoning, confidence, status, created_at)
-      VALUES ($id, $chat_id, $incoming_message_id, $incoming_text, $proposed_reply, $reasoning, $confidence, $status, $created_at)
+      INSERT INTO drafts (id, chat_id, incoming_message_id, incoming_text, proposed_reply, reasoning, confidence, status, created_at, tool_call)
+      VALUES ($id, $chat_id, $incoming_message_id, $incoming_text, $proposed_reply, $reasoning, $confidence, $status, $created_at, $tool_call)
       ON CONFLICT(id) DO UPDATE SET
         proposed_reply = excluded.proposed_reply,
-        status = excluded.status;
+        status = excluded.status,
+        tool_call = excluded.tool_call;
     `);
 
     stmt.run({
@@ -588,7 +595,8 @@ export class SqliteStore {
       $reasoning: draft.reasoning,
       $confidence: draft.confidence,
       $status: draft.status,
-      $created_at: draft.createdAt
+      $created_at: draft.createdAt,
+      $tool_call: draft.toolCall ? JSON.stringify(draft.toolCall) : null
     });
   }
 
@@ -604,7 +612,8 @@ export class SqliteStore {
       reasoning: row.reasoning,
       confidence: row.confidence,
       status: row.status as AgentDraft['status'],
-      createdAt: row.created_at
+      createdAt: row.created_at,
+      toolCall: row.tool_call ? safeJsonParse<AgentDraft['toolCall']>(row.tool_call, undefined) : undefined
     };
   }
 
@@ -625,7 +634,8 @@ export class SqliteStore {
       reasoning: row.reasoning,
       confidence: row.confidence,
       status: row.status as AgentDraft['status'],
-      createdAt: row.created_at
+      createdAt: row.created_at,
+      toolCall: row.tool_call ? safeJsonParse<AgentDraft['toolCall']>(row.tool_call, undefined) : undefined
     }));
   }
 
@@ -683,7 +693,7 @@ export class SqliteStore {
   saveLearningState(brandId: string, stateType: 'workbook' | 'notebook', content: string): void {
     const id = `${brandId}:${stateType}`;
     const now = Date.now();
-    const existing = this.db.query('SELECT version FROM learning_states WHERE id = ?').get(id) as any;
+    const existing = this.db.query('SELECT version FROM learning_states WHERE id = ? LIMIT 1').get(id) as any;
     const version = existing ? Number(existing.version) + 1 : 1;
 
     this.db.prepare(`
@@ -705,7 +715,7 @@ export class SqliteStore {
 
   getLearningState(brandId: string, stateType: 'workbook' | 'notebook'): { content: string; version: number; updatedAt: number } | undefined {
     const id = `${brandId}:${stateType}`;
-    const row = this.db.query('SELECT content, version, updated_at FROM learning_states WHERE id = ?').get(id) as any;
+    const row = this.db.query('SELECT content, version, updated_at FROM learning_states WHERE id = ? LIMIT 1').get(id) as any;
     if (!row) return undefined;
     return {
       content: row.content,
@@ -760,10 +770,11 @@ export class SqliteStore {
     summary: string | null;
     created_at: number;
   }> {
+    const boundedLimit = Math.max(1, Math.min(100, Math.floor(Number(limit) || 20)));
     if (chatId) {
-      return this.db.query('SELECT * FROM learning_reflections WHERE chat_id = ? ORDER BY created_at DESC LIMIT ?;').all(chatId, limit) as any[];
+      return this.db.query('SELECT * FROM learning_reflections WHERE chat_id = ? ORDER BY created_at DESC LIMIT ?;').all(chatId, boundedLimit) as any[];
     }
-    return this.db.query('SELECT * FROM learning_reflections ORDER BY created_at DESC LIMIT ?;').all(limit) as any[];
+    return this.db.query('SELECT * FROM learning_reflections ORDER BY created_at DESC LIMIT ?;').all(boundedLimit) as any[];
   }
 
   getFoldRepository(): FoldRepository {

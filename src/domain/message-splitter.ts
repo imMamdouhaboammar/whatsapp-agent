@@ -31,6 +31,17 @@ export class MessageSplitter {
     const trimmed = text.trim();
     if (!trimmed) return [];
 
+    // If text has explicit multi-bubble delimiter (|||), honor intentional bubble boundaries
+    if (trimmed.includes('|||')) {
+      const parts = trimmed
+        .split('|||')
+        .map((p) => p.trim())
+        .filter(Boolean);
+      if (parts.length > 0) {
+        return parts.length <= 3 ? parts : [...parts.slice(0, 2), parts.slice(2).join(' ')];
+      }
+    }
+
     // If text is brief, keep it as a single natural bubble
     if (trimmed.length < this.minLengthToSplit) {
       return [trimmed];

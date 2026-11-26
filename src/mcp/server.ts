@@ -11,11 +11,13 @@ import type { WhatsAppSocketClient } from '../transport/whatsapp-socket';
 import type { FableFunnelEngine } from '../funnel';
 import { UserMemoryManager } from '../domain/user-memory';
 import type { ConversationStyle } from '../ai/adaptive-style';
+import type { McpClientManager } from './client-manager';
 
 /** Tools with no persistent or outbound effect. `whatsapp_get_messages` skips its mark-as-read side effect in read-only mode. */
 const READ_ONLY_TOOLS = new Set([
   'whatsapp_list_chats', 'whatsapp_get_messages', 'whatsapp_search_chat_memory',
-  'whatsapp_get_chat_folds', 'whatsapp_decompress_fold', 'whatsapp_get_status'
+  'whatsapp_get_chat_folds', 'whatsapp_decompress_fold', 'whatsapp_get_status',
+  'whatsapp_get_context_status'
 ]);
 
 export function createWhatsAppMcpServer(deps: {
@@ -25,6 +27,7 @@ export function createWhatsAppMcpServer(deps: {
   audioTranscriber?: AudioTranscriber;
   funnelEngine?: FableFunnelEngine;
   sendIntents?: SendIntentService;
+  mcpClientManager?: McpClientManager;
   /** Expose only tools that cannot change stored state or send anything. */
   readOnly?: boolean;
 }): Server {
@@ -99,10 +102,35 @@ export function createWhatsAppMcpServer(deps: {
         },
         {
           name: 'whatsapp_get_chat_folds',
-          description: 'List historical session and milestone fold summaries for one chat.',
+          description: 'List historical session, milestone, and archival fold summaries for one chat.',
           inputSchema: {
             type: 'object',
-            properties: { chatId: { type: 'string', description: 'WhatsApp chat JID' } },
+            properties: {
+              chatId: { type: 'string', description: 'WhatsApp chat JID' },
+              tier: { type: 'number', description: 'Optional tier filter (1: sessions, 2: milestones, 3: archival)' }
+            },
+            required: ['chatId']
+          }
+        },
+        {
+          name: 'whatsapp_get_context_status',
+          description: 'Retrieve real-time Dynamic Context Window and Active Context Pruning (ACP) budget status, token usage, compression ratio, active folds count per tier, and pruning recommendations.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              chatId: { type: 'string', description: 'WhatsApp chat JID' }
+            },
+            required: ['chatId']
+          }
+        },
+        {
+          name: 'whatsapp_compress_context_now',
+          description: 'Trigger immediate active context pruning and hierarchical folding for a chat to reclaim context window headroom.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              chatId: { type: 'string', description: 'WhatsApp chat JID' }
+            },
             required: ['chatId']
           }
         },
@@ -353,8 +381,30 @@ export function createWhatsAppMcpServer(deps: {
       case 'whatsapp_get_chat_folds': {
         const chatId = String(args?.chatId ?? '').trim();
         if (!chatId) throw new Error('chatId is required');
+        const tier = args?.tier ? (Number(args.tier) as 1 | 2 | 3) : undefined;
         return {
-          content: [{ type: 'text', text: JSON.stringify(deps.memoryStore.getFolds(chatId)) }]
+          content: [{ type: 'text', text: JSON.stringify(deps.memoryStore.getFolds(chatId, tier)) }]
+        };
+      }
+
+      case 'whatsapp_get_context_status': {
+        const chatId = String(args?.chatId ?? '').trim();
+        if (!chatId) throw new Error('chatId is required');
+        const engine = deps.moderatorAgent.getContextFoldEngine();
+        const status = engine?.getContextBudgetStatus(chatId, deps.moderatorAgent.getPersona().model);
+        return {
+          content: [{ type: 'text', text: JSON.stringify(status ?? { chatId, status: 'unavailable' }) }]
+        };
+      }
+
+      case 'whatsapp_compress_context_now': {
+        const chatId = String(args?.chatId ?? '').trim();
+        if (!chatId) throw new Error('chatId is required');
+        const engine = deps.moderatorAgent.getContextFoldEngine();
+        if (!engine) throw new Error('Context fold engine not available');
+        const result = await engine.triggerFoldCheck(chatId);
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ chatId, status: 'triggered', fold: result }) }]
         };
       }
 
@@ -461,7 +511,20 @@ export function createWhatsAppMcpServer(deps: {
 
       case 'whatsapp_approve_draft': {
         const draftId = String(args?.draftId);
-        const editedText = args?.editedText ? String(args.editedText) : undefined;
+        let editedText = args?.editedText ? String(args.editedText) : undefined;
+        const draft = deps.memoryStore.getDraft(draftId);
+        if (draft?.toolCall && draft.status === 'pending') {
+          if (!deps.mcpClientManager) {
+            throw new Error('External MCP client manager is not configured to execute tool draft');
+          }
+          const toolResult = await deps.mcpClientManager.callTool(draft.toolCall.namespacedName, draft.toolCall.args);
+          if (!toolResult.ok) {
+            throw new Error(toolResult.error || `External MCP tool '${draft.toolCall.namespacedName}' failed`);
+          }
+          if (!editedText && !draft.proposedReply.trim()) {
+            editedText = draft.toolCall.proposedFollowUp?.trim() || `Done — executed ${draft.toolCall.toolName}.`;
+          }
+        }
         const approved = await getDelivery().approveDraft(draftId, editedText);
         if (!approved.result) throw new Error(`Draft ${draftId} not found or already processed`);
         return {

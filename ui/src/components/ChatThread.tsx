@@ -1,8 +1,8 @@
 import { memo, useEffect, useRef, useState, type FormEvent } from 'react';
-import { AlertCircle, ArrowRight, Check, CheckCheck, Clock3, FileText, MessageCircle, Mic, Reply, Send, Trash2, X } from 'lucide-react';
+import { AlertCircle, ArrowRight, Check, CheckCheck, Clock3, FileText, Layers, MessageCircle, Mic, Reply, Search, Send, Trash2, X, Zap } from 'lucide-react';
 import { Gemini } from '@lobehub/icons';
 import { Avatar } from '@lobehub/ui';
-import type { AgentMode, ChatMessage, ChatSummary } from '../api/types';
+import type { AgentMode, ChatMessage, ChatSummary, ContextBudgetStatus, ConversationFold } from '../api/types';
 import { api } from '../api/client';
 import { useLocale, type Language } from '../locale-context';
 import { useModalDismiss } from '../hooks/useModalDismiss';
@@ -43,11 +43,34 @@ export const ChatThread = memo(function ChatThread({ chat, messages, onSendMessa
   const [retryingId, setRetryingId] = useState<string | null>(null);
   const [showManageModal, setShowManageModal] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [contextStatus, setContextStatus] = useState<ContextBudgetStatus | null>(null);
+  const [showContextModal, setShowContextModal] = useState(false);
+  const [compressing, setCompressing] = useState(false);
+  const [memorySearchQuery, setMemorySearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<{ messages: ChatMessage[]; folds: ConversationFold[] } | null>(null);
+  const [searchingMemory, setSearchingMemory] = useState(false);
   const sendMutationId = useRef(crypto.randomUUID());
   const retryMutationIds = useRef(new Map<string, string>());
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useModalDismiss(showManageModal, () => setShowManageModal(false));
+  useModalDismiss(showContextModal, () => setShowContextModal(false));
+
+  useEffect(() => {
+    if (!chat?.id) {
+      setContextStatus(null);
+      return;
+    }
+    let cancelled = false;
+    api.getContextStatus(chat.id).then((res) => {
+      if (!cancelled && res?.status) setContextStatus(res.status);
+    }).catch((err: unknown) => {
+      if (!cancelled) {
+        console.warn('[ChatThread] Failed to fetch context status:', err);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [chat?.id, messages.length]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ block: 'end', behavior: 'auto' });
@@ -133,6 +156,29 @@ export const ChatThread = memo(function ChatThread({ chat, messages, onSendMessa
           <p dir="auto">{chat.phoneNumber || tr('محادثة واتساب', 'WhatsApp conversation')}</p>
         </div>
         <div className="wa-thread-actions" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          {contextStatus && (
+            <button
+              type="button"
+              className="wa-icon-button"
+              onClick={() => setShowContextModal(true)}
+              aria-label={tr('سياق وضغط المحادثة (ACP)', 'Conversation Context & Compression (ACP)')}
+              title={tr('سياق وضغط المحادثة (ACP)', 'Conversation Context & Compression (ACP)')}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                padding: '4px 8px',
+                borderRadius: '12px',
+                background: contextStatus.compressionRatio > 0 ? 'rgba(16, 185, 129, 0.12)' : 'rgba(0, 0, 0, 0.05)',
+                color: contextStatus.compressionRatio > 0 ? '#059669' : 'inherit',
+                fontSize: '11px',
+                fontWeight: 600
+              }}
+            >
+              <Layers size={15} />
+              <span>{Math.round(contextStatus.compressionRatio * 100)}%</span>
+            </button>
+          )}
           <button
             type="button"
             className="wa-icon-button"
@@ -363,6 +409,163 @@ export const ChatThread = memo(function ChatThread({ chat, messages, onSendMessa
                   <Trash2 size={16} />
                   <span>{tr('حذف المحادثة بالكامل', 'Delete conversation completely')}</span>
                 </button>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {showContextModal && contextStatus && (
+        <div className="wa-modal-backdrop" onClick={() => setShowContextModal(false)}>
+          <section
+            className="wa-modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-label={tr('سياق وضغط المحادثة', 'Context & Compression Status')}
+            style={{ maxWidth: '480px', maxHeight: 'min(90dvh, 720px)', overflowY: 'auto' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="wa-modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Layers size={18} />
+                <h3 style={{ margin: 0, fontSize: '15px' }}>{tr('سياق وضغط المحادثة (ACP)', 'Context Window & ACP Compression')}</h3>
+              </div>
+              <button
+                type="button"
+                className="wa-icon-button"
+                onClick={() => setShowContextModal(false)}
+                aria-label={tr('إغلاق', 'Close')}
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="wa-modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '14px', padding: '16px 0' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: '#6b7280' }}>
+                  <span>{tr('استهلاك التوكنز الفعلي', 'Active Token Budget')}</span>
+                  <span>{contextStatus.currentTokens.toLocaleString()} / {contextStatus.targetContextBudget.toLocaleString()}</span>
+                </div>
+                <div style={{ height: '6px', borderRadius: '3px', background: '#e5e7eb', overflow: 'hidden' }}>
+                  <div
+                    style={{
+                      height: '100%',
+                      width: `${Math.min(100, Math.round((contextStatus.currentTokens / contextStatus.targetContextBudget) * 100))}%`,
+                      background: contextStatus.nudgeDecision === 'strong' ? '#ef4444' : contextStatus.nudgeDecision === 'soft' ? '#f59e0b' : '#10b981',
+                      borderRadius: '3px'
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+                <div style={{ padding: '8px', borderRadius: '8px', background: 'rgba(0,0,0,0.03)', textAlign: 'center' }}>
+                  <div style={{ fontSize: '11px', color: '#6b7280' }}>{tr('التوفير', 'Savings')}</div>
+                  <div style={{ fontSize: '14px', fontWeight: 600, color: '#059669' }}>
+                    {Math.round(contextStatus.compressionRatio * 100)}%
+                  </div>
+                </div>
+                <div style={{ padding: '8px', borderRadius: '8px', background: 'rgba(0,0,0,0.03)', textAlign: 'center' }}>
+                  <div style={{ fontSize: '11px', color: '#6b7280' }}>{tr('سجلات الطي', 'Folds')}</div>
+                  <div style={{ fontSize: '14px', fontWeight: 600 }}>{contextStatus.activeFoldsCount}</div>
+                </div>
+                <div style={{ padding: '8px', borderRadius: '8px', background: 'rgba(0,0,0,0.03)', textAlign: 'center' }}>
+                  <div style={{ fontSize: '11px', color: '#6b7280' }}>{tr('توكنز وفرناها', 'Saved Tokens')}</div>
+                  <div style={{ fontSize: '14px', fontWeight: 600 }}>{contextStatus.tokensSaved.toLocaleString()}</div>
+                </div>
+              </div>
+
+              <div style={{ fontSize: '12px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <span style={{ fontWeight: 600, color: '#374151' }}>{tr('مستويات الأرشيف المتراكم (LSM Tiers):', 'Archival Hierarchy (LSM Tiers):')}</span>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <span style={{ background: '#f3f4f6', padding: '2px 6px', borderRadius: '4px' }}>
+                    Tier 1 ({contextStatus.tier1Count}): {tr('جلسات', 'Sessions')}
+                  </span>
+                  <span style={{ background: '#f3f4f6', padding: '2px 6px', borderRadius: '4px' }}>
+                    Tier 2 ({contextStatus.tier2Count}): {tr('محطات', 'Milestones')}
+                  </span>
+                  <span style={{ background: '#f3f4f6', padding: '2px 6px', borderRadius: '4px' }}>
+                    Tier 3 ({contextStatus.tier3Count}): {tr('أرشيف دائم', 'Archivals')}
+                  </span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                className="wa-ps-button"
+                style={{ justifyContent: 'center', gap: '8px', padding: '10px 14px' }}
+                disabled={compressing}
+                onClick={async () => {
+                  setCompressing(true);
+                  try {
+                    await api.foldNow(chat.id);
+                    const res = await api.getContextStatus(chat.id);
+                    if (res?.status) setContextStatus(res.status);
+                  } catch {
+                    setError(tr('تعذّر ضغط المحادثة حالياً', 'Could not compress context now'));
+                  } finally {
+                    setCompressing(false);
+                  }
+                }}
+              >
+                <Zap size={15} />
+                <span>{compressing ? tr('جاري الضغط والتلخيص...', 'Compressing context...') : tr('ضغط وتلخيص المحادثة الآن (Fold Now)', 'Compress Context Now (Fold Now)')}</span>
+              </button>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', borderTop: '1px solid #f3f4f6', paddingTop: '10px' }}>
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <input
+                    type="text"
+                    value={memorySearchQuery}
+                    onChange={(e) => setMemorySearchQuery(e.target.value)}
+                    onKeyDown={async (e) => {
+                      if (e.key === 'Enter' && memorySearchQuery.trim()) {
+                        setSearchingMemory(true);
+                        try {
+                          const res = await api.searchMemory(chat.id, memorySearchQuery.trim());
+                          setSearchResults(res.results);
+                        } finally {
+                          setSearchingMemory(false);
+                        }
+                      }
+                    }}
+                    placeholder={tr('ابحث في الأرشيف والرسائل القديمة...', 'Search historical memory and folds...')}
+                    style={{ flex: 1, padding: '6px 10px', fontSize: '12px', borderRadius: '6px', border: '1px solid #d1d5db' }}
+                  />
+                  <button
+                    type="button"
+                    className="wa-icon-button"
+                    disabled={searchingMemory || !memorySearchQuery.trim()}
+                    onClick={async () => {
+                      setSearchingMemory(true);
+                      try {
+                        const res = await api.searchMemory(chat.id, memorySearchQuery.trim());
+                        setSearchResults(res.results);
+                      } finally {
+                        setSearchingMemory(false);
+                      }
+                    }}
+                    aria-label={tr('بحث', 'Search')}
+                  >
+                    <Search size={16} />
+                  </button>
+                </div>
+                {searchResults && (
+                  <div style={{ maxHeight: '140px', overflowY: 'auto', fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    {searchResults.folds.map((f) => (
+                      <div key={f.id} style={{ background: '#f9fafb', padding: '4px 6px', borderRadius: '4px' }}>
+                        <strong>[Fold] {f.topic}:</strong> {f.summary.slice(0, 100)}...
+                      </div>
+                    ))}
+                    {searchResults.messages.map((m) => (
+                      <div key={m.id} style={{ background: '#f9fafb', padding: '4px 6px', borderRadius: '4px' }}>
+                        <strong>[Msg] {m.isFromMe ? 'أنا' : 'العميل'}:</strong> {m.text.slice(0, 100)}
+                      </div>
+                    ))}
+                    {searchResults.folds.length === 0 && searchResults.messages.length === 0 && (
+                      <span style={{ color: '#9ca3af', fontStyle: 'italic' }}>{tr('لا توجد نتائج مطابقة', 'No matching results')}</span>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           </section>

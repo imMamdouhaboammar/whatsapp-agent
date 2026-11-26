@@ -22,6 +22,15 @@ export const DEFAULT_GEMINI_FALLBACK_CHAIN: readonly string[] = [
   'gemini-4-argon'
 ];
 
+export const GEMINI_4_FALLBACK_CHAIN: readonly string[] = [
+  'gemini-4-carbon',
+  'gemini-4-argon',
+  'gemini-4-hydrogen',
+  'gemini-4-neon',
+  'gemini-3.8-flash',
+  'gemini-3.1-pro'
+];
+
 export interface FallbackOptions {
   onFallback?: (fromModel: string, toModel: string, error: unknown) => void;
   circuitBreakerThreshold?: number;
@@ -97,7 +106,10 @@ export function resolveModelChain(
   ...fallbacks: Array<string | string[] | undefined>
 ): string[] {
   const primary = preferredModel?.trim() || DEFAULT_GEMINI_FALLBACK_CHAIN[0];
-  return parseModelChain(primary, ...fallbacks, [...DEFAULT_GEMINI_FALLBACK_CHAIN]);
+  const defaultChain = primary.startsWith('gemini-4') && primary !== 'gemini-4-argon'
+    ? [...GEMINI_4_FALLBACK_CHAIN]
+    : [...DEFAULT_GEMINI_FALLBACK_CHAIN];
+  return parseModelChain(primary, ...fallbacks, defaultChain);
 }
 
 export async function executeWithModelFallback<T>(

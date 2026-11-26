@@ -1,4 +1,4 @@
-import type { AgentDecision, AutonomyAction, PolicyConfig } from './types';
+import type { AgentDecision, AgentMode, AutonomyAction, PolicyConfig } from './types';
 
 const AUTHORITY_RANK: Record<string, number> = {
   ignore: 0,
@@ -96,4 +96,40 @@ export function evaluatePermission(
     matchedRuleId: matchingRule.id,
     downgraded: ceiling.downgraded
   };
+}
+
+export interface McpToolPermissionInput {
+  agentMode: AgentMode;
+  risk: 'readOnly' | 'mutating';
+  requiresHumanApproval?: boolean;
+}
+
+export interface McpToolPermissionResult {
+  decision: 'execute' | 'require_approval' | 'deny';
+  reason: string;
+}
+
+/**
+ * Evaluates whether an external MCP tool may execute automatically, must pause
+ * for Copilot/human approval, or is blocked in human-only mode.
+ */
+export function evaluateMcpToolPermission(input: McpToolPermissionInput): McpToolPermissionResult {
+  if (input.agentMode === 'human') {
+    return { decision: 'deny', reason: 'human_mode_active' };
+  }
+
+  if (input.risk === 'readOnly') {
+    return { decision: 'execute', reason: 'readonly_tool_allowed' };
+  }
+
+  // Mutating or unknown tools require human approval in copilot mode or when explicitly flagged.
+  if (input.agentMode === 'copilot') {
+    return { decision: 'require_approval', reason: 'copilot_mutating_approval_required' };
+  }
+
+  if (input.requiresHumanApproval) {
+    return { decision: 'require_approval', reason: 'tool_requires_human_approval' };
+  }
+
+  return { decision: 'execute', reason: 'autopilot_mutating_allowed' };
 }

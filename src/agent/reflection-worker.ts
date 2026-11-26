@@ -3,6 +3,8 @@ import type { DualMemoryManager, LearningPersistenceStore } from '../domain/lear
 import type { ReflectionEngine, ModerationFeedbackEvent, ReflectionResult } from '../ai/reflection-engine';
 import type { PostgresLearningStore } from '../persistence/postgres/learning-store';
 import { describeError, hashChatId, logEvent } from '../observability/safe-log';
+import { AutoRefineTrigger } from './auto-refine-trigger';
+import { extractConversationalFeedback } from '../ai/conversational-feedback';
 
 export interface ReflectionWorkerOptions {
   memoryStore: MemoryStore;
@@ -32,6 +34,7 @@ export class ReflectionWorker {
 
   private activityMap = new Map<string, ThreadActivityRecord>();
   private pendingFeedback = new Map<string, ModerationFeedbackEvent[]>();
+  private refineTrigger: AutoRefineTrigger;
   private sweepTimer?: ReturnType<typeof setInterval>;
   private inFlightSweep?: Promise<{ evaluatedCount: number; results: ReflectionResult[] }>;
   private static readonly MAX_PENDING_FEEDBACK_PER_CHAT = 50;
@@ -44,6 +47,7 @@ export class ReflectionWorker {
     this.brandId = options.brandId ?? 'default';
     this.idleThresholdMs = options.idleThresholdMs ?? 15 * 60 * 1000; // 15 mins default
     this.maxBatchPerSweep = options.maxBatchPerSweep ?? 5;
+    this.refineTrigger = new AutoRefineTrigger();
   }
 
   /**
@@ -66,6 +70,15 @@ export class ReflectionWorker {
       void pg.updateThreadActivity(this.brandId, chatId, timestamp).catch((err) => {
         console.warn('⚠️ [ReflectionWorker] Postgres thread activity update failed:', describeError(err));
       });
+    }
+
+    // Arm turn-interval / implicit-feedback auto-refine trigger from recent messages
+    try {
+      const recent = this.memoryStore.getMessages(chatId, 8);
+      const signals = extractConversationalFeedback(recent);
+      this.refineTrigger.recordTurn(chatId, signals);
+    } catch {
+      // Best-effort turn signal extraction; never block inbound activity recording
     }
   }
 
@@ -135,6 +148,9 @@ export class ReflectionWorker {
       }
     }
 
+    const results: ReflectionResult[] = [];
+    const claimedRuns = new Map<string, { reason: string; generationVersion: number }>();
+
     if (candidates.length === 0) {
       for (const [chatId, record] of this.activityMap.entries()) {
         if (record.isProcessing) continue;
@@ -142,17 +158,22 @@ export class ReflectionWorker {
         const isCold = (now - record.lastActivityAt) >= this.idleThresholdMs;
         const hasUnreflectedMessages = record.lastActivityAt > record.lastReflectedAt;
         const hasFeedback = (this.pendingFeedback.get(chatId)?.length ?? 0) > 0;
+        const claimed = hasUnreflectedMessages ? this.refineTrigger.tryClaimRound(chatId, now) : null;
 
-        if ((isCold && hasUnreflectedMessages) || hasFeedback) {
+        if ((isCold && hasUnreflectedMessages) || hasFeedback || claimed) {
           candidates.push(chatId);
+          if (claimed) claimedRuns.set(chatId, claimed);
           if (candidates.length >= this.maxBatchPerSweep) break;
         }
       }
     }
 
-    const results: ReflectionResult[] = [];
     for (const chatId of candidates) {
-      const res = await this.reflectOnThread(chatId, 'idle_sweep');
+      const claimed = claimedRuns.get(chatId);
+      const res = await this.reflectOnThread(chatId, claimed ? claimed.reason : 'idle_sweep');
+      if (claimed) {
+        this.refineTrigger.finishRound(chatId, claimed.generationVersion, Boolean(res));
+      }
       if (res) results.push(res);
     }
 

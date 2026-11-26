@@ -24,6 +24,8 @@ export interface DoctorProbes {
   baileysPatched?: () => boolean;
   /** WA-011: verifies a configured GEMINI_API_KEY against the model API; false means rejected. */
   verifyModelKey?: () => Promise<boolean>;
+  /** Optional external MCP client health check (returns empty array when unconfigured). */
+  checkExternalMcp?: () => Promise<Array<{ name: string; status: string; toolCount: number; lastError?: string }>>;
 }
 
 /**
@@ -149,6 +151,22 @@ export async function runDoctor(probes: DoctorProbes, options: { preflightOnly?:
     const loopback = ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(host.toLowerCase());
     if (!loopback && token.length < 24) {
       add({ id: 'dashboard-auth', section: 'live', level: 'fail', label: 'Non-loopback HOST without a strong AGENT_DASHBOARD_TOKEN', detail: 'Use a random token of at least 24 characters, for example `openssl rand -hex 32`.' });
+    }
+
+    if (probes.checkExternalMcp) {
+      try {
+        const servers = await probes.checkExternalMcp();
+        for (const srv of servers) {
+          if (srv.status === 'disabled') continue;
+          if (srv.status === 'connected') {
+            add({ id: `mcp-${srv.name}`, section: 'live', level: 'pass', label: `External MCP '${srv.name}' connected (${srv.toolCount} tools)` });
+          } else {
+            add({ id: `mcp-${srv.name}`, section: 'live', level: 'warn', label: `External MCP '${srv.name}' unavailable (${srv.status})`, detail: srv.lastError });
+          }
+        }
+      } catch (err) {
+        add({ id: 'mcp-external', section: 'live', level: 'warn', label: 'External MCP check failed', detail: printable(err instanceof Error ? err.message : String(err)) });
+      }
     }
   }
 

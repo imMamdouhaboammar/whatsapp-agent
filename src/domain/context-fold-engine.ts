@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { scrubCredentials } from './learning-memory';
 import type { MemoryStore } from './memory-store';
-import type { ChatMessage, ConversationFold } from './types';
+import type { ChatMessage, ContextBudgetStatus, ConversationFold } from './types';
+import { evaluateContextBudgetStatus } from './dynamic-context-window';
 
 export interface FoldSummary {
   topic: string;
@@ -11,7 +12,7 @@ export interface FoldSummary {
 
 export interface FoldSummarizerRequest {
   chatId: string;
-  tier: 1 | 2;
+  tier: 1 | 2 | 3;
   messages?: ChatMessage[];
   folds?: ConversationFold[];
 }
@@ -26,10 +27,11 @@ export interface ContextFoldOptions {
   minRawCount?: number;
   idleThresholdMs?: number;
   tier2Threshold?: number;
+  tier3Threshold?: number;
 }
 
 /**
- * Incrementally folds closed message epochs in the background.
+ * Incrementally folds closed message epochs in the background with multi-tier LSM coalescing.
  * The caller injects its own budgeted summarizer; no model network calls occur here.
  */
 export class ContextFoldEngine {
@@ -38,6 +40,7 @@ export class ContextFoldEngine {
   private minRawCount: number;
   private idleThresholdMs: number;
   private tier2Threshold: number;
+  private tier3Threshold: number;
   private inFlight = new Map<string, Promise<ConversationFold | null>>();
   private queue: Array<{ chatId: string; resolve: (fold: ConversationFold | null) => void }> = [];
   private activeJobs = 0;
@@ -50,6 +53,7 @@ export class ContextFoldEngine {
     this.minRawCount = Math.max(5, options.minRawCount ?? 15);
     this.idleThresholdMs = Math.max(60_000, options.idleThresholdMs ?? 2 * 60 * 60 * 1000);
     this.tier2Threshold = Math.max(2, Math.min(10, options.tier2Threshold ?? 5));
+    this.tier3Threshold = Math.max(2, Math.min(10, options.tier3Threshold ?? 3));
   }
 
   private candidates(chatId: string): ChatMessage[] {
@@ -69,6 +73,19 @@ export class ContextFoldEngine {
     const pendingCount = this.options.memoryStore.getUnfoldedMessages(chatId, this.keepRecentCount).length;
     return pendingCount >= this.minRawCount - this.keepRecentCount ||
       all.at(-1)!.timestamp + this.idleThresholdMs < this.now();
+  }
+
+  getContextBudgetStatus(chatId: string, modelName?: string): ContextBudgetStatus {
+    const uncompressed = this.options.memoryStore.getUnfoldedMessages(chatId, this.keepRecentCount);
+    const recent = this.options.memoryStore.getMessages(chatId, this.keepRecentCount);
+    const folds = this.options.memoryStore.getFolds(chatId);
+    return evaluateContextBudgetStatus({
+      chatId,
+      modelName,
+      recentMessages: recent,
+      folds,
+      uncompressedCount: uncompressed.length
+    });
   }
 
   async foldChatIncrement(chatId: string): Promise<ConversationFold | null> {
@@ -146,6 +163,38 @@ export class ContextFoldEngine {
     return this.options.memoryStore.getFold(fold.id)!;
   }
 
+  async coalesceTier2Folds(chatId: string): Promise<ConversationFold | null> {
+    const pending = this.options.memoryStore.getPendingTier2Folds(chatId, this.tier3Threshold);
+    if (pending.length < this.tier3Threshold) return null;
+    const byOrder = pending.map(item => ({
+      fold: item,
+      timestamp: this.options.memoryStore.getMessage(chatId, item.startMessageId)?.timestamp
+    })).filter(item => item.timestamp !== undefined)
+      .sort((a, b) => a.timestamp! - b.timestamp!);
+    const selected = byOrder.slice(0, this.tier3Threshold).map(item => item.fold);
+    if (selected.length !== this.tier3Threshold) return null;
+    const ids = selected.flatMap(item => item.directMessageIds);
+    const redactedFolds = selected.map(item => ({
+      ...item,
+      summary: scrubCredentials(item.summary),
+      factsExtracted: item.factsExtracted.map(scrubCredentials)
+    }));
+    const result = await this.options.summarizer({ chatId, tier: 3, folds: redactedFolds });
+    if (!result?.topic?.trim() || !result?.summary?.trim()) return null;
+    const fold: ConversationFold = {
+      id: randomUUID(), chatId, tier: 3,
+      topic: result.topic,
+      summary: scrubCredentials(result.summary),
+      startMessageId: ids[0]!, endMessageId: ids.at(-1)!,
+      directMessageIds: ids, sourceFoldIds: selected.map(item => item.id),
+      messageCount: ids.length,
+      factsExtracted: [...new Set(selected.flatMap(item => item.factsExtracted))].slice(0, 20),
+      createdAt: this.now()
+    };
+    this.options.memoryStore.saveFold(fold);
+    return this.options.memoryStore.getFold(fold.id)!;
+  }
+
   triggerFoldCheck(chatId: string): Promise<ConversationFold | null> {
     const existing = this.inFlight.get(chatId);
     if (existing) return existing;
@@ -166,7 +215,8 @@ export class ContextFoldEngine {
         try {
           const fold = await this.foldChatIncrement(chatId);
           const milestone = await this.coalesceTier1Folds(chatId);
-          return milestone ?? fold;
+          const archival = await this.coalesceTier2Folds(chatId);
+          return archival ?? milestone ?? fold;
         } catch {
           // A model or stale-lineage failure must never block replies.
           return null;

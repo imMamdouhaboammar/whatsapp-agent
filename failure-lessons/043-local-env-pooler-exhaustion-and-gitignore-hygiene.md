@@ -36,3 +36,16 @@ Tests did not isolate `process.env` from local developer `.env` files, and `.git
 
 ## Prevention rule
 - **Env-Isolated Test Diagnosis & Anchored `.gitignore` Invariant**: When local `bun test` hits `EMAXCONNSESSION` against a live `.env` pooler, diagnose env leakage before editing code. Always root-anchor runtime data directories (`/data/`) in `.gitignore` so nested source `data/` folders remain trackable, and exclude preview/scratch directories (`fable-hero-preview/`, `test-session/`) from public commits.
+
+## Reusable lesson
+Auto-loaded `.env` credentials can divert hermetic test runs into shared cloud poolers. Root-anchor `.gitignore` rules to avoid ignoring production source assets with generic names like `data/`.
+
+## Related code
+- `.gitignore`
+- `.env`
+
+## Related tests
+- `tests/db.test.ts`
+
+## Status
+Resolved

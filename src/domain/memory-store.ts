@@ -66,7 +66,7 @@ export class MemoryStore {
     return this.sqlite.getFoldRepository().getFold(id);
   }
 
-  getFolds(chatId: string, tier?: 1 | 2, limit = 500): ConversationFold[] {
+  getFolds(chatId: string, tier?: 1 | 2 | 3, limit = 500): ConversationFold[] {
     return this.sqlite.getFoldRepository().getFolds(chatId, tier, limit);
   }
 
@@ -74,7 +74,11 @@ export class MemoryStore {
     return this.sqlite.getFoldRepository().getPendingTier1Folds(chatId, limit);
   }
 
-  getRecentFolds(chatId: string, tier: 1 | 2, limit = 20): ConversationFold[] {
+  getPendingTier2Folds(chatId: string, limit = 5): ConversationFold[] {
+    return this.sqlite.getFoldRepository().getPendingTier2Folds(chatId, limit);
+  }
+
+  getRecentFolds(chatId: string, tier: 1 | 2 | 3, limit = 20): ConversationFold[] {
     return this.sqlite.getFoldRepository().getRecentFolds(chatId, tier, limit);
   }
 

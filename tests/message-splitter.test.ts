@@ -12,6 +12,16 @@ describe('MessageSplitter', () => {
     expect(bubbles[0]).toBe(text);
   });
 
+  it('splits response with ||| delimiter into timed bubbles', () => {
+    const rawText = 'أهلاً يا صاحبي!|||لسه مخلص مشوار مهم|||هروح آكل كشري تحب تيجي معايا؟';
+    const bubbles = splitter.split(rawText);
+
+    expect(bubbles.length).toBe(3);
+    expect(bubbles[0]).toBe('أهلاً يا صاحبي!');
+    expect(bubbles[1]).toBe('لسه مخلص مشوار مهم');
+    expect(bubbles[2]).toBe('هروح آكل كشري تحب تيجي معايا؟');
+  });
+
   it('splits multi-thought long messages into natural conversational bubbles', () => {
     const text = `أهلاً بحضرتك يا أستاذ أحمد، تشرفنا جداً!
 

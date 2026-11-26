@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatSummary, ModeratorPersona, PolicyConfig, SystemStatus, AgentDraft, ContactDossier, WorkspaceStats, WorkspaceCleanResult } from './types';
+import type { ChatMessage, ChatSummary, ModeratorPersona, PolicyConfig, SystemStatus, AgentDraft, ContactDossier, WorkspaceStats, WorkspaceCleanResult, ContextBudgetStatus, ConversationFold } from './types';
 
 const BASE_URL = '/api';
 
@@ -326,5 +326,32 @@ export const api = {
       body: JSON.stringify({ target })
     });
     return handleResponse<{ success: boolean; target: string }>(res, `Failed to reset workspace ${target}`);
+  },
+
+  async getContextStatus(chatId: string): Promise<{ chatId: string; status: ContextBudgetStatus | null }> {
+    const res = await fetch(`${BASE_URL}/chats/${encodeURIComponent(chatId)}/context-status`);
+    return handleResponse<{ chatId: string; status: ContextBudgetStatus | null }>(res, 'Failed to fetch context status');
+  },
+
+  async getFolds(chatId: string, tier?: number): Promise<{ chatId: string; folds: ConversationFold[] }> {
+    const q = tier ? `?tier=${tier}` : '';
+    const res = await fetch(`${BASE_URL}/chats/${encodeURIComponent(chatId)}/folds${q}`);
+    return handleResponse<{ chatId: string; folds: ConversationFold[] }>(res, 'Failed to fetch folds');
+  },
+
+  async foldNow(chatId: string): Promise<{ chatId: string; status: string }> {
+    const res = await fetch(`${BASE_URL}/chats/${encodeURIComponent(chatId)}/fold-now`, { method: 'POST' });
+    return handleResponse<{ chatId: string; status: string }>(res, 'Failed to trigger context compression');
+  },
+
+  async searchMemory(chatId: string, query: string, limit = 25): Promise<{ chatId: string; query: string; results: { messages: ChatMessage[]; folds: ConversationFold[] } }> {
+    const res = await fetch(`${BASE_URL}/chats/${encodeURIComponent(chatId)}/memory-search?query=${encodeURIComponent(query)}&limit=${limit}`);
+    return handleResponse<{ chatId: string; query: string; results: { messages: ChatMessage[]; folds: ConversationFold[] } }>(res, 'Failed to search memory');
+  },
+
+  async decompressFold(chatId: string, foldId: string, aroundId?: string): Promise<{ foldId: string; chatId: string; total: number; messages: ChatMessage[] }> {
+    const q = aroundId ? `?around=${encodeURIComponent(aroundId)}` : '';
+    const res = await fetch(`${BASE_URL}/chats/${encodeURIComponent(chatId)}/folds/${encodeURIComponent(foldId)}/decompress${q}`);
+    return handleResponse<{ foldId: string; chatId: string; total: number; messages: ChatMessage[] }>(res, 'Failed to decompress fold');
   }
 };

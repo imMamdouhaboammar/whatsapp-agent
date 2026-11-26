@@ -26,7 +26,7 @@ describe('README MCP inventory', () => {
     const documented = [...section.matchAll(/^\| `(whatsapp_[a-z_]+)`/gm)].map((m) => m[1]).sort();
     expect(documented).toEqual(await toolNames(true));
     const standalone = await toolNames(false);
-    expect(standalone).toHaveLength(12);
+    expect(standalone).toHaveLength(14);
     expect(standalone).not.toContain('whatsapp_funnel_scatter_gather');
   });
 

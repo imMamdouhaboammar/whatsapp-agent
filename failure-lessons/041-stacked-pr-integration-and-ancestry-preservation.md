@@ -37,3 +37,15 @@ Multi-stage PR stacks branched sequentially without automated rebase/propagation
 
 ## Prevention rule
 - **Stacked PR Merge-Commit Invariant**: When integrating a linear stack of dependent PRs, never `--squash` intermediate PRs. Merge the clean base milestone (`--merge`), reconcile `origin/main` into the stack tip so late fixes propagate, verify all CI/CodeQL gates on the tip, and `--merge` the tip to preserve commit ancestry. Integrate independent feature/perf PRs only after the hardening stack lands.
+
+## Reusable lesson
+Linear PR stacks must be integrated through standard merge commits rather than squash commits to keep commit ancestry continuous. Reconcile origin/main into the stack tip before landing.
+
+## Related code
+- `src/domain/learning-memory.ts`
+
+## Related tests
+- `tests/reflection-learning.test.ts`
+
+## Status
+Resolved

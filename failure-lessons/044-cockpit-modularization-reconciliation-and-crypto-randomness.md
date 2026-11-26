@@ -36,3 +36,16 @@ Session ID generators retained a `Math.random()` fallback branch even though Bun
 
 ## Prevention rule
 - **Component Extraction Porting & Web Crypto ID Invariant**: When reconciling a component-extraction PR with `main`, port `main`'s latest logic into the extracted target component rather than accepting `--ours` on the router shell. Never use `Math.random()` as a fallback for session or entity IDs; use `crypto.randomUUID()` with `crypto.getRandomValues()` and fail closed if unavailable.
+
+## Reusable lesson
+Extracting large components into submodules during active development requires bi-directional porting during merges. Never use `Math.random()` in any code subject to security and SAST audits.
+
+## Related code
+- `ui/src/App.tsx`
+- `ui/src/marketing/lead-funnel/engine.ts`
+
+## Related tests
+- `ui/tests/lead-funnel-engine.test.mjs`
+
+## Status
+Resolved

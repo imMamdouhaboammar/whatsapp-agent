@@ -30,3 +30,16 @@ Instead of bypassing the security gate (`--no-verify`), extracted the branch's n
 
 ## Prevention rule
 - **Clean-Rebase Over Merge-Commit Gate Bypass**: Never pass `--no-verify` when a pre-commit scanner flags unrelated upstream files inside a merge commit. Re-apply the branch's net diff onto `origin/main` (`git diff --binary origin/main` + `reset --hard origin/main` + `apply`) so pre-commit gates audit strictly the branch's own delta.
+
+## Reusable lesson
+When a merge commit causes pre-commit security linters to evaluate upstream code, re-applying the branch's net diff cleanly onto main isolates the commit delta and satisfies pre-commit gates without `--no-verify`.
+
+## Related code
+- `.husky/pre-commit`
+- `scripts/security-audit.ts`
+
+## Related tests
+- `tests/security-audit.test.ts`
+
+## Status
+Resolved

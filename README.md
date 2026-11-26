@@ -7,7 +7,7 @@ For an evidence-based breakdown of what is implemented, partial, and planned, se
 ## Core capabilities
 
 - **Socket transport**: Browserless WebSocket engine powered by `@whiskeysockets/baileys` directly over the Noise Protocol (no browser engine; measured about 96 MiB resident at idle, unpaired, with no traffic, see docs/ENDPOINTS_AND_ENVIRONMENT.md). Supports QR and 8-digit phone pairing.
-- **Multi-model fallback**: Google Gemini (`gemini-4-argon`, `gemini-3.1-pro`, `gemini-3.8-flash`) via `gcloud` Application Default Credentials (ADC) or `GEMINI_API_KEY`. Fails closed on authentication errors (401/403); falls back automatically on rate limits (429) and upstream server errors (5xx).
+- **Multi-model fallback**: Full support for Google Gemini 4 generation (`gemini-4-carbon`, `gemini-4-argon`, `gemini-4-hydrogen`, `gemini-4-neon`, `gemini-4-flash`, `gemini-4-pro`) as well as Gemini 3 (`gemini-3.1-pro`, `gemini-3.8-flash`) via `gcloud` Application Default Credentials (ADC) or `GEMINI_API_KEY`. Fails closed on authentication errors (401/403); falls back automatically on rate limits (429) and upstream server errors (5xx).
 - **Human cadence simulation**: Inbound burst accumulator fuses rapid sequential messages into a single turn. Multi-bubble message splitting and randomized typing delays (1500 to 4500 ms) reflect natural conversational pacing.
 - **Push-to-talk voice notes**: Inbound audio notes (`audio/ogg`) are transcribed directly via Gemini. Outbound voice synthesis generates authentic WhatsApp voice notes (`ptt: true`) using Google Cloud Text-to-Speech.
 - **Continuous learning engine**: Background reflection worker runs structured synthesis after 15 minutes of thread inactivity, extracting procedural rules and semantic contact preferences into durable memory with automatic distillation and fail-closed credential scrubbing.
@@ -15,7 +15,7 @@ For an evidence-based breakdown of what is implemented, partial, and planned, se
   - *Autopilot*: Automatic responses with simulated typing delay.
   - *Copilot*: Draft preparation with confidence scores and reasoning traces for one-click human approval.
   - *Human*: Silent observation with manual operator control.
-- **Model Context Protocol (MCP)**: Native stdio MCP server exposing 13 tools (12 standalone tools plus a 13th funnel tool when embedded with a funnel engine) for Claude Desktop, Gemini CLI, Cursor, and custom agent integrations. There is no HTTP MCP endpoint.
+- **Model Context Protocol (MCP)**: Native stdio MCP server exposing 15 tools (14 standalone tools plus a 15th funnel tool when embedded with a funnel engine) for Claude Desktop, Gemini CLI, Cursor, and custom agent integrations. There is no HTTP MCP endpoint.
 - **Persistence and migration**: Chat, draft and capability runtime stores currently use SQLite WAL. PostgreSQL migration/import tooling and an optional PostgreSQL-backed learning-memory store exist; the complete runtime cutover is pending. See [Implementation status](docs/IMPLEMENTATION_STATUS.md).
 - **Web cockpit**: React 19 interface with Tailwind CSS, bilingual layout (Arabic RTL and English LTR), real-time Server-Sent Events (SSE), Brand Brain manager, and token-gated access.
 
@@ -78,7 +78,9 @@ Set environment variables in `.env`. See [`.env.example`](.env.example) for defa
 | `GEMINI_API_KEY` | string | | Google Gemini Developer API key (optional if using `gcloud` ADC) |
 | `GOOGLE_CLOUD_PROJECT` | string | | Google Cloud project ID for Vertex AI |
 | `GOOGLE_CLOUD_LOCATION` | string | `us-central1` | Regional location for Vertex AI endpoints |
-| `GEMINI_MODEL` | string | `gemini-4-argon` | Primary model identifier |
+| `GEMINI_MODEL` | string | `gemini-4-argon` | Primary model identifier (`gemini-4-carbon`, `gemini-4-argon`, `gemini-4-hydrogen`, `gemini-4-neon`, etc.) |
+| `GEMINI_FALLBACK_MODELS` | string | | Comma-separated fallback model chain |
+| `GEMINI_TRANSCRIBE_MODEL` | string | `gemini-3.8-flash` | Voice note audio transcription model (e.g. `gemini-4-hydrogen` or `gemini-4-neon`) |
 | `AGENT_DASHBOARD_TOKEN` | string | | Secret token (24+ characters) required to access web cockpit |
 | `AGENT_ALLOWED_ORIGINS` | string | | Comma-separated allowed origins when running behind a reverse proxy |
 | `DATABASE_URL` | string | | PostgreSQL connection string (Supavisor pooler port 5432) |
@@ -120,7 +122,7 @@ Limits of the standalone runner: it does not ingest new inbound messages or deli
 
 ### Available MCP tools
 
-The standalone runner registers these 12 tools. `whatsapp_funnel_scatter_gather` is registered only when a funnel engine is passed to `createWhatsAppMcpServer`, which the standalone runner does not do.
+The standalone runner registers these 14 tools. `whatsapp_funnel_scatter_gather` is registered only when a funnel engine is passed to `createWhatsAppMcpServer`, which the standalone runner does not do.
 
 | Tool | Parameters | Description |
 |---|---|---|
@@ -134,7 +136,9 @@ The standalone runner registers these 12 tools. `whatsapp_funnel_scatter_gather`
 | `whatsapp_manage_memory` | `chatId: string, action: string, content?: string, index?: number` | Inspect, save, or delete long-term contact preferences with credential filtering. |
 | `whatsapp_set_chat_style` | `chatId: string, style: string` | Configure tone: `professional`, `casual`, `playful`, `assertive`, or `empathetic`. |
 | `whatsapp_search_chat_memory` | `chatId: string, query: string, limit?: number` | Search one chat in raw messages and summarized historical folds. |
-| `whatsapp_get_chat_folds` | `chatId: string` | List historical session and milestone fold summaries for one chat. |
+| `whatsapp_get_chat_folds` | `chatId: string, tier?: number` | List historical session, milestone, and archival fold summaries for one chat. |
+| `whatsapp_get_context_status` | `chatId: string` | Retrieve real-time dynamic context window status, token usage, compression ratio, active folds count per tier, and pruning recommendations. |
+| `whatsapp_compress_context_now` | `chatId: string` | Trigger immediate active context pruning and hierarchical folding for a chat. |
 | `whatsapp_decompress_fold` | `chatId: string, foldId: string, aroundMessageId?: string, offset?: number, limit?: number` | Inspect the raw messages behind a fold, or one message with two neighbors on each side. |
 | `whatsapp_funnel_scatter_gather` | `method: string, payload?: object, queryParams?: object, timeoutMs?: number` | Execute concurrent scatter-gather dispatch across external systems with circuit-breaking. Only registered when the funnel engine is configured. |
 

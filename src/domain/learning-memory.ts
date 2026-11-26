@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'no
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { SqliteStore } from './db';
+import { ContinualHarnessStore } from './continual-harness';
 
 export interface FailureLogEntry {
   timestamp: string;
@@ -90,6 +91,8 @@ export class DualMemoryManager {
 
   private workbookCache!: WorkbookState;
   private notebookCache!: NotebookState;
+  private harnessStore = new ContinualHarnessStore();
+  private workbookSnapshots = new Map<string, WorkbookState>();
 
   // WA-008: monotonic local revision per state, serialized remote writes, and observable errors.
   private revisions: Record<'workbook' | 'notebook', number> = { workbook: 0, notebook: 0 };
@@ -115,6 +118,16 @@ export class DualMemoryManager {
     this.notebookPath = join(this.storageDir, 'notebook.md');
 
     this.ensureInitialized();
+    this.syncHarnessFromWorkbook();
+  }
+
+  private syncHarnessFromWorkbook(): void {
+    for (const rule of this.workbookCache.enforcedRules) {
+      this.harnessStore.applyEdit({ action: 'create', kind: 'rule', scope: 'global', content: rule });
+    }
+    for (const bp of this.workbookCache.bestPractices) {
+      this.harnessStore.applyEdit({ action: 'create', kind: 'best_practice', scope: 'global', content: bp });
+    }
   }
 
   private ensureInitialized(): void {
@@ -277,8 +290,33 @@ export class DualMemoryManager {
     if (!cleanRule) return;
     if (!this.workbookCache.enforcedRules.includes(cleanRule)) {
       this.workbookCache.enforcedRules.push(cleanRule);
+      this.harnessStore.applyEdit({
+        action: 'create',
+        kind: 'rule',
+        scope: 'global',
+        content: cleanRule
+      });
       this.persistWorkbook();
     }
+  }
+
+  updateEnforcedRule(targetRule: string, nextRule: string): boolean {
+    const cleanNext = scrubCredentials(nextRule.trim());
+    if (!cleanNext) return false;
+    const idx = this.workbookCache.enforcedRules.indexOf(targetRule.trim());
+    if (idx === -1) return false;
+    this.workbookCache.enforcedRules[idx] = cleanNext;
+    this.persistWorkbook();
+    return true;
+  }
+
+  removeEnforcedRule(targetRule: string): boolean {
+    const cleanTarget = targetRule.trim();
+    const idx = this.workbookCache.enforcedRules.indexOf(cleanTarget);
+    if (idx === -1) return false;
+    this.workbookCache.enforcedRules.splice(idx, 1);
+    this.persistWorkbook();
+    return true;
   }
 
   addBestPractice(practice: string): void {
@@ -286,8 +324,73 @@ export class DualMemoryManager {
     if (!cleanPractice) return;
     if (!this.workbookCache.bestPractices.includes(cleanPractice)) {
       this.workbookCache.bestPractices.push(cleanPractice);
+      this.harnessStore.applyEdit({
+        action: 'create',
+        kind: 'best_practice',
+        scope: 'global',
+        content: cleanPractice
+      });
       this.persistWorkbook();
     }
+  }
+
+  updateBestPractice(targetPractice: string, nextPractice: string): boolean {
+    const cleanNext = scrubCredentials(nextPractice.trim());
+    if (!cleanNext) return false;
+    const idx = this.workbookCache.bestPractices.indexOf(targetPractice.trim());
+    if (idx === -1) return false;
+    this.workbookCache.bestPractices[idx] = cleanNext;
+    this.persistWorkbook();
+    return true;
+  }
+
+  removeBestPractice(targetPractice: string): boolean {
+    const cleanTarget = targetPractice.trim();
+    const idx = this.workbookCache.bestPractices.indexOf(cleanTarget);
+    if (idx === -1) return false;
+    this.workbookCache.bestPractices.splice(idx, 1);
+    this.persistWorkbook();
+    return true;
+  }
+
+  recordLocalTactic(chatId: string, tactic: string, evidence = ''): boolean {
+    const cleanTactic = scrubCredentials(tactic.trim());
+    if (!chatId || !cleanTactic) return false;
+    const res = this.harnessStore.applyEdit({
+      action: 'create',
+      kind: 'tactic',
+      scope: 'local',
+      chatId,
+      content: cleanTactic,
+      evidence
+    });
+    return res.applied;
+  }
+
+  getHarnessStore(): ContinualHarnessStore {
+    return this.harnessStore;
+  }
+
+  takeSnapshot(snapshotId: string): void {
+    this.workbookSnapshots.set(snapshotId, this.getWorkbook());
+    this.harnessStore.takeSnapshot(snapshotId);
+    if (this.workbookSnapshots.size > 25) {
+      const oldest = this.workbookSnapshots.keys().next().value;
+      if (oldest !== undefined) this.workbookSnapshots.delete(oldest);
+    }
+  }
+
+  rollbackToSnapshot(snapshotId: string): boolean {
+    const wb = this.workbookSnapshots.get(snapshotId);
+    if (!wb) return false;
+    this.workbookCache = {
+      bestPractices: [...wb.bestPractices],
+      failureLogs: wb.failureLogs.map((l) => ({ ...l })),
+      enforcedRules: [...wb.enforcedRules]
+    };
+    this.harnessStore.rollbackToSnapshot(snapshotId);
+    this.persistWorkbook();
+    return true;
   }
 
   recordFailureLog(entry: FailureLogEntry): void {
@@ -374,7 +477,7 @@ export class DualMemoryManager {
 
   // --- Prompt Injection Helpers ---
 
-  getActiveRulesForPrompt(): string {
+  getActiveRulesForPrompt(queryText?: string, chatId?: string): string {
     const rules = this.workbookCache.enforcedRules;
     const practices = this.workbookCache.bestPractices;
 
@@ -383,7 +486,29 @@ export class DualMemoryManager {
       parts.push(`🛡️ [Enforced Execution Rules]:\n${rules.map((r, i) => `${i + 1}. ${r}`).join('\n')}`);
     }
     if (practices.length > 0) {
-      parts.push(`💡 [Best Practices Developed]:\n${practices.map((p) => `- ${p}`).join('\n')}`);
+      let selectedPractices = practices;
+      if (queryText && practices.length > 3) {
+        const ranked = this.harnessStore.rankEntries(queryText, {
+          scope: 'global',
+          kind: 'best_practice',
+          limit: 5
+        });
+        if (ranked.length > 0) {
+          selectedPractices = ranked.map((e) => e.content);
+        }
+      }
+      parts.push(`💡 [Best Practices Developed]:\n${selectedPractices.map((p) => `- ${p}`).join('\n')}`);
+    }
+    if (chatId) {
+      const localTactics = this.harnessStore.rankEntries(queryText ?? '', {
+        scope: 'local',
+        kind: 'tactic',
+        chatId,
+        limit: 4
+      });
+      if (localTactics.length > 0) {
+        parts.push(`🎯 [Thread-Specific Learned Tactics]:\n${localTactics.map((t) => `- ${t.content}`).join('\n')}`);
+      }
     }
 
     return parts.join('\n\n');

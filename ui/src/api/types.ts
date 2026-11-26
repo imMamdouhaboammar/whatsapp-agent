@@ -61,6 +61,16 @@ export interface AgentDecision {
   modelRouting?: ModelRoutingTrace;
 }
 
+export interface PendingToolCall {
+  namespacedName: string;
+  serverName: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  risk: 'readOnly' | 'mutating';
+  reason?: string;
+  proposedFollowUp?: string;
+}
+
 export interface AgentDraft {
   id: string;
   chatId: string;
@@ -73,6 +83,7 @@ export interface AgentDraft {
   status: 'pending' | 'approved' | 'rejected' | 'sent';
   createdAt: number;
   modelRouting?: ModelRoutingTrace;
+  toolCall?: PendingToolCall;
 }
 
 export interface ContactDossier {
@@ -100,6 +111,82 @@ export interface SystemStatus {
   pendingDraftsCount: number;
   updatedAt: number;
 }
+
+export interface GeminiModelOption {
+  id: string;
+  name: string;
+  generation: 4 | 3;
+  tier: 'flagship' | 'frontier' | 'workhorse' | 'multimodal' | 'legacy';
+  description: string;
+  recommendedRole: string;
+}
+
+export const SUPPORTED_GEMINI_MODELS: readonly GeminiModelOption[] = [
+  {
+    id: 'gemini-4-carbon',
+    name: 'Gemini 4 Carbon',
+    generation: 4,
+    tier: 'flagship',
+    description: 'Flagship frontier model for deep reasoning, complex logic, and architecture',
+    recommendedRole: 'Deep reasoning, complex dispute resolution, advanced logic'
+  },
+  {
+    id: 'gemini-4-argon',
+    name: 'Gemini 4 Argon',
+    generation: 4,
+    tier: 'frontier',
+    description: 'Balanced frontier workhorse for software engineering and conversation moderation',
+    recommendedRole: 'Primary agent persona, complex inquiries, long conversation context'
+  },
+  {
+    id: 'gemini-4-hydrogen',
+    name: 'Gemini 4 Hydrogen',
+    generation: 4,
+    tier: 'workhorse',
+    description: 'High-speed execution model built for rapid agentic workflows and everyday tasks',
+    recommendedRole: 'Fast agent turns, standard inquiries, high-throughput routing'
+  },
+  {
+    id: 'gemini-4-neon',
+    name: 'Gemini 4 Neon',
+    generation: 4,
+    tier: 'multimodal',
+    description: 'Low-latency multimodal execution engine for fast vision and audio processing',
+    recommendedRole: 'Multimodal analysis, audio transcription, image inspection'
+  },
+  {
+    id: 'gemini-4-flash',
+    name: 'Gemini 4 Flash',
+    generation: 4,
+    tier: 'workhorse',
+    description: 'Fast, responsive execution tier for high-frequency conversation turns',
+    recommendedRole: 'General fast execution'
+  },
+  {
+    id: 'gemini-4-pro',
+    name: 'Gemini 4 Pro',
+    generation: 4,
+    tier: 'frontier',
+    description: 'Advanced frontier model for complex reasoning and enterprise workloads',
+    recommendedRole: 'Enterprise reasoning & compliance'
+  },
+  {
+    id: 'gemini-3.8-flash',
+    name: 'Gemini 3.8 Flash',
+    generation: 3,
+    tier: 'legacy',
+    description: 'Fast standard model from previous generation',
+    recommendedRole: 'Legacy fallback & high-speed backup'
+  },
+  {
+    id: 'gemini-3.1-pro',
+    name: 'Gemini 3.1 Pro',
+    generation: 3,
+    tier: 'legacy',
+    description: 'Capable reasoning model from previous generation',
+    recommendedRole: 'Legacy reasoning backup'
+  }
+];
 
 export interface ModeratorPersona {
   name: string;
@@ -144,4 +231,39 @@ export interface WorkspaceCleanResult {
   success: boolean;
   freedBytes: number;
   cleanedItems: string[];
+}
+
+export interface ConversationFold {
+  id: string;
+  chatId: string;
+  tier: 1 | 2 | 3;
+  topic: string;
+  summary: string;
+  startMessageId: string;
+  endMessageId: string;
+  directMessageIds: string[];
+  sourceFoldIds: string[];
+  messageCount: number;
+  factsExtracted: string[];
+  createdAt: number;
+  survivedCount?: number;
+  generation?: 'young' | 'old';
+}
+
+export interface ContextBudgetStatus {
+  chatId: string;
+  model: string;
+  modelLimitTokens: number;
+  targetContextBudget: number;
+  currentTokens: number;
+  tokensSaved: number;
+  compressionRatio: number;
+  activeFoldsCount: number;
+  tier1Count: number;
+  tier2Count: number;
+  tier3Count: number;
+  rawMessageCount: number;
+  uncompressedMessageCount: number;
+  preservedRecentCount: number;
+  nudgeDecision: 'idle' | 'soft' | 'strong';
 }

@@ -14,7 +14,7 @@ export interface QuotedMessageInfo {
 export interface ConversationFold {
   id: string;
   chatId: string;
-  tier: 1 | 2;
+  tier: 1 | 2 | 3;
   topic: string;
   summary: string;
   startMessageId: string;
@@ -24,6 +24,27 @@ export interface ConversationFold {
   messageCount: number;
   factsExtracted: string[];
   createdAt: number;
+  survivedCount?: number;
+  generation?: 'young' | 'old';
+}
+
+/** Dynamic Context Window and Active Context Pruning (ACP) budget status. */
+export interface ContextBudgetStatus {
+  chatId: string;
+  model: string;
+  modelLimitTokens: number;
+  targetContextBudget: number;
+  currentTokens: number;
+  tokensSaved: number;
+  compressionRatio: number;
+  activeFoldsCount: number;
+  tier1Count: number;
+  tier2Count: number;
+  tier3Count: number;
+  rawMessageCount: number;
+  uncompressedMessageCount: number;
+  preservedRecentCount: number;
+  nudgeDecision: 'idle' | 'soft' | 'strong';
 }
 
 export interface ChatMessage {
@@ -69,6 +90,25 @@ export interface ModelRoutingTrace {
   bypassed?: boolean;
 }
 
+export interface WorldPredictionTrace {
+  factors: [number, number, number, number];
+  predictedOverrideProb: number;
+  predictedUtility: number;
+  uncertainty: number;
+}
+
+export interface ExternalToolTrace {
+  namespacedName: string;
+  serverName: string;
+  rawToolName: string;
+  args: Record<string, unknown>;
+  risk: 'readOnly' | 'mutating';
+  decision: 'execute' | 'require_approval' | 'deny' | 'dry_run_skipped';
+  ok?: boolean;
+  error?: string;
+  durationMs?: number;
+}
+
 export interface AgentDecision {
   action: AutonomyAction;
   intent: string;
@@ -82,6 +122,8 @@ export interface AgentDecision {
   extractedCommitments?: string[];
   contactStage?: ContactStage;
   modelRouting?: ModelRoutingTrace;
+  worldPrediction?: WorldPredictionTrace;
+  externalToolCalls?: ExternalToolTrace[];
 }
 
 export interface PolicyRule {
@@ -129,6 +171,16 @@ export interface PairingState {
   updatedAt: number;
 }
 
+export interface PendingToolCall {
+  namespacedName: string;
+  serverName: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  risk: 'readOnly' | 'mutating';
+  reason?: string;
+  proposedFollowUp?: string;
+}
+
 export interface AgentDraft {
   id: string;
   chatId: string;
@@ -141,6 +193,7 @@ export interface AgentDraft {
   status: 'pending' | 'approved' | 'rejected' | 'sent';
   createdAt: number;
   modelRouting?: ModelRoutingTrace;
+  toolCall?: PendingToolCall;
 }
 
 export type ContactStage = 'lead' | 'qualified' | 'negotiation' | 'customer' | 'vip' | 'archived';

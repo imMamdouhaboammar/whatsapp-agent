@@ -184,9 +184,20 @@ export class GeminiClient {
 
     // Fallback gracefully if model not yet enabled on Vertex AI endpoint
     if (!apiResult.ok && apiResult.status === 404 && auth.type === 'vertex') {
-      const fallbackModel = model.includes('argon') || model.includes('pro') ? 'gemini-3.1-pro' : 'gemini-3.8-flash';
+      let fallbackModel = 'gemini-3.8-flash';
+      if (model.includes('carbon')) {
+        fallbackModel = 'gemini-4-argon';
+      } else if (model.includes('argon') || model.includes('pro')) {
+        fallbackModel = 'gemini-3.1-pro';
+      } else if (model.includes('hydrogen') || model.includes('neon') || model.includes('flash')) {
+        fallbackModel = 'gemini-3.8-flash';
+      }
       console.warn(`⚠️ [GeminiClient] Model "${model}" is not enabled in this region, gracefully falling back to "${fallbackModel}"`);
       apiResult = await readResponse(await callApi(fallbackModel));
+      if (!apiResult.ok && apiResult.status === 404 && fallbackModel !== 'gemini-3.8-flash') {
+        console.warn(`⚠️ [GeminiClient] Intermediate fallback "${fallbackModel}" also returned 404, falling back to "gemini-3.8-flash"`);
+        apiResult = await readResponse(await callApi('gemini-3.8-flash'));
+      }
     }
     if (!apiResult.ok) {
       const msg = apiResult.data?.error?.message || (apiResult.text ? apiResult.text.slice(0, 300) : `HTTP ${apiResult.status}: ${apiResult.statusText}`);

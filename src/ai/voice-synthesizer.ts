@@ -102,8 +102,9 @@ export class VoiceSynthesizer {
   ): Promise<Buffer> {
     // Normalize voice name to standard Gemini voice (kore, puck, fenrir, aoede, charon)
     const normalizedVoice = voiceName.replace(/^ar-XA-Chirp3-HD-/, '').toLowerCase() || 'kore';
+    const ttsModel = process.env.GEMINI_TTS_MODEL || 'gemini-3.8-flash-tts';
 
-    const url = `https://aiplatform.googleapis.com/v1/projects/${project}/locations/global/publishers/google/models/gemini-3.8-flash-tts:generateContent`;
+    const url = `https://aiplatform.googleapis.com/v1/projects/${project}/locations/global/publishers/google/models/${ttsModel}:generateContent`;
     const res = await this.fetcher(url, {
       method: 'POST',
       headers: {

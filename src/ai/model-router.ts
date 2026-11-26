@@ -8,7 +8,111 @@
 import { scrubCredentials } from '../domain/learning-memory';
 
 export type RouterTier = 'trivial' | 'standard' | 'complex';
-export type GeminiModelName = 'gemini-3.8-flash' | 'gemini-3.1-pro' | 'gemini-4-argon' | string;
+export type GeminiModelName =
+  | 'gemini-4-carbon'
+  | 'gemini-4-argon'
+  | 'gemini-4-hydrogen'
+  | 'gemini-4-neon'
+  | 'gemini-4-flash'
+  | 'gemini-4-pro'
+  | 'gemini-3.8-flash'
+  | 'gemini-3.1-pro'
+  | string;
+
+export const GEMINI_4_MODELS = [
+  'gemini-4-carbon',
+  'gemini-4-argon',
+  'gemini-4-hydrogen',
+  'gemini-4-neon',
+  'gemini-4-flash',
+  'gemini-4-pro'
+] as const;
+
+export type Gemini4ModelName = typeof GEMINI_4_MODELS[number];
+
+export interface GeminiModelDescriptor {
+  id: string;
+  name: string;
+  generation: 4 | 3;
+  tier: 'flagship' | 'frontier' | 'workhorse' | 'multimodal' | 'legacy';
+  description: string;
+  recommendedRole: string;
+  defaultThinkingLevel?: 'HIGH' | 'MEDIUM' | 'LOW';
+}
+
+export const SUPPORTED_GEMINI_MODELS: readonly GeminiModelDescriptor[] = [
+  {
+    id: 'gemini-4-carbon',
+    name: 'Gemini 4 Carbon',
+    generation: 4,
+    tier: 'flagship',
+    description: 'Flagship frontier model for deep reasoning, multi-step logic, complex architectures, and advanced problem-solving.',
+    recommendedRole: 'Deep reasoning, dispute resolution, architecture, advanced math & logic',
+    defaultThinkingLevel: 'HIGH'
+  },
+  {
+    id: 'gemini-4-argon',
+    name: 'Gemini 4 Argon',
+    generation: 4,
+    tier: 'frontier',
+    description: 'Balanced frontier workhorse for software engineering, long-document context, and complex conversation moderation.',
+    recommendedRole: 'Primary agent persona, complex inquiries, long conversation context',
+    defaultThinkingLevel: 'MEDIUM'
+  },
+  {
+    id: 'gemini-4-hydrogen',
+    name: 'Gemini 4 Hydrogen',
+    generation: 4,
+    tier: 'workhorse',
+    description: 'High-speed execution model built for rapid agentic workflows, low latency, and efficient high-frequency turns.',
+    recommendedRole: 'Fast agent turns, standard inquiries, high-throughput routing',
+    defaultThinkingLevel: 'LOW'
+  },
+  {
+    id: 'gemini-4-neon',
+    name: 'Gemini 4 Neon',
+    generation: 4,
+    tier: 'multimodal',
+    description: 'Low-latency multimodal execution engine designed for high-performance vision, document, and audio workflows.',
+    recommendedRole: 'Multimodal analysis, audio transcription, image inspection'
+  },
+  {
+    id: 'gemini-4-flash',
+    name: 'Gemini 4 Flash',
+    generation: 4,
+    tier: 'workhorse',
+    description: 'Optimized high-speed execution tier for fast everyday interactions.',
+    recommendedRole: 'General fast execution'
+  },
+  {
+    id: 'gemini-4-pro',
+    name: 'Gemini 4 Pro',
+    generation: 4,
+    tier: 'frontier',
+    description: 'Advanced pro tier for enterprise reasoning and complex conversational workflows.',
+    recommendedRole: 'Enterprise reasoning & compliance'
+  },
+  {
+    id: 'gemini-3.8-flash',
+    name: 'Gemini 3.8 Flash',
+    generation: 3,
+    tier: 'legacy',
+    description: 'Fast standard model from previous generation.',
+    recommendedRole: 'Legacy fallback & high-speed backup'
+  },
+  {
+    id: 'gemini-3.1-pro',
+    name: 'Gemini 3.1 Pro',
+    generation: 3,
+    tier: 'legacy',
+    description: 'Capable reasoning model from previous generation.',
+    recommendedRole: 'Legacy reasoning backup'
+  }
+];
+
+export function isGemini4Model(model: string): boolean {
+  return model.startsWith('gemini-4') || (GEMINI_4_MODELS as readonly string[]).includes(model);
+}
 
 export interface RoutingDecision {
   selectedModel: GeminiModelName;
@@ -33,9 +137,9 @@ export interface JevRouteRequest {
 }
 
 export const ROUTER_MODEL_MAP: Record<RouterTier, GeminiModelName> = {
-  trivial: 'gemini-3.8-flash',
-  standard: 'gemini-3.8-flash',
-  complex: 'gemini-4-argon',
+  trivial: process.env.GEMINI_ROUTER_TRIVIAL_MODEL || 'gemini-3.8-flash',
+  standard: process.env.GEMINI_ROUTER_STANDARD_MODEL || 'gemini-3.8-flash',
+  complex: process.env.GEMINI_ROUTER_COMPLEX_MODEL || 'gemini-4-argon',
 };
 
 export const DEFAULT_JEV_BASE_URL = 'https://api.typesafe.ai/v1';
@@ -127,8 +231,11 @@ export function parseJevResponse(
   };
 }
 
+const MAX_RECURSION_DEPTH = 32;
+
 /** Maps Arabic-Indic (U+0660-0669) and Extended Arabic-Indic (U+06F0-06F9) digits to ASCII. */
-export function normalizeDigits(value: string): string {
+export function normalizeDigits(value: string, depth = 0): string {
+  if (depth > MAX_RECURSION_DEPTH) return value;
   return value.replace(/[\u0660-\u0669\u06F0-\u06F9]/g, (d) => String((d.codePointAt(0)! & 0xF) ));
 }
 

@@ -1,0 +1,33 @@
+{
+  "servers": [
+    {
+      "name": "composio",
+      "enabled": true,
+      "transport": "streamable-http",
+      "url": "${COMPOSIO_MCP_URL}",
+      "headers": {
+        "x-api-key": "${COMPOSIO_API_KEY}"
+      },
+      "defaultRisk": "mutating",
+      "timeoutMs": 15000,
+      "tools": {
+        "GOOGLECALENDAR_FIND_EVENT": {
+          "risk": "readOnly"
+        },
+        "GMAIL_SEND_EMAIL": {
+          "risk": "mutating",
+          "requiresHumanApproval": true
+        }
+      }
+    },
+    {
+      "name": "filesystem",
+      "enabled": false,
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "./data/shared"],
+      "defaultRisk": "readOnly",
+      "timeoutMs": 10000
+    }
+  ]
+}
