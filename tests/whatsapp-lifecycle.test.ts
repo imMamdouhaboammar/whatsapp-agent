@@ -89,6 +89,32 @@ const closeWith = (code: number): BaileysEventMap['connection.update'] => ({
 });
 
 describe('WA-013 serialized lifecycle with generation fencing', () => {
+  it('closes an unowned socket when its factory synchronously disconnects', async () => {
+    const socket = new FakeSocket(registeredCreds);
+    const disconnects: Promise<void>[] = [];
+    const client = new WhatsAppSocketClient({
+      sessionDir: tmp(),
+      authStateFactory: async () => ({
+        state: { creds: registeredCreds },
+        saveCreds: async () => {}
+      }),
+      versionProvider: async () => ({ version: [2, 3000, 0] }),
+      socketFactory: () => {
+        // The synchronous lifecycle fence lands before the factory returns.
+        disconnects.push(client.disconnect());
+        return socket;
+      }
+    });
+    try {
+      await client.start();
+      await Promise.all(disconnects);
+      expect(client.getState().state).toBe('disconnected');
+      expect(socket.ended).toBe(true);
+    } finally {
+      await client.disconnect();
+    }
+  });
+
   it('replaces a socket after asynchronous end rejects', async () => {
     const { client, sockets } = makeClient();
     await client.start();

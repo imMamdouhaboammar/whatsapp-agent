@@ -328,11 +328,15 @@ export class WhatsAppSocketClient {
         connectTimeoutMs: 60_000,
         defaultQueryTimeoutMs: 60_000
       });
-      if (generation !== this.socketGeneration) return;
-      this.sock = sock;
+      // A factory may synchronously re-enter disconnect(). Never attach or leak
+      // a socket whose generation lost ownership during construction.
+      if (!this.adoptSocket(sock, generation)) {
+        await this.retireSocket(sock, '[WhatsApp] Error during stale socket cleanup:');
+        return;
+      }
 
       // WA-013: credential writes flush only while this socket generation is current.
-      this.sock.ev.on('creds.update', async () => {
+      sock.ev.on('creds.update', async () => {
         if (generation !== this.socketGeneration) return;
         try {
           await saveCreds();
@@ -341,7 +345,7 @@ export class WhatsAppSocketClient {
         }
       });
 
-      this.sock.ev.on('connection.update', async (update) => {
+      sock.ev.on('connection.update', async (update) => {
         if (generation !== this.socketGeneration) return;
         const { connection, lastDisconnect, qr } = update;
 
@@ -480,7 +484,7 @@ export class WhatsAppSocketClient {
           .catch((error) => console.warn('[WhatsApp] Could not resolve receipt JID:', error));
       };
 
-      this.sock.ev.on('messages.update', (updates) => {
+      sock.ev.on('messages.update', (updates) => {
         if (generation !== this.socketGeneration) return;
         for (const { key, update } of updates) {
           if (!key.id || !key.remoteJid || key.fromMe === false) continue;
@@ -490,7 +494,7 @@ export class WhatsAppSocketClient {
       });
 
       // Participant receipts do not establish group-wide delivery or read state.
-      this.sock.ev.on('message-receipt.update', (receipts) => {
+      sock.ev.on('message-receipt.update', (receipts) => {
         if (generation !== this.socketGeneration) return;
         for (const { key, receipt } of receipts) {
           if (!key.id || !key.remoteJid || key.fromMe === false || key.remoteJid.endsWith('@g.us')) continue;
@@ -500,7 +504,7 @@ export class WhatsAppSocketClient {
       });
 
       // Handle incoming & synced messages (both real-time 'notify' and background 'append')
-      this.sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (generation !== this.socketGeneration) return;
         for (const raw of messages) {
           if (!raw.message) continue;
@@ -524,7 +528,7 @@ export class WhatsAppSocketClient {
       });
 
       // Handle continuous history harvest synced from phone
-      this.sock.ev.on('messaging-history.set', async ({ messages: historyMessages }) => {
+      sock.ev.on('messaging-history.set', async ({ messages: historyMessages }) => {
         if (generation !== this.socketGeneration) return;
         if (!historyMessages || !Array.isArray(historyMessages)) return;
         for (const raw of historyMessages) {
@@ -1030,10 +1034,20 @@ export class WhatsAppSocketClient {
     return { messageId };
   }
 
+  private adoptSocket(socket: WhatsAppSocketPort, generation: number): boolean {
+    if (generation !== this.socketGeneration) return false;
+    this.sock = socket;
+    return true;
+  }
+
   private async endCurrentSocket(warning: string): Promise<void> {
     const socket = this.sock;
     if (!socket) return;
     this.sock = null;
+    await this.retireSocket(socket, warning);
+  }
+
+  private async retireSocket(socket: WhatsAppSocketPort, warning: string): Promise<void> {
     try {
       socket.ev.removeAllListeners('connection.update');
       socket.ev.removeAllListeners('creds.update');
