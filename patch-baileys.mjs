@@ -8,10 +8,10 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const currentDir = dirname(fileURLToPath(import.meta.url));
 // WA-013/WA-014: BAILEYS_ROOT lets tests point the patcher at an isolated fixture tree;
 // production postinstall behavior (repo-local node_modules) is unchanged.
-const installRoot = process.env.BAILEYS_ROOT || __dirname;
+const installRoot = process.env.BAILEYS_ROOT || currentDir;
 const baileysPkgDir = join(installRoot, 'node_modules', '@whiskeysockets', 'baileys');
 const baileys = join(baileysPkgDir, 'lib');
 

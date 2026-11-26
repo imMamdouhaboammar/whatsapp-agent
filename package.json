@@ -22,7 +22,17 @@
     "gate": "no-mistakes axi",
     "gate:status": "no-mistakes status",
     "gate:doctor": "no-mistakes doctor",
-    "gate:run": "no-mistakes axi run"
+    "gate:run": "no-mistakes axi run",
+    "prepare": "if [ -z \"$CI\" ] && [ -e .git ] && [ -x node_modules/.bin/lefthook ]; then bun run hooks:install; fi",
+    "hooks:install": "lefthook install",
+    "lint:ts": "oxlint --disable-nested-config -c .oxlintrc.json --type-aware --deny-warnings src ui/src ui/tests ui/vite.config.ts scripts tests patch-baileys.mjs commitlint.config.mjs",
+    "lint:python": "uvx --from ruff==0.17.4 ruff check workers/media-python && uvx --from ruff==0.17.4 ruff format --check workers/media-python",
+    "lint:infra": "buildifier -mode=check -lint=warn -type=build BUCK toolchains/BUCK && hadolint --failure-threshold warning Dockerfile && docker compose config --quiet",
+    "lint": "bun run lint:ts && bun run lint:python && bun run lint:infra",
+    "lint:fix": "oxlint --disable-nested-config -c .oxlintrc.json --fix src ui/src ui/tests ui/vite.config.ts scripts tests patch-baileys.mjs commitlint.config.mjs && uvx --from ruff==0.17.4 ruff check --fix workers/media-python && uvx --from ruff==0.17.4 ruff format workers/media-python",
+    "typecheck:backend": "tsc --noEmit -p tsconfig.json",
+    "typecheck:ui": "cd ui && bunx --no-install tsc -b --pretty false",
+    "typecheck": "bun run typecheck:backend && bun run typecheck:ui"
   },
   "engines": {
     "bun": ">=1.3.0",
@@ -39,9 +49,14 @@
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
+    "@commitlint/cli": "21.2.4",
+    "@commitlint/config-conventional": "21.2.4",
     "@electric-sql/pglite": "^0.5.17",
     "@types/bun": "1.2.4",
     "@types/qrcode": "^1.5.5",
+    "lefthook": "2.2.4",
+    "oxlint": "1.95.0",
+    "oxlint-tsgolint": "7.0.2008",
     "typescript": "7.0.2"
   }
 }
