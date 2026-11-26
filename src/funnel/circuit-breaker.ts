@@ -1,5 +1,9 @@
 import type { CircuitBreakerState, CircuitBreakerStats } from './types';
 
+export class HedgedRequestCancelled extends Error {
+  constructor() { super('Cancelled after another target succeeded'); }
+}
+
 export interface CircuitBreakerOptions {
   targetId: string;
   failureThreshold?: number;
@@ -52,7 +56,7 @@ export class CircuitBreaker {
       this.recordSuccess();
       return result;
     } catch (err) {
-      this.recordFailure();
+      if (!(err instanceof HedgedRequestCancelled)) this.recordFailure();
       throw err;
     }
   }

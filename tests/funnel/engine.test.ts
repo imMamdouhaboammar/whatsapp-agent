@@ -154,3 +154,60 @@ describe('FableFunnelEngine (Scatter-Gather & Hedged Race)', () => {
     expect(receipt.success).toBe(false); // Quorum failed
   });
 });
+
+it('preserves the upstream HTTP status and shares the receipt trace ID with each target', async () => {
+  const registry = new FunnelRegistry({ initialMethods: [{
+    method: 'TRACE_CHECK', description: 'Trace check', mode: 'ALL_SETTLED', timeoutMs: 1000,
+    targets: [
+      { id: 'ok', name: 'OK', url: 'https://ok.example.test', enabled: true },
+      { id: 'missing', name: 'Missing', url: 'https://missing.example.test', enabled: true }
+    ]
+  }] });
+  const traces: Array<string | null> = [];
+  const fetcher: typeof fetch = async (input, init) => {
+    traces.push(new Headers(init?.headers).get('X-Funnel-Trace-Id'));
+    return new Response('response', { status: (input instanceof Request ? input.url : input.toString()).includes('missing') ? 404 : 200 });
+  };
+  const receipt = await new FableFunnelEngine({ registry, fetcher }).dispatch({ method: 'TRACE_CHECK' });
+  expect(receipt.results.find(r => r.targetId === 'missing')?.statusCode).toBe(404);
+  expect(traces).toEqual([receipt.traceId, receipt.traceId]);
+});
+
+const cancellationFetcher: typeof fetch = async (input, init) => {
+  if ((input instanceof Request ? input.url : input.toString()).includes('slow')) {
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+    });
+  }
+  return Response.json({ winner: true });
+};
+
+it('does not trip a healthy slower target when another hedged target wins', async () => {
+  const registry = new FunnelRegistry({ initialMethods: [{
+    method: 'HEDGE', description: 'Race', mode: 'FIRST_SUCCESS', timeoutMs: 1000,
+    circuitBreakerThreshold: 1,
+    targets: [
+      { id: 'slow', name: 'Slow', url: 'https://slow.example.test', enabled: true },
+      { id: 'fast', name: 'Fast', url: 'https://fast.example.test', enabled: true }
+    ]
+  }] });
+  const engine = new FableFunnelEngine({ registry, fetcher: cancellationFetcher });
+  const receipt = await engine.dispatch({ method: 'HEDGE' });
+  expect(receipt.winningTargetId).toBe('fast');
+  expect(receipt.results.find(r => r.targetId === 'slow')).toMatchObject({ cancelled: true, success: false, error: 'Cancelled after another target succeeded' });
+  expect(engine.getCircuitBreakerStats().find(cb => cb.targetId === 'slow')).toMatchObject({ state: 'CLOSED', totalFailures: 0 });
+});
+
+it('still counts a real hedged dispatch timeout as a target failure', async () => {
+  const registry = new FunnelRegistry({ initialMethods: [{
+    method: 'TIMEOUT', description: 'Deadline', mode: 'FIRST_SUCCESS', timeoutMs: 20,
+    circuitBreakerThreshold: 1,
+    targets: [{ id: 'slow', name: 'Slow', url: 'https://slow.example.test', enabled: true }]
+  }] });
+  const engine = new FableFunnelEngine({ registry, fetcher: cancellationFetcher });
+  const receipt = await engine.dispatch({ method: 'TIMEOUT' });
+  expect(receipt.success).toBe(false);
+  expect(receipt.results[0]?.statusCode).toBe(504);
+  expect(receipt.results[0]?.cancelled).toBeUndefined();
+  expect(engine.getCircuitBreakerStats()[0]).toMatchObject({ state: 'OPEN', totalFailures: 1 });
+});

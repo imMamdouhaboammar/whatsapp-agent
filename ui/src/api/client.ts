@@ -33,31 +33,60 @@ async function handleResponse<T>(res: Response, fallbackError: string, matches: 
   return value;
 }
 
+export type FunnelMode = 'ALL_SETTLED' | 'FIRST_SUCCESS' | 'QUORUM';
+
+export interface FunnelTargetMeta {
+  id: string;
+  name: string;
+  enabled?: boolean;
+  method?: string;
+  timeoutMs?: number;
+}
+
 export interface FunnelMethodMeta {
   method: string;
-  description?: string;
-  mode?: string;
-  targets?: unknown[];
-  timeoutMs?: number;
+  description: string;
+  mode: FunnelMode;
+  targets: FunnelTargetMeta[];
+  timeoutMs: number;
+  quorumCount?: number;
 }
 
 export interface CircuitBreakerStatus {
   targetId: string;
   state: 'CLOSED' | 'OPEN' | 'HALF_OPEN';
-  failures?: number;
-  successes?: number;
-  totalCalls?: number;
-  totalFailures?: number;
+  consecutiveFailures: number;
+  consecutiveSuccesses: number;
+  totalCalls: number;
+  totalFailures: number;
   lastFailureTime?: number;
+  lastSuccessTime?: number;
+  cooldownRemainingMs?: number;
+}
+
+export interface FunnelTargetResult {
+  targetId: string;
+  targetName: string;
+  statusCode: number;
+  durationMs: number;
+  success: boolean;
+  cancelled?: boolean;
+  data?: unknown;
+  error?: string;
 }
 
 export interface FunnelDispatchResult {
-  traceId?: string;
-  method?: string;
-  success?: boolean;
+  traceId: string;
+  method: string;
+  mode: FunnelMode;
+  startedAt: string;
+  totalDurationMs: number;
+  success: boolean;
+  successfulCount: number;
+  failedCount: number;
+  results: FunnelTargetResult[];
+  winningTargetId?: string;
   error?: string;
-  results?: Array<Record<string, unknown>>;
-  [key: string]: unknown;
 }
 
 export interface ContactMemoryItem {
@@ -241,29 +270,29 @@ export const api = {
     return handleResponse(res, 'Could not preview assistant response', responseContracts.simulation);
   },
 
-  async getFunnelMethods(): Promise<{ methods: FunnelMethodMeta[] }> {
-    const res = await fetch(`${BASE_URL}/funnel/methods`);
+  async getFunnelMethods(signal?: AbortSignal): Promise<{ methods: FunnelMethodMeta[] }> {
+    const res = await fetch(`${BASE_URL}/funnel/methods`, { signal, cache: 'no-store' });
     return handleResponse(res, 'Failed to fetch funnel methods', responseContracts.funnelMethods);
   },
 
-  async getFunnelStats(): Promise<{ circuitBreakers: CircuitBreakerStatus[]; activeMethodsCount: number }> {
-    const res = await fetch(`${BASE_URL}/funnel/stats`);
+  async getFunnelStats(signal?: AbortSignal): Promise<{ circuitBreakers: CircuitBreakerStatus[]; activeMethodsCount: number }> {
+    const res = await fetch(`${BASE_URL}/funnel/stats`, { signal, cache: 'no-store' });
     return handleResponse(res, 'Failed to fetch funnel stats', responseContracts.funnelStats);
   },
 
-  async dispatchFunnel(data: { method: string; payload?: unknown; queryParams?: Record<string, string>; timeoutMs?: number }): Promise<FunnelDispatchResult> {
+  async dispatchFunnel(data: { method: string; payload?: Record<string, unknown>; queryParams?: Record<string, string>; timeoutMs?: number }, key: string): Promise<FunnelDispatchResult> {
     const res = await fetch(`${BASE_URL}/funnel/dispatch`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': key.trim() },
       body: JSON.stringify(data)
     });
     return handleResponse(res, 'Failed to dispatch funnel request', responseContracts.funnelDispatch);
   },
 
-  async resetCircuitBreaker(targetId: string): Promise<{ success: boolean; targetId: string }> {
+  async resetCircuitBreaker(targetId: string, key: string): Promise<{ success: boolean; targetId: string }> {
     const res = await fetch(`${BASE_URL}/funnel/circuit-breaker/reset`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': key.trim() },
       body: JSON.stringify({ targetId })
     });
     return handleResponse(res, 'Failed to reset circuit breaker', responseContracts.circuitBreakerReset);

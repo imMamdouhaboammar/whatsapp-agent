@@ -122,13 +122,20 @@ const policy = fields({
   rules: array(fields({ id: string, intent: string, effect: oneOf('allow', 'require_approval', 'deny'), action: optionalString })),
 });
 
+const funnelMode = oneOf('ALL_SETTLED', 'FIRST_SUCCESS', 'QUORUM');
 const funnelMethod = fields({
-  method: string, description: optionalString, mode: optionalString,
-  targets: optional(array(unknownElement)), timeoutMs: optionalNumber,
+  method: string, description: string, mode: funnelMode,
+  targets: array(fields({ id: string, name: string, enabled: optional(boolean), method: optionalString, timeoutMs: optionalNumber })),
+  timeoutMs: number, quorumCount: optionalNumber,
 });
 const circuitBreaker = fields({
-  targetId: string, state: oneOf('CLOSED', 'OPEN', 'HALF_OPEN'), failures: optionalNumber,
-  successes: optionalNumber, totalCalls: optionalNumber, totalFailures: optionalNumber, lastFailureTime: optionalNumber,
+  targetId: string, state: oneOf('CLOSED', 'OPEN', 'HALF_OPEN'),
+  consecutiveFailures: number, consecutiveSuccesses: number, totalCalls: number, totalFailures: number,
+  lastFailureTime: optionalNumber, lastSuccessTime: optionalNumber, cooldownRemainingMs: optionalNumber,
+});
+const funnelTargetResult = fields({
+  targetId: string, targetName: string, statusCode: number, durationMs: number, success: boolean,
+  data: optional(unknownElement), error: optionalString, cancelled: optional(boolean),
 });
 const contactMemory = fields({ id: string, content: string, created_at: number });
 const conversationFold = fields({
@@ -197,8 +204,9 @@ export const responseContracts = {
   funnelMethods: fields({ methods: array(funnelMethod) }),
   funnelStats: fields({ circuitBreakers: array(circuitBreaker), activeMethodsCount: number }),
   funnelDispatch: fields({
-    traceId: optionalString, method: optionalString, success: optional(boolean),
-    error: optionalString, results: optional(array(record)),
+    traceId: string, method: string, mode: funnelMode, startedAt: string, totalDurationMs: number,
+    success: boolean, successfulCount: number, failedCount: number,
+    error: optionalString, results: array(funnelTargetResult), winningTargetId: optionalString,
   }),
   circuitBreakerReset: fields({ success: boolean, targetId: string }),
   contactMemories: fields({ memories: array(contactMemory) }),

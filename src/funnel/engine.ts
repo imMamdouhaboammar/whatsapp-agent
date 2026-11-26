@@ -1,4 +1,4 @@
-import { CircuitBreaker } from './circuit-breaker';
+import { CircuitBreaker, HedgedRequestCancelled } from './circuit-breaker';
 import type { FunnelRegistry } from './registry';
 import type {
   CircuitBreakerStats,
@@ -8,6 +8,10 @@ import type {
   FunnelTarget,
   TargetResult
 } from './types';
+
+class TargetHttpError extends Error {
+  constructor(readonly statusCode: number) { super(`Target returned HTTP ${statusCode}`); }
+}
 
 export interface FableFunnelEngineOptions {
   registry: FunnelRegistry;
@@ -39,6 +43,7 @@ export class FableFunnelEngine {
 
   async dispatch(req: FunnelDispatchRequest): Promise<FunnelReceipt> {
     const traceId = req.traceId || crypto.randomUUID();
+    const request = { ...req, traceId };
     const startedAt = new Date().toISOString();
     const startTime = performance.now();
 
@@ -77,10 +82,10 @@ export class FableFunnelEngine {
     const timeoutMs = req.timeoutMs ?? methodConfig.timeoutMs ?? 5000;
 
     if (methodConfig.mode === 'FIRST_SUCCESS') {
-      return this.dispatchHedgedRace(req, methodConfig, targets, traceId, startedAt, startTime, timeoutMs);
+      return this.dispatchHedgedRace(request, methodConfig, targets, traceId, startedAt, startTime, timeoutMs);
     }
 
-    return this.dispatchScatterGather(req, methodConfig, targets, traceId, startedAt, startTime, timeoutMs);
+    return this.dispatchScatterGather(request, methodConfig, targets, traceId, startedAt, startTime, timeoutMs);
   }
 
   private async dispatchScatterGather(
@@ -154,7 +159,7 @@ export class FableFunnelEngine {
     try {
       const targetPromises = targets.map(async (target) => {
         const targetController = new AbortController();
-        const onParentAbort = () => targetController.abort();
+        const onParentAbort = () => targetController.abort(parentController.signal.reason);
         parentController.signal.addEventListener('abort', onParentAbort, { once: true });
 
         try {
@@ -169,7 +174,7 @@ export class FableFunnelEngine {
           results.push(res);
           if (res.success && !winningTargetId) {
             winningTargetId = target.id;
-            parentController.abort(); // Cancel pending sibling requests immediately
+            parentController.abort(new HedgedRequestCancelled()); // Cancel pending sibling requests immediately
           }
           return res;
         } catch (err: unknown) {
@@ -259,11 +264,12 @@ export class FableFunnelEngine {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-        const onExternalAbort = () => controller.abort();
+        const onExternalAbort = () => controller.abort(externalSignal?.reason);
         if (externalSignal) {
           if (externalSignal.aborted) {
             clearTimeout(timeoutId);
-            throw new Error('Aborted by hedged race');
+            if (externalSignal.reason instanceof HedgedRequestCancelled) throw externalSignal.reason;
+            throw new DOMException('Dispatch timed out', 'AbortError');
           }
           externalSignal.addEventListener('abort', onExternalAbort, { once: true });
         }
@@ -293,7 +299,7 @@ export class FableFunnelEngine {
           }
 
           if (!isSuccess) {
-            throw new Error(`Target returned HTTP ${res.status}`);
+            throw new TargetHttpError(res.status);
           }
 
           return {
@@ -305,6 +311,9 @@ export class FableFunnelEngine {
             success: true,
             data
           };
+        } catch (err) {
+          if (controller.signal.reason instanceof HedgedRequestCancelled) throw controller.signal.reason;
+          throw err;
         } finally {
           clearTimeout(timeoutId);
           if (externalSignal) {
@@ -314,12 +323,14 @@ export class FableFunnelEngine {
       });
     } catch (err: unknown) {
       const durationMs = Math.round(performance.now() - start);
+      const cancelled = err instanceof HedgedRequestCancelled;
       const isAbort = err instanceof Error && err.name === 'AbortError';
       return {
         targetId: target.id,
         targetName: target.name,
         url: target.url,
-        statusCode: isAbort ? 504 : 500,
+        statusCode: cancelled ? 499 : err instanceof TargetHttpError ? err.statusCode : isAbort ? 504 : 500,
+        ...(cancelled ? { cancelled: true } : {}),
         durationMs,
         success: false,
         error: err instanceof Error ? err.message : String(err)

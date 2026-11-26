@@ -37,6 +37,7 @@ export interface TargetResult {
   statusCode: number;
   durationMs: number;
   success: boolean;
+  cancelled?: boolean;
   data?: unknown;
   error?: string;
 }
