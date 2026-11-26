@@ -1,229 +1,178 @@
-import { useState, useRef, type ChangeEvent } from 'react';
-import { Image as ImageIcon, Send, Smile, X, Check, AlertCircle } from 'lucide-react';
-import { Tag } from '@lobehub/ui';
+import { useEffect, useRef, useState, type ChangeEvent } from 'react';
+import { Check, Download, ImagePlus, Send, Square, Crop } from 'lucide-react';
 import { api } from '../api/client';
 import { useLocale } from '../locale-context';
-import { useModalDismiss } from '../hooks/useModalDismiss';
+import { ToolDialog } from './ToolDialog';
 
 interface StickerStudioModalProps {
   isOpen: boolean;
   onClose: () => void;
   selectedChatId?: string;
-  onSendSticker?: (chatId: string, stickerBase64: string) => Promise<void>;
+  selectedChatName?: string;
+  canSend?: boolean;
 }
 
-export function StickerStudioModal({ isOpen, onClose, selectedChatId, onSendSticker }: StickerStudioModalProps) {
+const MAX_SOURCE_BYTES = 10 * 1024 * 1024;
+const MAX_STICKER_BYTES = 101888;
+const SIZE = 512;
+
+async function prepareSticker(file: File, crop: boolean, caption: string): Promise<string> {
+  const bitmap = await createImageBitmap(file);
+  try {
+    if (bitmap.width * bitmap.height > 32_000_000) throw new Error('Image resolution exceeds the supported limit (32 MP)');
+    const canvas = document.createElement('canvas');
+    canvas.width = SIZE;
+    canvas.height = SIZE;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Image editing is unavailable in this browser');
+    const scale = (crop ? Math.max : Math.min)(SIZE / bitmap.width, SIZE / bitmap.height);
+    const width = bitmap.width * scale;
+    const height = bitmap.height * scale;
+    context.drawImage(bitmap, (SIZE - width) / 2, (SIZE - height) / 2, width, height);
+    if (caption.trim()) {
+      context.font = '600 28px Arial, sans-serif';
+      context.textAlign = 'center';
+      context.textBaseline = 'middle';
+      const lines: string[] = [];
+      let line = '';
+      for (const char of caption.trim()) {
+        if (context.measureText(line + char).width > 440 && line) {
+          lines.push(line);
+          line = '';
+        }
+        line += char;
+      }
+      if (line) lines.push(line);
+      const blockHeight = lines.length * 36 + 24;
+      context.fillStyle = 'rgba(0, 0, 0, 0.76)';
+      context.fillRect(12, SIZE - blockHeight - 12, SIZE - 24, blockHeight);
+      context.fillStyle = '#ffffff';
+      lines.forEach((text, index) => context.fillText(text, SIZE / 2, SIZE - blockHeight + 18 + index * 36, 440));
+    }
+    const encoded = canvas.toDataURL('image/png').split(',')[1];
+    if (!encoded) throw new Error('Could not encode image');
+    return encoded;
+  } finally {
+    bitmap.close();
+  }
+}
+
+export function StickerStudioModal(props: StickerStudioModalProps) {
+  return props.isOpen ? <StickerStudioContent {...props} /> : null;
+}
+
+function StickerStudioContent({ onClose, selectedChatId, selectedChatName, canSend }: StickerStudioModalProps) {
   const { tr } = useLocale();
-  const [imageBase64, setImageBase64] = useState<string | null>(null);
-  const mimeTypeRef = useRef<string>('image/png');
-  const [caption, setCaption] = useState<string>('');
-  const [crop, setCrop] = useState<boolean>(true);
-  const [loading, setLoading] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
-  const [generatedSticker, setGeneratedSticker] = useState<{
-    bytes: number;
-    base64: string;
-  } | null>(null);
+  const [target] = useState({ id: selectedChatId, name: selectedChatName });
+  const [source, setSource] = useState<File | null>(null);
+  const [sourceUrl, setSourceUrl] = useState('');
+  const urlRef = useRef('');
+  const [caption, setCaption] = useState('');
+  const [crop, setCrop] = useState(true);
+  const [busy, setBusy] = useState<'create' | 'send' | null>(null);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [generated, setGenerated] = useState<{ bytes: number; base64: string; mutationId: string } | null>(null);
+  const [submitted, setSubmitted] = useState(false);
+  useEffect(() => () => { if (urlRef.current) URL.revokeObjectURL(urlRef.current); }, []);
 
-  useModalDismiss(isOpen, onClose);
-
-  if (!isOpen) return null;
-
-  const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  function selectImage(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
     if (!file) return;
-
-    if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.type)) {
-      setError(tr('نوع الصورة غير مدعوم (استخدم PNG أو JPG أو WebP)', 'Unsupported image type (use PNG, JPG, or WebP)'));
+    setGenerated(null);
+    setSubmitted(false);
+    setNotice('');
+    setError('');
+    if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+    urlRef.current = '';
+    setSource(null);
+    setSourceUrl('');
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > MAX_SOURCE_BYTES || !file.size) {
+      setError(tr('اختر صورة PNG أو JPG أو WebP بحجم لا يتجاوز 10 MB', 'Choose a PNG, JPG or WebP image up to 10 MB'));
       return;
     }
+    urlRef.current = URL.createObjectURL(file);
+    setSourceUrl(urlRef.current);
+    setSource(file);
+  }
 
-    mimeTypeRef.current = file.type;
-    setError(null);
-    setGeneratedSticker(null);
-
-    const reader = new FileReader();
-    reader.addEventListener('load', () => {
-      const result = typeof reader.result === 'string' ? reader.result : '';
-      const base64Data = result.split(',')[1] ?? null;
-      setImageBase64(base64Data);
-    }, { once: true });
-    reader.readAsDataURL(file);
-  };
-
-  const handleGenerate = async () => {
-    if (!imageBase64) return;
-    setLoading(true);
-    setError(null);
-
+  async function generate() {
+    if (!source || busy) return;
+    setBusy('create');
+    setError('');
+    setNotice('');
+    setGenerated(null);
+    setSubmitted(false);
     try {
-      const res = await api.createSticker({
-        imageBase64,
-        mimeType: mimeTypeRef.current,
-        crop,
-        text: caption.trim() || undefined,
-      });
-
-      if (res.success && res.bytes !== undefined && res.stickerBase64) {
-        setGeneratedSticker({
-          bytes: res.bytes,
-          base64: res.stickerBase64,
-        });
-      } else {
-        setError(res.error || tr('فشل تحويل الاستيكر', 'Sticker creation failed'));
+      const imageBase64 = await prepareSticker(source, crop, caption);
+      const result = await api.createSticker({ imageBase64, mimeType: 'image/png' });
+      if (!result.success || !result.stickerBase64 || !Number.isInteger(result.bytes) || result.bytes === undefined || result.bytes <= 0 || result.bytes > MAX_STICKER_BYTES || atob(result.stickerBase64).length !== result.bytes) {
+        throw new Error(result.error || tr('لم يتم إنشاء ملصق صالح', 'A valid sticker could not be created'));
       }
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      setError(message || tr('فشل في المعالجة', 'Processing failed'));
+      setGenerated({ bytes: result.bytes, base64: result.stickerBase64, mutationId: crypto.randomUUID() });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : tr('تعذّر إنشاء الملصق', 'Could not create sticker'));
     } finally {
-      setLoading(false);
+      setBusy(null);
     }
-  };
+  }
 
-  const handleSend = async () => {
-    if (!generatedSticker || !selectedChatId || !onSendSticker) return;
+  async function send() {
+    if (!target.id || target.id !== selectedChatId || !generated || !canSend || busy || submitted) return;
+    setBusy('send');
+    setError('');
     try {
-      await onSendSticker(selectedChatId, generatedSticker.base64);
-      onClose();
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      setError(message || tr('فشل الإرسال', 'Failed to send'));
+      const result = await api.sendSticker(target.id, generated.base64, generated.mutationId);
+      setSubmitted(true);
+      setNotice(result.success ? tr('تم قبول الملصق للإرسال إلى المحادثة المحددة', 'Sticker accepted for delivery') :
+        tr('تم تسجيل الطلب. راجع حالة الإرسال في المحادثة قبل محاولة الإرسال مرة أخرى', 'Request recorded. Check the conversation delivery status before sending again'));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : tr('تعذّر تأكيد الإرسال. أعد المحاولة بنفس الملصق', 'Delivery could not be confirmed. Retry the same sticker'));
+    } finally {
+      setBusy(null);
     }
-  };
+  }
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-      <div className="relative w-full max-w-lg rounded-2xl bg-slate-900 border border-slate-800 shadow-2xl p-6 text-slate-100 flex flex-col gap-5">
-        <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-          <div className="flex items-center gap-2">
-            <Smile className="w-5 h-5 text-emerald-400" />
-            <h2 className="text-lg font-semibold">{tr('استوديو ملصقات واتساب', 'WhatsApp Sticker Studio')}</h2>
+  const outputUrl = generated ? `data:image/webp;base64,${generated.base64}` : '';
+  const available = Boolean(target.id && target.id === selectedChatId && canSend);
+  return <ToolDialog wide title={tr('استوديو ملصقات واتساب', 'WhatsApp Sticker Studio')}
+    description={tr('حوّل صورة إلى ملصق مربع، ثم حمّله أو أرسله في المحادثة', 'Create a square sticker, download it or send it to your conversation')}
+    onClose={onClose} busy={Boolean(busy)} footer={<>
+      <button type="button" className="wa-tool-button" onClick={onClose} disabled={Boolean(busy)}>{tr('إغلاق', 'Close')}</button>
+      {generated && <a className="wa-tool-button" href={outputUrl} download="whatsapp-sticker.webp"><Download size={16} />{tr('تحميل', 'Download')}</a>}
+      {generated ? <button type="button" className="wa-tool-button wa-tool-primary" disabled={!available || Boolean(busy) || submitted} onClick={() => void send()}><Send size={16} />{busy === 'send' ? tr('جارٍ الإرسال', 'Sending…') : tr('إرسال الملصق', 'Send sticker')}</button> :
+        <button type="button" className="wa-tool-button wa-tool-primary" disabled={!source || Boolean(busy)} onClick={() => void generate()}>{busy === 'create' ? tr('جارٍ التحويل', 'Creating…') : tr('إنشاء الملصق', 'Create sticker')}</button>}
+    </>}>
+    <div className="wa-sticker-layout">
+      <div className="wa-sticker-editor">
+        <label className="wa-tool-field"><span>{tr('الصورة الأصلية', 'Source image')}</span>
+          <input type="file" accept="image/png,image/jpeg,image/webp" disabled={Boolean(busy)} onChange={selectImage} />
+        </label>
+        <p className="wa-tool-note">PNG / JPG / WebP · 10 MB</p>
+        <fieldset className="wa-tool-field" disabled={Boolean(busy)}>
+          <legend>{tr('ملاءمة الصورة', 'Image fit')}</legend>
+          <div className="wa-tool-segment">
+            <button type="button" aria-pressed={crop} onClick={() => { setCrop(true); setGenerated(null); setNotice(''); }}><Crop size={17}/>{tr('قص مربع', 'Crop')}</button>
+            <button type="button" aria-pressed={!crop} onClick={() => { setCrop(false); setGenerated(null); setNotice(''); }}><Square size={17}/>{tr('كامل الصورة', 'Fit')}</button>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition"
-            aria-label={tr('إغلاق', 'Close')}
-          >
-            <X className="w-5 h-5" />
-          </button>
+        </fieldset>
+        <label className="wa-tool-field"><span>{tr('نص على الملصق (اختياري)', 'Sticker caption (optional)')}</span>
+          <input value={caption} maxLength={80} disabled={Boolean(busy)} onChange={event => { setCaption(event.target.value); setGenerated(null); setNotice(''); }} placeholder={tr('اكتب عبارة قصيرة', 'Add a short caption')} />
+        </label>
+        <p className="wa-tool-note">{caption.length}/80</p>
+      </div>
+      <div className="wa-sticker-preview">
+        <div className="wa-tool-row"><strong>{generated ? tr('الملصق النهائي', 'Final sticker') : tr('معاينة المصدر', 'Source preview')}</strong><span className="wa-tool-note">512 × 512</span></div>
+        <div className="wa-sticker-canvas">
+          {outputUrl ? <img src={outputUrl} alt={tr('الملصق الناتج', 'Generated sticker')} /> : sourceUrl ? <img src={sourceUrl} className={crop ? 'wa-sticker-crop' : ''} alt={tr('الصورة الأصلية', 'Source image')} /> : <div className="wa-tool-empty"><ImagePlus size={30}/><span>{tr('اختر صورة للبدء', 'Choose an image to begin')}</span></div>}
         </div>
-
-        {error && (
-          <div className="flex items-center gap-2 p-3 rounded-lg bg-red-950/50 border border-red-800/60 text-red-300 text-sm">
-            <AlertCircle className="w-4 h-4 flex-shrink-0" />
-            <span>{error}</span>
-          </div>
-        )}
-
-        {/* Upload area */}
-        <div className="flex flex-col gap-2">
-          <label htmlFor="sticker-source-file-input" className="text-sm text-slate-300 font-medium">
-            {tr('اختر صورة المصدر', 'Select source image')}
-          </label>
-          <input
-            id="sticker-source-file-input"
-            type="file"
-            accept="image/png,image/jpeg,image/webp,image/gif"
-            onChange={handleFileChange}
-            className="text-sm text-emerald-100 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-emerald-600 file:text-white hover:file:bg-emerald-500 cursor-pointer"
-          />
-        </div>
-
-        {/* Options */}
-        <div className="grid grid-cols-1 gap-3">
-          <div>
-            <label className="text-xs text-slate-400 block mb-1">
-              {tr('كتابة نص توضيحي (كابشن على الملصق - اختياري)', 'Text caption overlay (optional, max 80 chars)')}
-            </label>
-            <input
-              type="text"
-              maxLength={80}
-              value={caption}
-              onChange={(e) => setCaption(e.target.value)}
-              placeholder={tr('مثال: VIP Only أو مبروك النجاح', 'e.g. VIP Only or Good Luck')}
-              className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:border-emerald-500"
-            />
-          </div>
-
-          <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={crop}
-              onChange={(e) => setCrop(e.target.checked)}
-              className="rounded bg-slate-800 border-slate-700 text-emerald-600 focus:ring-emerald-500"
-            />
-            <span>{tr('قص مركزي مربع (Square Center Crop)', 'Center square crop')}</span>
-          </label>
-        </div>
-
-        {/* Preview section */}
-        {generatedSticker && (
-          <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <img
-                src={`data:image/webp;base64,${generatedSticker.base64}`}
-                alt="Sticker Preview"
-                className="w-16 h-16 object-contain rounded-lg border border-slate-800 bg-slate-900"
-              />
-              <div>
-                <p className="text-sm font-medium text-emerald-400 flex items-center gap-1">
-                  <Check className="w-4 h-4" />
-                  {tr('ملصق WebP جاهز', 'WebP Sticker Ready')}
-                </p>
-                <div className="mt-1">
-                  <Tag
-                    color={generatedSticker.bytes <= 101888 ? 'green' : 'volcano'}
-                    variant="filled"
-                    size="small"
-                  >
-                    {Math.round(generatedSticker.bytes / 1024)} KB / {tr('الحد 100 كيلوبايت', '100 KB limit')}
-                  </Tag>
-                </div>
-              </div>
-            </div>
-
-            <a
-              href={`data:image/webp;base64,${generatedSticker.base64}`}
-              download="whatsapp-sticker.webp"
-              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 transition"
-            >
-              {tr('تحميل WebP', 'Download')}
-            </a>
-          </div>
-        )}
-
-        <footer className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-slate-200 transition"
-          >
-            {tr('إلغاء', 'Cancel')}
-          </button>
-
-          {!generatedSticker ? (
-            <button
-              type="button"
-              disabled={!imageBase64 || loading}
-              onClick={handleGenerate}
-              className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-sm font-medium text-white transition flex items-center gap-2"
-            >
-              <ImageIcon className="w-4 h-4" />
-              <span>{loading ? tr('جاري التحويل...', 'Converting...') : tr('إنشاء الملصق', 'Create Sticker')}</span>
-            </button>
-          ) : (
-            <button
-              type="button"
-              disabled={!selectedChatId || !onSendSticker}
-              onClick={handleSend}
-              className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-sm font-medium text-white transition flex items-center gap-2"
-            >
-              <Send className="w-4 h-4" />
-              <span>{tr('إرسال للمحادثة المحددة', 'Send to Chat')}</span>
-            </button>
-          )}
-        </footer>
+        {generated && <div className="wa-tool-status"><Check size={16}/><span>WebP · {(generated.bytes / 1024).toFixed(1)} KB</span></div>}
       </div>
     </div>
-  );
+    <div className="wa-tool-recipient"><strong>{tr('المستلم', 'Recipient')}</strong><span>{target.name || target.id || tr('لم يتم تحديد محادثة', 'No conversation selected')}</span>
+      {!available && <p className="wa-tool-note">{tr('التحميل متاح. للإرسال، اختر محادثة واتساب متصلة عبر Baileys', 'Download is available. Sending requires a selected chat and a connected Baileys session')}</p>}
+    </div>
+    {error && <p className="wa-tool-error" role="alert">{error}</p>}
+    {notice && <output className="wa-tool-status">{notice}</output>}
+  </ToolDialog>;
 }

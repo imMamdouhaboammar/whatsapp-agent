@@ -1,3 +1,4 @@
+import { decodeStickerBase64 } from '../agent/media-bounds';
 import { randomUUID } from 'node:crypto';
 import type { MemoryStore } from './memory-store';
 import type { ChatMessage } from './types';
@@ -53,6 +54,7 @@ export class SendIntentService {
     sendText: SendText;
     prepareVoice?: (text: string) => Promise<Buffer | Uint8Array>;
     sendVoice?: SendVoice;
+    sendSticker?: SendVoice;
     sendTemplate?: (input: MetaTemplateTransportRequest) => Promise<{ messageId: string }>;
     verifyTemplateEligibility?: (intent: SendIntent, now: number) => Promise<VerifiedTemplateAuthorization>;
     recipientDirectory?: Pick<ContactIdentityDirectory, 'bindRecipient' | 'revalidateRecipient'>;
@@ -84,6 +86,15 @@ export class SendIntentService {
   async sendVoice(input: SendIntentInput): Promise<SendResult> {
     if (input.actionKind !== 'voice') throw new Error('Voice delivery requires a voice intent');
     this.requireAutopilotMode(input);
+    const { intent, created } = this.options.memoryStore.getSendLedger().createIntentWithStatus(this.captureRecipient(input));
+    if (created) this.observeCreated(intent);
+    return this.dispatch(intent.id);
+  }
+
+  async sendSticker(input: SendIntentInput): Promise<SendResult> {
+    if (input.actionKind !== 'sticker' || input.sourceKind !== 'ui' || !decodeStickerBase64(input.stickerBase64) || !this.options.sendSticker) {
+      throw new Error('Invalid sticker payload or unsupported sticker transport');
+    }
     const { intent, created } = this.options.memoryStore.getSendLedger().createIntentWithStatus(this.captureRecipient(input));
     if (created) this.observeCreated(intent);
     return this.dispatch(intent.id);
@@ -272,6 +283,14 @@ export class SendIntentService {
         sent = await this.options.sendVoice(destination, audio, {
           replyToMessageId: intent.replyToMessageId
         });
+      } else if (intent.actionKind === 'sticker') {
+        const bytes = decodeStickerBase64(intent.stickerBase64);
+        if (!bytes || !this.options.sendSticker) throw new Error('Sticker adapter or payload unavailable');
+        const destination = this.destinationFor(intent);
+        if (!this.fenceNetworkStart(intent.id, attempt.id)) return this.result(this.requireIntent(intent.id));
+        this.observeStage(intent, 'sending', 'ok');
+        whatsappCallMayHaveStarted = true;
+        sent = await this.options.sendSticker(destination, bytes, { replyToMessageId: intent.replyToMessageId });
       } else if (intent.actionKind === 'template') {
         const policy = await this.verifyTemplate(intent, Date.now());
         const destination = this.destinationFor(intent);
@@ -401,6 +420,7 @@ export class SendIntentService {
       actionKind: original.actionKind,
       chatId: original.chatId,
       text: original.text,
+      stickerBase64: original.stickerBase64,
       replyToMessageId: original.replyToMessageId,
       policyRevision: original.policyRevision,
       recipientBinding: original.recipientBinding

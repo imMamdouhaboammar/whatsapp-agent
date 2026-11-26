@@ -23,7 +23,6 @@ const { ModeratorDrawer } = await vite.ssrLoadModule('/src/components/ModeratorD
 const { App } = await vite.ssrLoadModule('/src/App.tsx');
 const { PersonaSettingsPage } = await vite.ssrLoadModule('/src/components/PersonaSettingsPage.tsx');
 const { OwnerAccessLogin, OwnerSignOutButton } = await vite.ssrLoadModule('/src/components/OwnerAccessGate.tsx');
-const { SimulatorModal } = await vite.ssrLoadModule('/src/components/SimulatorModal.tsx');
 
 const chat = {
   id: '201000000000@s.whatsapp.net',
@@ -188,7 +187,6 @@ await test('Assistant approval is available in English without translating user 
     onSelectChat: () => {},
     onApproveDraft: noop,
     onRejectDraft: noop,
-    onOpenSimulator: () => {}
   }));
   assert.match(html, /AI assistant/);
   assert.match(html, /Review required/);
@@ -211,7 +209,8 @@ await test('Assistant settings provides a bilingual, accessible multi-section la
   assert.match(en, /Models &amp; providers/);
   assert.match(en, /Core instructions/);
   assert.match(en, /Save changes/);
-  assert.match(en, /Try your assistant/);
+  assert.doesNotMatch(en, /Try your assistant|Test a real response/);
+  assert.doesNotMatch(ar, /جرّب مساعدك|اختبار رد حقيقي/);
   assert.match(ar, /المساعد الذكي/);
   assert.match(ar, /النماذج ومزودو الخدمة/);
   assert.match(ar, /التعليمات الأساسية/);
@@ -287,16 +286,4 @@ await test('Owner can explicitly sign out in Arabic and English when access prot
   assert.match(ar, /تسجيل الخروج/);
   assert.match(en, /Sign out/);
   assert.match(en, /type="button"/);
-});
-
-await test('Assistant preview explains that messages are not sent or saved', () => {
-  const props = { isOpen: true, onClose: () => {}, onSimulate: async () => ({}) };
-  const en = render('en', React.createElement(SimulatorModal, props));
-  const ar = render('ar', React.createElement(SimulatorModal, props));
-  assert.match(en, /Private preview/);
-  assert.match(en, /No messages are sent or saved/);
-  assert.match(ar, /معاينة خاصة/);
-  assert.match(ar, /مش بيبعت رسائل ولا بيحفظ محادثات/);
-  assert.match(en, /maxLength="4000"/);
-  assert.match(en, /maxLength="120"/);
 });

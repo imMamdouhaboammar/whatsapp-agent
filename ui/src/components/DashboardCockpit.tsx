@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { BookOpen, CheckCheck, ContactRound, MessageCircle, Network, Play, Radio, Settings2, Smartphone, Smile, Wifi, WifiOff, X } from 'lucide-react';
+import { BookOpen, CheckCheck, ContactRound, MessageCircle, Network, Radio, Settings2, Smartphone, Smile, Wifi, WifiOff, X } from 'lucide-react';
 import { Gemini } from '@lobehub/icons';
 import { WhatsApp } from '@lobehub/ui/icons';
 import { Badge as AstryxBadge } from '@astryxdesign/core/Badge';
@@ -17,13 +17,11 @@ import { FunnelPage } from './FunnelPage';
 import { ModeratorDrawer, type ModeratorThought } from './ModeratorDrawer';
 import { PairingModal } from './PairingModal';
 import { PersonaSettingsPage } from './PersonaSettingsPage';
-import { SimulatorModal } from './SimulatorModal';
 import { StickerStudioModal } from './StickerStudioModal';
 import { OwnerSignOutButton } from './OwnerAccessGate';
 import { useOwnerAccess } from './owner-access-context';
 import { useLocale } from '../locale-context';
 
-const handleSimulate = (text: string, senderName?: string) => api.simulate(text, senderName);
 
 const handleConnect = async (phone?: string, refresh?: boolean) => {
   await api.connect(phone, refresh);
@@ -149,6 +147,9 @@ export function DashboardCockpit() {
   const [latestThought, setLatestThought] = useState<ModeratorThought>();
 
   // Ref to always have the latest selectedChatId in SSE and polling callbacks
+  const leaveGuardRef = useRef<((target: () => void) => void) | null>(null);
+  const registerLeaveGuard = useCallback((guard: ((target: () => void) => void) | null) => { leaveGuardRef.current = guard; }, []);
+  const guardNavigation = (target: () => void) => { if (leaveGuardRef.current) leaveGuardRef.current(target); else target(); };
   const selectedChatIdRef = useRef<string | undefined>(selectedChatId);
   // WA-020: generation-gated request cycles; stale responses never apply.
   const messageSyncRef = useRef(new ChatRequestCoordinator());
@@ -166,7 +167,6 @@ export function DashboardCockpit() {
     typeof window !== 'undefined' && window.location.pathname === '/funnel' ? 'funnel' :
     typeof window !== 'undefined' && window.location.pathname === '/broadcast' ? 'broadcast' : 'chats'
   );
-  const [isSimulatorOpen, setIsSimulatorOpen] = useState(false);
   const [isStickerStudioOpen, setIsStickerStudioOpen] = useState(false);
   const [inspectorView, setInspectorView] = useState<'assistant' | 'drafts' | 'memory'>('assistant');
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -682,11 +682,10 @@ export function DashboardCockpit() {
             <span>{status?.state === 'connected' ? tr('متصل', 'Connected') : status?.state === 'connecting' ? tr('جارٍ الاتصال', 'Connecting') : tr('ربط واتساب', 'Link WhatsApp')}</span>
           </button>
           <span className="wa-header-separator" aria-hidden="true" />
-          <button type="button" className="wa-icon-button wa-simulator-trigger" onClick={() => setIsSimulatorOpen(true)} aria-label={tr('اختبار رد المساعد', 'Test the assistant')} title={tr('اختبار رد المساعد', 'Test the assistant')}><Play size={19} /></button>
           <button type="button" className="wa-icon-button" onClick={() => setIsStickerStudioOpen(true)} aria-label={tr('استوديو الملصقات', 'Sticker Studio')} title={tr('استوديو الملصقات', 'Sticker Studio')}><Smile size={19} /></button>
-          <button type="button" className={'wa-icon-button ' + (page === 'broadcast' ? 'is-active' : '')} onClick={openBroadcast} aria-label={tr('البث الذكي', 'Smart Broadcast')} title={tr('البث الذكي', 'Smart Broadcast')}><Radio size={19} /></button>
-          <button type="button" className={'wa-icon-button ' + (page === 'funnel' ? 'is-active' : '')} onClick={openFunnel} aria-label={tr('محرك التوزيع المتوازي', 'Scatter-Gather Funnel')} title={tr('محرك التوزيع المتوازي', 'Scatter-Gather Funnel')}><Network size={19} /></button>
-          <button type="button" className={'wa-icon-button ' + (page === 'brain' ? 'is-active' : '')} onClick={openBrain} aria-label={tr('ذاكرة البراند', 'Brand Brain')} title={tr('ذاكرة البراند', 'Brand Brain')}><BookOpen size={19} /></button>
+          <button type="button" className={'wa-icon-button ' + (page === 'broadcast' ? 'is-active' : '')} onClick={() => guardNavigation(openBroadcast)} aria-label={tr('البث الذكي', 'Smart Broadcast')} title={tr('البث الذكي', 'Smart Broadcast')}><Radio size={19} /></button>
+          <button type="button" className={'wa-icon-button ' + (page === 'funnel' ? 'is-active' : '')} onClick={() => guardNavigation(openFunnel)} aria-label={tr('محرك التوزيع المتوازي', 'Scatter-Gather Funnel')} title={tr('محرك التوزيع المتوازي', 'Scatter-Gather Funnel')}><Network size={19} /></button>
+          <button type="button" className={'wa-icon-button ' + (page === 'brain' ? 'is-active' : '')} onClick={() => guardNavigation(openBrain)} aria-label={tr('ذاكرة البراند', 'Brand Brain')} title={tr('ذاكرة البراند', 'Brand Brain')}><BookOpen size={19} /></button>
           <button type="button" className={'wa-icon-button ' + (page === 'settings' ? 'is-active' : '')} onClick={openSettings} aria-label={tr('إعدادات المساعد', 'Assistant settings')} title={tr('إعدادات المساعد', 'Assistant settings')}><Settings2 size={19} /></button>
           {ownerAccess.required && <>
             <span className="wa-header-separator" aria-hidden="true" />
@@ -700,7 +699,7 @@ export function DashboardCockpit() {
         </div>
       </header>
       {page === 'settings' ? (
-        <PersonaSettingsPage initialPersona={persona} connectionState={status?.state} error={personaLoadFailed} onRetry={() => { setPersonaLoadFailed(false); void loadInitialData(); }} onClose={closeSettings} onOpenKnowledge={openBrain} onOpenSimulator={() => setIsSimulatorOpen(true)} onSave={handleSavePersona} />
+        <PersonaSettingsPage initialPersona={persona} connectionState={status?.state} error={personaLoadFailed} onRetry={() => { setPersonaLoadFailed(false); void loadInitialData(); }} onClose={closeSettings} onOpenKnowledge={openBrain} registerLeaveGuard={registerLeaveGuard} onSave={handleSavePersona} />
       ) : page === 'brain' ? (
         <BrandBrainPage onClose={closeBrain} />
       ) : page === 'funnel' ? (
@@ -764,8 +763,7 @@ export function DashboardCockpit() {
       </div>
       )}
       <PairingModal isOpen={isPairingOpen} status={status} onClose={() => setIsPairingOpen(false)} onConnect={handleConnect} onDisconnect={handleDisconnect} />
-      <SimulatorModal isOpen={isSimulatorOpen} onClose={() => setIsSimulatorOpen(false)} onSimulate={handleSimulate} />
-      <StickerStudioModal isOpen={isStickerStudioOpen} onClose={() => setIsStickerStudioOpen(false)} selectedChatId={selectedChatId} onSendSticker={async (chatId, _b64) => { await api.sendMessage(chatId, '[Sticker]'); }} />
+      <StickerStudioModal isOpen={isStickerStudioOpen} onClose={() => setIsStickerStudioOpen(false)} selectedChatId={selectedChatId} selectedChatName={selectedChat?.name} canSend={status?.state === 'connected' && status.transportMode !== 'meta-cloud'} />
     </div>
   );
 }

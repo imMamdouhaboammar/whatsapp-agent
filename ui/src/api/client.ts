@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatSummary, ModeratorPersona, PolicyConfig, SystemStatus, AgentDraft, ContactDossier, WorkspaceStats, WorkspaceCleanResult, ContextBudgetStatus, ConversationFold, BroadcastCampaignSummary, BroadcastRecipient, EligibleBroadcastContact, BroadcastTransport, BroadcastApprovalMode, BroadcastRichContent, AgentDecision } from './types';
+import type { ChatMessage, ChatSummary, ModeratorPersona, PolicyConfig, SystemStatus, AgentDraft, AgentDecision, ContactDossier, WorkspaceStats, WorkspaceCleanResult, ContextBudgetStatus, ConversationFold, BroadcastCampaignSummary, BroadcastRecipient, EligibleBroadcastContact, BroadcastTransport, BroadcastApprovalMode, BroadcastRichContent } from './types';
 import { record, responseContracts, type ResponseContract } from './response-contracts';
 
 const BASE_URL = '/api';
@@ -331,6 +331,14 @@ export const api = {
       body: JSON.stringify({ style })
     });
     return handleResponse(res, 'Failed to update chat style', responseContracts.updatedStyle);
+  },
+
+  async sendSticker(chatId: string, stickerBase64: string, clientMutationId: string): Promise<{ success: boolean; message?: ChatMessage; state: string; intentId: string }> {
+    const res = await fetch(`${BASE_URL}/chats/${encodeURIComponent(chatId)}/stickers`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stickerBase64, clientMutationId })
+    });
+    return handleResponse(res, 'Failed to send sticker', responseContracts.sendMessage);
   },
 
   async createSticker(data: { imageBase64: string; mimeType: string; crop?: boolean; text?: string }): Promise<StickerResult> {

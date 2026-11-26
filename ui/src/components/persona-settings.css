@@ -205,12 +205,6 @@
 .wa-ps-switch-row input::after { content: ''; display: block; width: 15px; height: 15px; border-radius: 50%; background: white; position: absolute; top: 2px; inset-inline-start: 2px; box-shadow: 0 1px 2px #0003; transition: inset-inline-start .15s ease; }
 .wa-ps-switch-row input:checked { background: var(--ps-green); }
 .wa-ps-switch-row input:checked::after { inset-inline-start: 17px; }
-.wa-ps-preview-message { display: flex; flex-direction: column; align-items: stretch; gap: 13px; padding: 17px 14px; border-radius: 10px; background: #f6f6f2; }
-.wa-ps-example-label { color: #89938b; font-size: 9px; text-transform: uppercase; letter-spacing: .08em; text-align: center; }
-.wa-ps-bubble { max-width: 89%; padding: 11px 13px; border: 1px solid #e5e9e3; border-radius: 10px; background: #fff; font-size: 11px; line-height: 1.8; color: #283a32; }
-.wa-ps-bubble.is-incoming { align-self: flex-start; border-end-start-radius: 3px; }
-.wa-ps-bubble.is-outgoing { align-self: flex-end; background: #ddf5e1; border-color: #cfead6; border-end-end-radius: 3px; }
-.wa-ps-test-button { width: 100%; margin-top: 16px; }
 .wa-ps-status-line { display: flex; align-items: center; gap: 8px; margin: 17px 0 10px; color: #577064; font-size: 11px; font-weight: 700; }
 .wa-ps-status-dot { width: 8px; height: 8px; border-radius: 50%; background: #a3b0a7; }
 .wa-ps-status-dot.is-online { background: #07a66b; box-shadow: 0 0 0 3px #07a66b19; }

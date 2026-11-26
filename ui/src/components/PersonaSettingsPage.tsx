@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Activity, AlertTriangle, ArrowLeft, ArrowRight, BookOpen, Bot, CheckCircle2, ChevronDown,
   CircleHelp, Database, HardDrive, Headphones, LockKeyhole, LogOut, MessageCircle,
-  Mic2, Puzzle, RefreshCw, RotateCcw, Save, Send, Settings2, ShieldCheck,
+  Mic2, Puzzle, RefreshCw, RotateCcw, Save, Settings2, ShieldCheck,
   SlidersHorizontal, Sparkles, Trash2, Users, Wifi, Zap
 } from 'lucide-react';
 import type { ModeratorPersona, PolicyConfig, SystemStatus, WorkspaceStats } from '../api/types';
@@ -11,6 +11,7 @@ import { api } from '../api/client';
 import { Gemini, Google, ModelIcon } from '@lobehub/icons';
 import { AgentAvatar } from '@lobehub/ui';
 import { useLocale } from '../locale-context';
+import { ConfirmAction } from './ToolDialog';
 import settingsCss from './persona-settings.css?url';
 
 type SettingsSection = 'assistant' | 'models' | 'data';
@@ -18,7 +19,7 @@ type SettingsSection = 'assistant' | 'models' | 'data';
 interface PersonaSettingsPageProps {
   onClose: () => void;
   onOpenKnowledge?: () => void;
-  onOpenSimulator?: () => void;
+  registerLeaveGuard?: (guard: ((target: () => void) => void) | null) => void;
   connectionState?: SystemStatus['state'];
   initialPersona?: ModeratorPersona;
   error?: boolean;
@@ -62,7 +63,7 @@ export function PersonaSettingsPage(props: PersonaSettingsPageProps) {
   return <PersonaEditor {...props} initialPersona={props.initialPersona} />;
 }
 
-function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulator, connectionState, onSave }: PersonaSettingsPageProps & { initialPersona: ModeratorPersona }) {
+function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, registerLeaveGuard, connectionState, onSave }: PersonaSettingsPageProps & { initialPersona: ModeratorPersona }) {
   const { language, tr, direction } = useLocale();
   const [active, setActive] = useState<SettingsSection>(sectionFromPath);
   const [savedPersona, setSavedPersona] = useState<ModeratorPersona>(() => ({ ...initialPersona, rules: [...initialPersona.rules] }));
@@ -75,6 +76,7 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
   const [statsLoading, setStatsLoading] = useState(false);
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
   const [feedbackNotice, setFeedbackNotice] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [confirmation, setConfirmation] = useState<{ title: string; description: string; confirmLabel: string; run: () => void } | null>(null);
   const [showFactoryConfirm, setShowFactoryConfirm] = useState(false);
   const factoryDialogRef = useRef<HTMLDialogElement>(null);
   const [factoryConfirmText, setFactoryConfirmText] = useState('');
@@ -146,12 +148,19 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
     }
   };
 
-  const handleResetTarget = async (target: 'chats' | 'drafts' | 'memories' | 'learning' | 'session', label: string) => {
-    const confirmMsg = tr(
+  const handleResetTarget = (target: 'chats' | 'drafts' | 'memories' | 'learning' | 'session', label: string) => {
+    setConfirmation({
+      title: tr('تأكيد الحذف', 'Confirm deletion'),
+      description: tr(
       `هل أنت متأكد من رغبتك في حذف ${label}؟ هذا الإجراء لا يمكن التراجع عنه.`,
       `Are you sure you want to clear ${label}? This cannot be undone.`
-    );
-    if (!window.confirm(confirmMsg)) return;
+      ),
+      confirmLabel: tr('حذف', 'Delete'),
+      run: () => void performResetTarget(target, label)
+    });
+  };
+
+  const performResetTarget = async (target: 'chats' | 'drafts' | 'memories' | 'learning' | 'session', label: string) => {
 
     setActionInProgress(target);
     setFeedbackNotice(null);
@@ -204,12 +213,6 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
-  useEffect(() => {
-    if (!dirty) return undefined;
-    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
-    window.addEventListener('beforeunload', warn);
-    return () => window.removeEventListener('beforeunload', warn);
-  }, [dirty]);
 
   const setField = <K extends keyof ModeratorPersona>(key: K, value: ModeratorPersona[K]) => {
     setPersona((previous) => ({ ...previous, [key]: value }));
@@ -224,10 +227,20 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
     setFeedbackNotice(null);
   };
 
-  const leave = (target: () => void) => {
-    if (dirty && !window.confirm(tr('عندك تغييرات مش محفوظة، هل تريد المغادرة؟', 'You have unsaved changes. Leave without saving?'))) return;
-    target();
-  };
+  const leave = useCallback((target: () => void) => {
+    if (!dirty) { target(); return; }
+    setConfirmation({
+      title: tr('تغييرات غير محفوظة', 'Unsaved changes'),
+      description: tr('هل تريد المغادرة دون حفظ التغييرات؟', 'Leave without saving your changes?'),
+      confirmLabel: tr('مغادرة دون حفظ', 'Leave without saving'),
+      run: target
+    });
+  }, [dirty, tr]);
+
+  useEffect(() => {
+    registerLeaveGuard?.(leave);
+    return () => registerLeaveGuard?.(null);
+  }, [registerLeaveGuard, leave]);
 
   const reset = () => { setPersona({ ...savedPersona, rules: [...savedPersona.rules] }); setError(''); setSavedNotice(false); };
 
@@ -475,7 +488,7 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
                         <button
                           type="button"
                           className="wa-ps-button wa-ps-button-danger"
-                          onClick={() => void handleResetTarget('chats', tr('كل المحادثات والرسائل', 'All chats and messages'))}
+                          onClick={() => handleResetTarget('chats', tr('كل المحادثات والرسائل', 'All chats and messages'))}
                           disabled={actionInProgress !== null}
                         >
                           <Trash2 size={15} />
@@ -491,7 +504,7 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
                         <button
                           type="button"
                           className="wa-ps-button wa-ps-button-danger"
-                          onClick={() => void handleResetTarget('drafts', tr('المسودات المقترحة', 'Drafts'))}
+                          onClick={() => handleResetTarget('drafts', tr('المسودات المقترحة', 'Drafts'))}
                           disabled={actionInProgress !== null}
                         >
                           <Trash2 size={15} />
@@ -507,7 +520,7 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
                         <button
                           type="button"
                           className="wa-ps-button wa-ps-button-danger"
-                          onClick={() => void handleResetTarget('memories', tr('ذاكرة العملاء', 'Contact memories'))}
+                          onClick={() => handleResetTarget('memories', tr('ذاكرة العملاء', 'Contact memories'))}
                           disabled={actionInProgress !== null}
                         >
                           <Trash2 size={15} />
@@ -523,7 +536,7 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
                         <button
                           type="button"
                           className="wa-ps-button wa-ps-button-danger"
-                          onClick={() => void handleResetTarget('learning', tr('قواعد التعلم', 'Learning rules'))}
+                          onClick={() => handleResetTarget('learning', tr('قواعد التعلم', 'Learning rules'))}
                           disabled={actionInProgress !== null}
                         >
                           <Trash2 size={15} />
@@ -539,7 +552,7 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
                         <button
                           type="button"
                           className="wa-ps-button wa-ps-button-danger"
-                          onClick={() => void handleResetTarget('session', tr('جلسة واتساب', 'WhatsApp session'))}
+                          onClick={() => handleResetTarget('session', tr('جلسة واتساب', 'WhatsApp session'))}
                           disabled={actionInProgress !== null}
                         >
                           <LogOut size={15} />
@@ -575,13 +588,12 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
             <aside className="wa-ps-context-column" aria-label={tr('معلومات مساعدة', 'Contextual information')}>
               {active === 'assistant' ? (
                 <>
-                  <section className="wa-ps-card wa-ps-preview"><div className="wa-ps-card-head"><div><h2>{tr('جرّب مساعدك', 'Try your assistant')}</h2><p>{tr('اختبر طريقة تعامله مع رسالة تجريبية', 'Preview how the agent handles a sample message')}</p></div></div><div className="wa-ps-preview-message"><div className="wa-ps-example-label">{tr('مثال توضيحي', 'Illustrative example')}</div><div className="wa-ps-bubble is-incoming">{tr('مرحبًا، ممكن أعرف تفاصيل التوصيل؟', 'Hi! Can I get the delivery details?')}</div><div className="wa-ps-bubble is-outgoing">{tr('أهلًا بيك، أكيد أقدر أساعدك، تحب التوصيل لأي مدينة؟', 'Of course! What city would you like delivery to?')}</div></div><button type="button" className="wa-ps-button wa-ps-button-outline wa-ps-test-button" onClick={onOpenSimulator} disabled={!onOpenSimulator}><Send size={16} />{tr('اختبار رد حقيقي', 'Test a real response')}{language === 'ar' ? <ArrowLeft size={15} /> : <ArrowRight size={15} />}</button></section>
                   <section className="wa-ps-card"><div className="wa-ps-card-head"><div><h2>{tr('حالة المساعد', 'Agent status')}</h2><p>{tr('معلومات من إعداداتك الحالية', 'Your current configuration')}</p></div></div><div className="wa-ps-status-line"><span className={`wa-ps-status-dot ${connected ? 'is-online' : ''}`} />{connected ? tr('واتساب متصل', 'WhatsApp connected') : tr('واتساب غير متصل', 'WhatsApp not connected')}</div><div className="wa-ps-detail-row"><span>{tr('النموذج', 'AI model')}</span><strong dir="ltr">{persona.model}</strong></div><div className="wa-ps-detail-row"><span>{tr('اللغة', 'Language')}</span><strong dir="auto">{persona.language}</strong></div></section>
                 </>
               ) : active === 'models' ? (
                 <>
                   <section className="wa-ps-card wa-ps-explainer"><h2>{tr('كيف تُستخدم الإعدادات؟', 'How these settings work')}</h2><ol><li><strong>{tr('رسالة واردة', 'Incoming message')}</strong><p>{tr('العميل يبعت رسالة على واتساب', 'A customer sends a WhatsApp message')}</p></li><li><strong>{tr('فهم السياق', 'Model evaluates context')}</strong><p>{tr('النموذج يراجع التعليمات والمعلومات المتاحة', 'The model checks instructions and available context')}</p></li><li><strong>{tr('اختيار الرد', 'Agent responds')}</strong><p>{tr('المساعد يحدد الرد المناسب حسب إعداداتك', 'The agent chooses a response using your settings')}</p></li></ol></section>
-                  <section className="wa-ps-card"><h2>{tr('التكوين الحالي', 'Current configuration')}</h2><div className="wa-ps-detail-row"><span>{tr('المزود', 'Provider')}</span><strong>Google Gemini</strong></div><div className="wa-ps-detail-row"><span>{tr('النموذج', 'Model')}</span><strong dir="ltr">{persona.model}</strong></div><div className="wa-ps-detail-row"><span>{tr('الصوت', 'Voice')}</span><strong dir="ltr">{persona.voiceName || 'kore'}</strong></div><button type="button" className="wa-ps-button wa-ps-button-outline wa-ps-test-button" onClick={onOpenSimulator} disabled={!onOpenSimulator}><Send size={16} />{tr('اختبار الاستجابة', 'Test response')}</button></section>
+                  <section className="wa-ps-card"><h2>{tr('التكوين الحالي', 'Current configuration')}</h2><div className="wa-ps-detail-row"><span>{tr('المزود', 'Provider')}</span><strong>Google Gemini</strong></div><div className="wa-ps-detail-row"><span>{tr('النموذج', 'Model')}</span><strong dir="ltr">{persona.model}</strong></div><div className="wa-ps-detail-row"><span>{tr('الصوت', 'Voice')}</span><strong dir="ltr">{persona.voiceName || 'kore'}</strong></div></section>
                 </>
               ) : (
                 <>
@@ -627,6 +639,7 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, onOpenSimulat
           {error && <p className="wa-ps-error" role="alert">{error}</p>}
           <div className="wa-ps-bottom-space" />
         </div>
+        {confirmation && <ConfirmAction title={confirmation.title} description={confirmation.description} confirmLabel={confirmation.confirmLabel} onClose={() => setConfirmation(null)} onConfirm={() => { const action = confirmation.run; setConfirmation(null); action(); }} />}
         {showFactoryConfirm && (
           <dialog
             ref={factoryDialogRef}
