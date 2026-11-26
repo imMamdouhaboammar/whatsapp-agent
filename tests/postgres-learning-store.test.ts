@@ -5,20 +5,29 @@ import { rmSync, existsSync, mkdirSync } from 'node:fs';
 
 const TEST_DIR = './data/test-pg-learning-' + Date.now();
 
+interface LearningRow {
+  content: string;
+  version: number;
+  updated_at: number;
+}
+
+function textParameter(value: unknown): string {
+  if (typeof value !== 'string') throw new Error('Expected a text SQL parameter');
+  return value;
+}
+
 describe('PostgresLearningStore for Supabase PostgreSQL', () => {
   it('correctly executes saveLearningState and getLearningState against PostgreSQL client', async () => {
-    const memoryTable = new Map<string, any>();
+    const memoryTable = new Map<string, LearningRow>();
 
     // Mock PostgreSQL SQL client
-    const mockSql = ((strings: TemplateStringsArray, ...values: any[]) => {
+    const mockSql = (strings: TemplateStringsArray, ...values: unknown[]) => {
       const query = strings.join('?').replace(/\s+/g, ' ').trim();
       
       if (query.includes('INSERT INTO wa_agent.learning_states')) {
-        const id = values[0];
-        const _brandId = values[1];
-        const _stateType = values[2];
-        const content = values[3];
-        const now = values[4];
+        const id = textParameter(values[0]);
+        const content = textParameter(values[3]);
+        const now = Number(values[4] ?? Date.now());
         memoryTable.set(id, {
           content,
           version: (memoryTable.get(id)?.version || 0) + 1,
@@ -28,7 +37,7 @@ describe('PostgresLearningStore for Supabase PostgreSQL', () => {
       }
 
       if (query.includes('FROM wa_agent.learning_states')) {
-        const id = values[0];
+        const id = textParameter(values[0]);
         const existing = memoryTable.get(id);
         if (!existing) return Promise.resolve([]);
         return Promise.resolve([existing]);
@@ -47,7 +56,7 @@ describe('PostgresLearningStore for Supabase PostgreSQL', () => {
       }
 
       return Promise.resolve([]);
-    }) as any;
+    };
 
     const pgStore = new PostgresLearningStore({ sql: mockSql });
 
@@ -71,21 +80,21 @@ describe('PostgresLearningStore for Supabase PostgreSQL', () => {
     if (!existsSync(TEST_DIR)) mkdirSync(TEST_DIR, { recursive: true });
 
     try {
-      const remoteDb = new Map<string, any>();
-      const mockSql = ((strings: TemplateStringsArray, ...values: any[]) => {
+      const remoteDb = new Map<string, LearningRow>();
+      const mockSql = (strings: TemplateStringsArray, ...values: unknown[]) => {
         const query = strings.join('?').trim();
         if (query.includes('INSERT INTO wa_agent.learning_states')) {
-          const id = values[0];
-          remoteDb.set(id, { content: values[3], version: 1, updated_at: values[4] });
+          const id = textParameter(values[0]);
+          remoteDb.set(id, { content: textParameter(values[3]), version: 1, updated_at: Number(values[4] ?? Date.now()) });
           return Promise.resolve([]);
         }
         if (query.includes('SELECT content, version, updated_at FROM wa_agent.learning_states')) {
-          const id = values[0];
+          const id = textParameter(values[0]);
           const entry = remoteDb.get(id);
           return Promise.resolve(entry ? [entry] : []);
         }
         return Promise.resolve([]);
-      }) as any;
+      };
 
       const pgStore = new PostgresLearningStore({ sql: mockSql });
 
@@ -99,11 +108,11 @@ describe('PostgresLearningStore for Supabase PostgreSQL', () => {
       memoryManager.addEnforcedRule('NEVER bypass Supabase PostgreSQL in production');
 
       // Allow background microtask to complete
-      await new Promise(r => setTimeout(r, 10));
+      await new Promise((_resolve) => setTimeout(_resolve, 10));
 
       const remoteState = remoteDb.get('brand_cloud_9:workbook');
       expect(remoteState).toBeDefined();
-      expect(remoteState.content).toContain('NEVER bypass Supabase PostgreSQL in production');
+      expect(remoteState?.content).toContain('NEVER bypass Supabase PostgreSQL in production');
     } finally {
       if (existsSync(TEST_DIR)) {
         rmSync(TEST_DIR, { recursive: true, force: true });

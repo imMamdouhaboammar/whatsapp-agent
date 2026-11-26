@@ -1,13 +1,14 @@
 import {test,expect} from 'bun:test';
 import {BrandKnowledgeStore} from '../src/agent/brand-knowledge';
 import {ActionJournal,ToolRegistry} from '../src/agent/tools';
+import { isRecord } from '../src/mcp/records';
 import {AutonomousOperator} from '../src/agent/autonomous-operator';
 
 test('E01/E10 agent answers Arabic stock request only from authorized provider with evidence',async()=>{
  const knowledge=new BrandKnowledgeStore({dbPath:':memory:'});
  const journal=new ActionJournal({dbPath:':memory:'});
  const registry=new ToolRegistry(journal);
- registry.register('brand',{name:'inventory.lookup',kind:'read',scope:'inventory:read',validate:(v):v is {sku:string}=>typeof (v as any)?.sku==='string',execute:async ({sku})=>({sku,stock:4,price:120,currency:'SAR',updatedAt:'2026-11-06'})});
+ registry.register('brand',{name:'inventory.lookup',kind:'read',scope:'inventory:read',validate:(v):v is {sku:string}=>isRecord(v) && typeof v.sku==='string',execute:async ({sku})=>({sku,stock:4,price:120,currency:'SAR',updatedAt:'2026-11-06'})});
  const operator=new AutonomousOperator({knowledge,registry,journal});
  const result=await operator.resolve({brandId:'brand',contactId:'customer',text:'هل SKU-42 موجود وبكام؟'});
  expect(result.status).toBe('answered');
@@ -24,8 +25,8 @@ test('E05 public current question uses dated web evidence rather than inventing 
  const journal=new ActionJournal({dbPath:':memory:'});
  const registry=new ToolRegistry(journal);
  const calls:string[]=[];
- const scout={search:async(input:any)=>{calls.push(input.question);return {status:'grounded',answer:'تحديث رسمي',sources:[{url:'https://www.spa.gov.sa/test',observedAt:1700000000000,title:'مصدر رسمي'}]};}};
- const operator=new AutonomousOperator({knowledge,registry,journal,webScout:scout as any});
+ const scout={search:async(input:{question:string})=>{calls.push(input.question);return {status:'grounded' as const,answer:'تحديث رسمي',sources:[{url:'https://www.spa.gov.sa/test',observedAt:1700000000000,title:'مصدر رسمي',publisher:'SPA'}]};}};
+ const operator=new AutonomousOperator({knowledge,registry,journal,webScout:scout});
  const result=await operator.resolve({brandId:'brand',contactId:'customer',text:'ما آخر أخبار النقل اليوم؟'});
  expect(result.status).toBe('answered');
  expect(result.evidence.some(e=>e.kind==='web' && e.source==='https://www.spa.gov.sa/test')).toBe(true);
@@ -56,4 +57,22 @@ test('unknown sku does not invent stock/price or trigger a write',async()=>{
  expect(result.status).toBe('clarification');
  expect(result.reply).not.toMatch(/\b\d+\s*(SAR|ريال)\b/);
  knowledge.close();journal.close();
+});
+
+test('invalid provider metadata cannot be presented as stock evidence',async()=>{
+ const knowledge=new BrandKnowledgeStore({dbPath:':memory:'});
+ const journal=new ActionJournal({dbPath:':memory:'});
+ try {
+  const registry=new ToolRegistry(journal);
+  registry.register('brand',{
+   name:'inventory.lookup',kind:'read',scope:'inventory:read',
+   validate:(v):v is {sku:string}=>typeof v==='object' && v!==null && 'sku' in v && typeof v.sku==='string',
+   execute:async ({sku})=>({sku,stock:4,price:120,currency:42,sourceUrl:{},observedAt:'today'})
+  });
+  const result=await new AutonomousOperator({knowledge,registry,journal}).resolve({brandId:'brand',contactId:'customer',text:'Is SKU-42 in stock?'});
+  expect(result.reply).toContain('4 in stock');
+  expect(result.reply).not.toContain('120');
+  expect(result.evidence[0]?.source).toBe('inventory.lookup');
+  expect(typeof result.evidence[0]?.observedAt).toBe('number');
+ } finally {knowledge.close();journal.close();}
 });

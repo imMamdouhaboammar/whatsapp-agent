@@ -36,10 +36,11 @@ describe('WA-025 privacy-safe logging: no canary leaks, actionable codes remain'
       const mgr = new DualMemoryManager({
         storageDir: dataDir,
         persistenceStore: {
+          saveLearningState: async () => {},
           getLearningState: async () => {
             throw new Error(`connect ECONNREFUSED ${CANARY_URL} password=${CANARY_SECRET} phone ${CANARY_PHONE}`);
           }
-        } as any
+        }
       });
       await mgr.hydrateFromPersistence();
       const out = captured();
@@ -62,10 +63,11 @@ describe('WA-025 privacy-safe logging: no canary leaks, actionable codes remain'
       const mgr = new DualMemoryManager({
         storageDir: dataDir,
         persistenceStore: {
+          saveLearningState: async () => {},
           getLearningState: async () => {
             throw new Error(`FATAL: password authentication failed for user "${CANARY_SECRET}" at ${CANARY_URL}`);
           }
-        } as any
+        }
       });
       await mgr.syncFromPersistenceStore();
       const out = captured();
@@ -79,19 +81,18 @@ describe('WA-025 privacy-safe logging: no canary leaks, actionable codes remain'
 
   it('turn failure reasoning never embeds raw provider error content', async () => {
     const { AgentTurnCoordinator } = await import('../src/agent/turn-coordinator');
-    const moderator: any = {
-      processInboundMessage: async () => {
-        throw new Error(`Gemini API Error (400): echo of customer text with token ${CANARY_SECRET} and phone ${CANARY_PHONE}`);
-      }
-    };
     const coordinator = new AgentTurnCoordinator({
-      moderator,
-      memory: { getChat: () => undefined } as any,
-      operator: { resolve: async () => undefined } as any,
+      moderator: {
+        processInboundMessage: async () => {
+          throw new Error(`Gemini API Error (400): echo of customer text with token ${CANARY_SECRET} and phone ${CANARY_PHONE}`);
+        }
+      },
+      memory: { getChat: () => undefined },
+      operator: { resolve: async () => ({ status: 'answered', reply: '', evidence: [], workflowId: 'none' }) },
       enabled: false
-    } as any);
+    });
     const result = await coordinator.processInboundMessage(
-      { id: 'm1', chatId: `${CANARY_PHONE}@s.whatsapp.net`, sender: `${CANARY_PHONE}@s.whatsapp.net`, text: 'hi', timestamp: 1, isFromMe: false, type: 'text' } as any
+      { id: 'm1', chatId: `${CANARY_PHONE}@s.whatsapp.net`, sender: `${CANARY_PHONE}@s.whatsapp.net`, text: 'hi', timestamp: 1, isFromMe: false, type: 'text' }
     );
     const reasoning = result.decision.reasoning ?? '';
     expect(reasoning).not.toContain(CANARY_SECRET);

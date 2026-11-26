@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { readSqlRow } from '../src/persistence/postgres/sql-values';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -25,6 +26,12 @@ async function asyncFixture(fn: (root: string) => Promise<void>): Promise<void> 
   try { await fn(root); } finally { rmSync(root, { recursive: true, force: true }); }
 }
 
+async function expectRejection(promise: Promise<unknown>, message: RegExp): Promise<void> {
+  const error: unknown = await promise.catch((cause: unknown) => cause);
+  expect(error).toBeInstanceOf(Error);
+  expect(error).toHaveProperty('message', expect.stringMatching(message));
+}
+
 describe('PostgreSQL migration contract', () => {
   test('covers every non-derived SQLite table across all seven source files', () => {
     expect(SQLITE_TABLES).toHaveLength(16);
@@ -40,7 +47,7 @@ describe('PostgreSQL migration contract', () => {
   });
 
   test('requires explicit brand ownership for legacy chat tables', () => {
-    expect(SQLITE_TABLES.filter(t => t.addLegacyBrand).map(t => t.table).sort())
+    expect(SQLITE_TABLES.filter(t => t.addLegacyBrand).map(t => t.table).toSorted())
       .toEqual(['chats', 'contact_dossiers', 'drafts', 'messages']);
     fixture(root => {
       expect(() => inspectSqliteSources({ dataDir: root, legacyBrand: '' })).toThrow(/brand/i);
@@ -56,14 +63,15 @@ describe('PostgreSQL migration contract', () => {
       store.saveMessage({id:'m-1',chatId:'123@s.whatsapp.net',sender:'123',text:'مرحبا',timestamp:1760000000000,isFromMe:false,type:'text'});
       store.close();
       // Exercise the original 16-table importer against its historical source contract.
-      // Current SQLite also creates S01, WA-005, learning and WCF tables, all deliberately
+      // Current SQLite also creates S01, WA-005, learning, WCF, and broadcast tables, all deliberately
       // excluded from this legacy fixture so the fingerprint assertion stays valid.
       const historical = new Database(join(data, 'fable_whatsapp.db'));
       for (const name of [
         'send_intent_events', 'send_attempts', 'send_intents',
         'inbound_jobs', 'inbound_job_events',
         'learning_states', 'learning_reflections',
-        'conversation_fold_messages', 'conversation_fold_sources', 'conversation_folds'
+        'conversation_fold_messages', 'conversation_fold_sources', 'conversation_folds',
+        'broadcast_campaigns', 'broadcast_opt_outs', 'broadcast_recipients'
       ]) {
         historical.run(`DROP TABLE ${name}`);
       }
@@ -110,14 +118,14 @@ describe('PostgreSQL migration contract', () => {
       const store = new SqliteStore({ dbPath: join(root, 'fable_whatsapp.db') });
       store.close();
       const db = new Database(join(root, 'fable_whatsapp.db'), { readonly: true });
-      const names = new Set((db.query("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map(row => row.name));
+      const names = new Set(db.query("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => readSqlRow(row).name));
       db.close();
       expect(['send_intents', 'send_attempts', 'send_intent_events'].every(name => names.has(name))).toBe(true);
       let postgresTouched = false;
-      await expect(importSqliteToPostgres({
+      await expectRejection(importSqliteToPostgres({
         dataDir: root, legacyBrand: 'brand-a', apply: true,
         client: { begin: async () => { postgresTouched = true; throw new Error('PG should remain untouched'); } }
-      })).rejects.toThrow(/unaccounted|send_intents|send_attempts|send_intent_events/i);
+      }), /unaccounted|send_intents|send_attempts|send_intent_events/i);
       expect(postgresTouched).toBe(false);
       expect(() => inspectSqliteSources({ dataDir: root, legacyBrand: 'brand-a' }))
         .toThrow(/unaccounted|send_intents/i);
@@ -171,6 +179,21 @@ describe('PostgreSQL migration contract', () => {
     });
   });
 
+  test('rejects an invalid migration version instead of treating the schema as uninitialized', async () => {
+    const executed: string[] = [];
+    const error: unknown = await migratePostgres({
+      begin: callback => callback({
+        unsafe: async statement => {
+          executed.push(statement);
+          return statement.startsWith('SELECT version') ? [{ version: 'invalid' }] : [];
+        }
+      })
+    }).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toHaveProperty('message', 'Invalid PostgreSQL version');
+    expect(executed.some(statement => statement.startsWith('INSERT INTO wa_agent.schema_migrations'))).toBe(false);
+  });
+
   test('migration lock and version ledger are executed inside transaction', async () => {
     const sql: string[] = [];
     const client = {
@@ -196,10 +219,11 @@ class FakePg {
   executed: string[] = [];
   corruptImport = false;
   wireBigintsAsText = false;
+  omitCountRow = false;
   async begin<T>(callback: (tx: {unsafe: (sql:string,params?:unknown[])=>Promise<Record<string,unknown>[]>})=>Promise<T>): Promise<T> {
     const staged = new Map([...this.tables].map(([name, rows]) => [name, rows.map(row => ({...row}))]));
     let version = this.schemaVersion;
-    let imports = [...this.importFingerprints];
+    const imports = [...this.importFingerprints];
     const transaction = {
       unsafe: async (sql:string, params:unknown[] = []):Promise<Record<string,unknown>[]> => {
         this.executed.push(sql);
@@ -207,32 +231,37 @@ class FakePg {
         if (sql.startsWith('INSERT INTO wa_agent.schema_migrations')) {version=1;return [];}
         if (sql.startsWith('SELECT fingerprint FROM wa_agent.data_imports')) return imports.map(fingerprint=>({fingerprint}));
         const count=sql.match(/^SELECT COUNT\(\*\) AS count FROM wa_agent\."?([a-z_]+)"?$/);
-        if (count) return [{count:(staged.get(count[1])??[]).length}];
+        if (count?.[1]) return this.omitCountRow ? [] : [{count:(staged.get(count[1])??[]).length}];
         const insert=sql.match(/^INSERT INTO wa_agent\."?([a-z_]+)"? \(([^)]+)\) VALUES /);
-        if (insert) {
+        if (insert?.[1] && insert[2]) {
+          const tableName = insert[1];
           const cols=insert[2].split(',').map(s=>s.trim().replaceAll('"',''));
-          const rows=staged.get(insert[1])??[];
+          const rows=staged.get(tableName)??[];
           for(let offset=0;offset<params.length;offset+=cols.length) {
             const row=Object.fromEntries(cols.map((name,i)=>[name,params[offset+i]]));
-            if(this.corruptImport && insert[1]==='agent_evaluations')row.intent='wrong';
+            if(this.corruptImport && tableName==='agent_evaluations')row.intent='wrong';
             rows.push(row);
           }
-          staged.set(insert[1],rows);
+          staged.set(tableName,rows);
           return [];
         }
         const select=sql.match(/^SELECT .+ FROM wa_agent\."?([a-z_]+)"? (?:WHERE .+ )?ORDER BY .+ LIMIT \$\d+$/);
-        if (select) {
-          const spec=SQLITE_TABLES.find(t=>t.table===select[1])!;
+        if (select?.[1]) {
+          const tableName = select[1];
+          const spec=SQLITE_TABLES.find(t=>t.table===tableName);
+          if (!spec) throw new Error(`Unknown table ${tableName}`);
           const keys=spec.addLegacyBrand ? ['brand_id',...spec.primaryKey] : [...spec.primaryKey];
           const compare=(left:Record<string,unknown>,right:unknown[]) => {
             for(let i=0;i<keys.length;i++) {
-              const a=left[keys[i]], b=right[i];
+              const key = keys[i];
+              if (!key) continue;
+              const a=left[key], b=right[i];
               const delta=typeof a==='number' && typeof b==='number' ? a-b : String(a).localeCompare(String(b),'en');
               if(delta !== 0)return delta;
             }
             return 0;
           };
-          const rows=(staged.get(select[1])??[]).sort((a,b)=>compare(a,keys.map(k=>b[k])));
+          const rows=(staged.get(tableName)??[]).toSorted((a,b)=>compare(a,keys.map(k=>b[k])));
           const cursor=params.length > 1 ? params.slice(0,-1) : undefined;
           const page=cursor ? rows.filter(row=>compare(row,cursor)>0) : rows;
           return page.slice(0,Number(params[params.length-1])).map(row => {
@@ -268,7 +297,7 @@ test('offline import verifies all 16 tables and records a single successful fing
     expect(pg.importFingerprints).toEqual([result.fingerprint]);
     expect(pg.tables.size).toBe(1);
     expect(pg.executed.some(sql => /OFFSET/i.test(sql))).toBe(false);
-    await expect(importSqliteToPostgres({dataDir:root,legacyBrand:'store-1',apply:true,client:pg})).rejects.toThrow(/already contains/i);
+    await expectRejection(importSqliteToPostgres({dataDir:root,legacyBrand:'store-1',apply:true,client:pg}), /already contains/i);
   });
 });
 
@@ -279,8 +308,22 @@ test('refuses a populated target, without modifying any existing row', async () 
     db.close();
     const pg = new FakePg();
     pg.tables.set('chats',[{brand_id:'other-store',id:'existing'}]);
-    await expect(importSqliteToPostgres({dataDir:root,legacyBrand:'store-1',apply:true,client:pg})).rejects.toThrow(/not empty/i);
+    await expectRejection(importSqliteToPostgres({dataDir:root,legacyBrand:'store-1',apply:true,client:pg}), /not empty/i);
     expect(pg.tables.get('chats')).toEqual([{brand_id:'other-store',id:'existing'}]);
+    expect(pg.importFingerprints).toHaveLength(0);
+  });
+});
+
+test('refuses to import when the target row count is missing', async () => {
+  await asyncFixture(async root => {
+    const db = new Database(join(root, 'agent-quality.sqlite'));
+    db.run('CREATE TABLE agent_evaluations(brand_id TEXT,scenario_id TEXT,intent TEXT,resolved INTEGER,supported INTEGER,missing_source TEXT,question_hash TEXT,created_at INTEGER)');
+    db.close();
+    const pg = new FakePg();
+    pg.omitCountRow = true;
+    await expectRejection(importSqliteToPostgres({
+      dataDir: root, legacyBrand: 'store-1', apply: true, client: pg
+    }), /Invalid PostgreSQL count/);
     expect(pg.importFingerprints).toHaveLength(0);
   });
 });
@@ -293,7 +336,7 @@ test('hash mismatch rolls back import rows and import receipt', async () => {
     db.close();
     const pg = new FakePg();
     pg.corruptImport=true;
-    await expect(importSqliteToPostgres({dataDir:root,legacyBrand:'store-1',apply:true,client:pg})).rejects.toThrow(/verification mismatch/i);
+    await expectRejection(importSqliteToPostgres({dataDir:root,legacyBrand:'store-1',apply:true,client:pg}), /verification mismatch/i);
     expect(pg.tables.get('agent_evaluations')).toBeUndefined();
     expect(pg.importFingerprints).toHaveLength(0);
   });

@@ -37,6 +37,42 @@ describe('WA-006 deterministic process shutdown', () => {
     expect(code).toBe(1);
   });
 
+  it('waits for the actual HTTP stop promise before draining queues', async () => {
+    const lifecycle = new ProcessLifecycleCoordinator({ timeoutMs: 5000 });
+    const stopped = Promise.withResolvers<void>();
+    const enteredStop = Promise.withResolvers<void>();
+    const order: string[] = [];
+    lifecycle.registerHttpServer({
+      stop: async (closeActiveConnections) => {
+        expect(closeActiveConnections).toBe(true);
+        order.push('http-stop');
+        enteredStop.resolve();
+        await stopped.promise;
+        order.push('http-stopped');
+      }
+    });
+    lifecycle.register('queue', 'drain_queues', () => { order.push('drain'); });
+
+    const shutdown = lifecycle.shutdown('TEST');
+    await enteredStop.promise;
+    expect(order).toEqual(['http-stop']);
+    stopped.resolve();
+    expect(await shutdown).toBe(0);
+    expect(order).toEqual(['http-stop', 'http-stopped', 'drain']);
+  });
+
+  it('returns a failing exit code when HTTP stop rejects', async () => {
+    const lifecycle = new ProcessLifecycleCoordinator({ timeoutMs: 5000 });
+    const order: string[] = [];
+    lifecycle.registerHttpServer({
+      stop: async () => { throw new Error('synthetic HTTP stop failure'); }
+    });
+    lifecycle.register('close', 'close_datastores', () => { order.push('close'); });
+
+    expect(await lifecycle.shutdown('TEST')).toBe(1);
+    expect(order).toEqual(['close']);
+  });
+
   it('a concurrent second shutdown awaits the in-flight one and shares its result', async () => {
     const lifecycle = new ProcessLifecycleCoordinator({ timeoutMs: 5000 });
     let resourcesClosed = false;

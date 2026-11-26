@@ -1,7 +1,18 @@
+import { rejects } from 'node:assert/strict';
 import { describe, expect, it } from 'bun:test';
 import { VoiceSynthesizer } from '../src/ai/voice-synthesizer';
 
 describe('VoiceSynthesizer', () => {
+  it('rejects a non-string Chirp audio payload', async () => {
+    const synth = new VoiceSynthesizer({
+      authProvider: async () => ({ token: 'local-test-token', project: 'local-test-project' }),
+      fetcher: async (url) => url === 'https://texttospeech.googleapis.com/v1/text:synthesize'
+        ? Response.json({ audioContent: [1, 2, 3] })
+        : new Response(null, { status: 503 })
+    });
+    await rejects(synth.synthesizeVoice('Test'), /empty audioContent/);
+  });
+
   it('initializes with default Egyptian/Arabic options', () => {
     const synth = new VoiceSynthesizer();
     expect(synth).toBeDefined();
@@ -19,10 +30,10 @@ describe('VoiceSynthesizer', () => {
         authCalls++;
         return { token: 'local-test-token', project: 'local-test-project' };
       },
-      fetcher: (async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
+      fetcher: async (url, init) => {
         const headers = new Headers(init?.headers);
-        const body = JSON.parse(String(init?.body));
+        if (typeof init?.body !== 'string') throw new Error('Expected a JSON request body');
+        const body: unknown = JSON.parse(init.body);
         requests.push({ url, headers, body });
         if (url.includes('/models/gemini-3.8-flash-tts:generateContent')) {
           return Response.json({ error: { message: 'local simulated Gemini unavailability' } }, { status: 503 });
@@ -31,7 +42,7 @@ describe('VoiceSynthesizer', () => {
           return Response.json({ audioContent: audio.toString('base64') });
         }
         throw new Error('Unexpected network endpoint in voice test');
-      }) as typeof fetch
+      }
     });
 
     const result = await synth.synthesizeVoice('أهلاً بك يا فندم، أنا تحت أمرك');
@@ -44,17 +55,17 @@ describe('VoiceSynthesizer', () => {
     expect(requests).toHaveLength(2);
     expect(requests[0]?.headers.get('Authorization')).toBe('Bearer local-test-token');
     expect(requests[1]?.headers.get('X-Goog-User-Project')).toBe('local-test-project');
-    expect((requests[1]!.body as { voice: { languageCode: string } }).voice.languageCode).toBe('ar-XA');
+    expect(requests[1]?.body).toMatchObject({ voice: { languageCode: 'ar-XA' } });
   });
 
   it('reports failure when both providers reject instead of silently passing without synthesized audio', async () => {
     const synth = new VoiceSynthesizer({
       authProvider: async () => ({ token: 'local-test-token', project: 'local-test-project' }),
-      fetcher: (async () => Response.json({ error: { message: 'simulated provider unavailable' } }, {
+      fetcher: async () => Response.json({ error: { message: 'simulated provider unavailable' } }, {
         status: 503
-      })) as unknown as typeof fetch
+      })
     });
-    await expect(synth.synthesizeVoice('Testing failure')).rejects.toThrow('Google Cloud Text-to-Speech fallback failed (503)');
+    await rejects(synth.synthesizeVoice('Testing failure'), /Google Cloud Text-to-Speech fallback failed \(503\)/);
   });
 
   it('falls back to Chirp3-HD when Gemini TTS returns invalid audio that fails transcoding', async () => {
@@ -62,8 +73,7 @@ describe('VoiceSynthesizer', () => {
     let chirpCalled = false;
     const synth = new VoiceSynthesizer({
       authProvider: async () => ({ token: 'local-test-token', project: 'local-test-project' }),
-      fetcher: (async (input: RequestInfo | URL) => {
-        const url = String(input);
+      fetcher: async (url) => {
         if (url.includes('/models/gemini-3.8-flash-tts:generateContent')) {
           return Response.json({
             candidates: [{
@@ -83,7 +93,7 @@ describe('VoiceSynthesizer', () => {
           return Response.json({ audioContent: audio.toString('base64') });
         }
         throw new Error('Unexpected URL: ' + url);
-      }) as typeof fetch
+      }
     });
 
     const result = await synth.synthesizeVoice('اختبار الصوت الاحتياطي');
@@ -91,11 +101,11 @@ describe('VoiceSynthesizer', () => {
     expect(result).toEqual(audio);
   });
 
-  const liveIt = process.env.RUN_LIVE_GOOGLE_TTS === '1' ? it : it.skip;
-  liveIt('synthesizes an OGG Opus buffer against live Google TTS when explicitly configured', async () => {
+  it.skipIf(process.env.RUN_LIVE_GOOGLE_TTS !== '1')('synthesizes an OGG Opus buffer against live Google TTS when explicitly configured', async () => {
     const synth = new VoiceSynthesizer({ languageCode: 'ar-XA', ssmlGender: 'MALE' });
     const buffer = await synth.synthesizeVoice('أهلاً بك يا فندم، أنا تحت أمرك');
     expect(buffer.length).toBeGreaterThan(100);
     expect(buffer.subarray(0, 4).toString('ascii')).toBe('OggS');
   }, 60_000);
+
 });

@@ -1,12 +1,19 @@
+import { rejects } from 'node:assert/strict';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import casesFixture from '../fixtures/reply-evaluation/cases-v1.json';
+import approvedFixture from '../fixtures/reply-evaluation/synthetic-reference-v1.json';
+import candidateFixture from '../fixtures/reply-evaluation/candidate-demo.json';
+import type { AutonomyAction, PolicyRule } from '../src/domain/types';
 import {
   runEvaluationLab,
   writeReportExclusive,
+  type EvaluationCase,
   type EvaluationSuite,
-  type EvaluationSnapshot
+  type EvaluationSnapshot,
+  type RecordedModelResponse
 } from '../src/evaluation-lab/runner';
 
 const policy = {
@@ -20,7 +27,7 @@ const policy = {
   ]
 };
 
-function makeCase(overrides: Record<string, unknown> = {}) {
+function makeCase(overrides: Partial<EvaluationCase> = {}): EvaluationCase {
   return {
     case_id: 'case-human',
     locale: 'ar-EG',
@@ -31,16 +38,69 @@ function makeCase(overrides: Record<string, unknown> = {}) {
     expected_action: 'reply' as const,
     expected_send: false,
     expected_draft: false,
-    forbidden_outcomes: ['send'] as Array<'send' | 'draft'>,
+    forbidden_outcomes: ['send'],
     evidence_ids: ['synthetic-greeting'],
     notes_for_reviewer: 'Human mode can never dispatch',
     critical: true,
     ...overrides
   };
 }
-function makeSuite(overrides: Record<string, unknown> = {}): EvaluationSuite {
-  return { version: 1, suite_id: 'synthetic-v1', cases: [makeCase(overrides)] } as EvaluationSuite;
+function makeSuite(overrides: Partial<EvaluationCase> = {}): EvaluationSuite {
+  return { version: 1, suite_id: 'synthetic-v1', cases: [makeCase(overrides)] };
 }
+function isAction(value: string): value is AutonomyAction {
+  return value === 'reply' || value === 'draft' || value === 'human' ||
+    value === 'ignore' || value === 'act';
+}
+
+function fixtureCase(row: typeof casesFixture.cases[number]): EvaluationCase {
+  const { locale, chat_mode, expected_action, inbound_turns, forbidden_outcomes } = row;
+  if (locale !== 'ar-EG' && locale !== 'ar-SA' && locale !== 'en') {
+    throw new Error(`Invalid locale in ${row.case_id}`);
+  }
+  if (chat_mode !== 'autopilot' && chat_mode !== 'copilot' && chat_mode !== 'human') {
+    throw new Error(`Invalid chat mode in ${row.case_id}`);
+  }
+  if (!isAction(expected_action)) throw new Error(`Invalid action in ${row.case_id}`);
+  return {
+    ...row, locale, chat_mode, expected_action,
+    inbound_turns: inbound_turns.map(({ sender, text }) => {
+      if (sender !== 'contact' && sender !== 'owner') throw new Error(`Invalid sender in ${row.case_id}`);
+      return { sender, text };
+    }),
+    forbidden_outcomes: forbidden_outcomes.map((outcome) => {
+      if (outcome !== 'send' && outcome !== 'draft') throw new Error(`Invalid outcome in ${row.case_id}`);
+      return outcome;
+    })
+  };
+}
+
+function fixtureSnapshot(fixture: typeof approvedFixture | typeof candidateFixture): EvaluationSnapshot {
+  const { defaultAction, rules } = fixture.policy;
+  if (!isAction(defaultAction)) throw new Error(`Invalid default action in ${fixture.snapshot_id}`);
+  const parsedRules: PolicyRule[] = [];
+  for (const rule of rules) {
+    const { effect, action } = rule;
+    if (effect !== 'allow' && effect !== 'require_approval' && effect !== 'deny') {
+      throw new Error(`Invalid policy effect in ${rule.id}`);
+    }
+    if (action !== undefined && !isAction(action)) throw new Error(`Invalid policy action in ${rule.id}`);
+    parsedRules.push({ ...rule, effect, action });
+  }
+  const responses: EvaluationSnapshot['responses'] = {};
+  for (const [id, recording] of Object.entries(fixture.responses)) {
+    const { kind } = recording;
+    if (kind !== 'decision') throw new Error(`Expected a recorded decision for ${id}`);
+    const response: RecordedModelResponse = { ...recording, kind };
+    responses[id] = response;
+  }
+  return {
+    ...fixture,
+    responses,
+    policy: { ...fixture.policy, defaultAction, rules: parsedRules }
+  };
+}
+
 function makeSnapshot(id: string, response: Record<string, unknown> = {
   action: 'reply', intent: 'greeting', confidence: 0.99, replyText: 'أهلًا'
 }): EvaluationSnapshot {
@@ -111,7 +171,7 @@ describe('S05 offline reply evaluation lab', () => {
       case_id: 'case-money', chat_mode: 'copilot', expected_action: 'draft',
       expected_send: false, expected_draft: true, forbidden_outcomes: ['send']
     });
-    const suite = { version: 1, suite_id: 'money', cases: [moneyCase] } as EvaluationSuite;
+    const suite: EvaluationSuite = { version: 1, suite_id: 'money', cases: [moneyCase] };
     const snapshot = makeSnapshot('approved-v1');
     snapshot.responses = {
       'case-money': { kind: 'decision', value: {
@@ -141,9 +201,9 @@ describe('S05 offline reply evaluation lab', () => {
 
   it('rejects self-comparison even when both arguments reference the same snapshot', async () => {
     const snapshot = makeSnapshot('approved-v1');
-    await expect(runEvaluationLab({
+    await rejects(runEvaluationLab({
       suite: makeSuite(), approved: snapshot, candidate: snapshot, review: review('approved-v1')
-    })).rejects.toThrow('independent snapshot identifier');
+    }), /independent snapshot identifier/);
   });
 
   it('leaves approved baseline immutable after failed candidate evaluation', async () => {
@@ -199,31 +259,30 @@ describe('S05 offline reply evaluation lab', () => {
     const suite = makeSuite({
       inbound_turns: [{ sender: 'contact', text: `Please store ${dummy}` }]
     });
-    await expect(runEvaluationLab({
+    await rejects(runEvaluationLab({
       suite, approved: makeSnapshot('approved-v1'), candidate: makeSnapshot('candidate-v2')
-    })).rejects.toThrow('Sensitive fixture content');
+    }), /Sensitive fixture content/);
   });
 
   it('fails closed on oversized or deeply nested fixture structures', async () => {
-    const suite = makeSuite();
-    (suite as EvaluationSuite & { unexpected?: unknown }).unexpected = Array(10_001).fill('synthetic');
-    await expect(runEvaluationLab({
+    const suite = { ...makeSuite(), unexpected: Array.from({ length: 10_001 }, () => 'synthetic') };
+    await rejects(runEvaluationLab({
       suite, approved: makeSnapshot('approved-v1'), candidate: makeSnapshot('candidate-v2')
-    })).rejects.toThrow('Fixture safety scan limit exceeded');
+    }), /Fixture safety scan limit exceeded/);
   });
 
   it('rejects credential-bearing dossier facts and recorded model output', async () => {
     const dummy = ['sk', 'b'.repeat(25)].join('-');
-    await expect(runEvaluationLab({
+    await rejects(runEvaluationLab({
       suite: makeSuite({ dossier_facts: [`Password: ${dummy}`] }),
       approved: makeSnapshot('approved-v1'), candidate: makeSnapshot('candidate-v2')
-    })).rejects.toThrow('Sensitive fixture content');
-    await expect(runEvaluationLab({
+    }), /Sensitive fixture content/);
+    await rejects(runEvaluationLab({
       suite: makeSuite(), approved: makeSnapshot('approved-v1'),
       candidate: makeSnapshot('candidate-v2', {
         action: 'reply', intent: 'greeting', confidence: 0.95, replyText: `API: ${dummy}`
       })
-    })).rejects.toThrow('Sensitive fixture content');
+    }), /Sensitive fixture content/);
   });
 
   it('blocks a made-up memory citation and preserves the claimed ids for human review', async () => {
@@ -248,10 +307,9 @@ describe('S05 offline reply evaluation lab', () => {
   });
 
   it('replays the 18 checked-in synthetic cases against a pinned golden', async () => {
-    const fixtures = join(import.meta.dir, '../fixtures/reply-evaluation');
-    const suite = JSON.parse(await readFile(join(fixtures, 'cases-v1.json'), 'utf8')) as EvaluationSuite;
-    const approved = JSON.parse(await readFile(join(fixtures, 'synthetic-reference-v1.json'), 'utf8')) as EvaluationSnapshot;
-    const candidate = JSON.parse(await readFile(join(fixtures, 'candidate-demo.json'), 'utf8')) as EvaluationSnapshot;
+    const suite = { ...casesFixture, cases: casesFixture.cases.map(fixtureCase) };
+    const approved = fixtureSnapshot(approvedFixture);
+    const candidate = fixtureSnapshot(candidateFixture);
     const report = await runEvaluationLab({ suite, approved, candidate });
     expect(report.results).toHaveLength(18);
     expect(report.results.every(result => result.outcome === 'pass')).toBe(true);

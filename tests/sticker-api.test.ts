@@ -1,29 +1,31 @@
 import { describe, expect, it } from 'bun:test';
 import { createApiServer } from '../src/server/api';
 import { MemoryStore } from '../src/domain/memory-store';
+import { WhatsAppSocketClient } from '../src/transport/whatsapp-socket';
+import { ModeratorAgent } from '../src/ai/moderator-agent';
+import { GeminiClient } from '../src/ai/gemini-client';
+import { SSEBroadcaster } from '../src/server/sse';
+
+function setupServer() {
+  const memory = new MemoryStore({ dataDir: './data/test-sticker-api' });
+  const mockClient = new WhatsAppSocketClient();
+  mockClient.getState = () => ({ state: 'connected', updatedAt: Date.now() });
+  mockClient.disconnect = async () => {};
+  mockClient.start = async () => {};
+  const mockAgent = new ModeratorAgent(new GeminiClient({ apiKey: 'test-key' }), memory);
+  const sse = new SSEBroadcaster();
+
+  const app = createApiServer({
+    memoryStore: memory,
+    whatsappClient: mockClient,
+    moderatorAgent: mockAgent,
+    sse
+  });
+
+  return { app };
+}
 
 describe('Sticker Studio API (/api/media/sticker)', () => {
-  const setupServer = () => {
-    const memory = new MemoryStore({ dataDir: './data/test-sticker-api' });
-    const mockClient: any = {
-      getState: () => ({ state: 'connected' }),
-      disconnect: async () => {},
-      start: async () => {}
-    };
-    const mockAgent: any = {
-      processInboundMessage: async () => ({ decision: 'auto_reply', draftCreated: false, shouldSendImmediately: true })
-    };
-    const sse: any = { broadcast: () => {}, subscribe: () => () => {} };
-
-    const app = createApiServer({
-      memoryStore: memory,
-      whatsappClient: mockClient,
-      moderatorAgent: mockAgent,
-      sse
-    });
-
-    return { app };
-  };
 
   it('rejects request with missing or empty imageBase64', async () => {
     const { app } = setupServer();
@@ -33,7 +35,10 @@ describe('Sticker Studio API (/api/media/sticker)', () => {
       body: JSON.stringify({})
     });
     expect(res.status).toBe(400);
-    const json = (await res.json()) as any;
+    const json: unknown = await res.json();
+    if (typeof json !== 'object' || json === null || !('error' in json) || typeof json.error !== 'string') {
+      throw new Error('Expected an error message in the sticker response');
+    }
     expect(json.error).toContain('imageBase64 is required');
   });
 
@@ -66,7 +71,13 @@ describe('Sticker Studio API (/api/media/sticker)', () => {
     });
 
     expect(res.status).toBe(200);
-    const json = (await res.json()) as any;
+    const json: unknown = await res.json();
+    if (typeof json !== 'object' || json === null
+      || !('success' in json) || !('mimeType' in json)
+      || !('stickerBase64' in json) || typeof json.stickerBase64 !== 'string'
+      || !('bytes' in json) || typeof json.bytes !== 'number') {
+      throw new Error('Expected a sticker payload with a byte count');
+    }
     expect(json.success).toBe(true);
     expect(json.mimeType).toBe('image/webp');
     expect(typeof json.stickerBase64).toBe('string');

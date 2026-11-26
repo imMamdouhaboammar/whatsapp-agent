@@ -1,3 +1,4 @@
+import { rejects } from 'node:assert/strict';
 import { describe, expect, it } from 'bun:test';
 import { executeWithModelFallback } from '../src/ai/model-fallback';
 import {
@@ -18,10 +19,23 @@ function fakeClock(start = 1_000_000) {
   };
 }
 
-const transient429 = () => { const e: any = new Error('RESOURCE_EXHAUSTED: quota exceeded'); e.status = 429; return e; };
-const terminal401 = () => { const e: any = new Error('UNAUTHENTICATED: API key invalid'); e.status = 401; return e; };
+function createGate<T>() {
+  let r!: (v: T) => void;
+  const p = new Promise<T>((resolve) => { r = resolve; });
+  return { p, r };
+}
+
+const transient429 = (): Error & { status: number; retryAfterMs?: number } =>
+  Object.assign(new Error('RESOURCE_EXHAUSTED: quota exceeded'), { status: 429 });
+const terminal401 = (): Error & { status: number } =>
+  Object.assign(new Error('UNAUTHENTICATED: API key invalid'), { status: 401 });
 
 describe('WA-012 classification and retry-after parsing', () => {
+  it('classifies string failures and safely handles nonnumeric status values', () => {
+    expect(classifyProviderError('quota exceeded')).toBe('transient');
+    expect(classifyProviderError({ status: Symbol(), message: 'UNAUTHENTICATED quota exceeded' })).toBe('terminal');
+  });
+
   it('classifies transient, terminal and model-not-found', () => {
     expect(classifyProviderError(transient429())).toBe('transient');
     expect(classifyProviderError(Object.assign(new Error('UNAVAILABLE'), { status: 503 }))).toBe('transient');
@@ -46,15 +60,13 @@ describe('WA-012 shared circuit has observable effect across invocations', () =>
     const invoker = async () => { calls++; throw transient429(); };
 
     // threshold 1: first invocation opens the circuit
-    await expect(
-      executeWithModelFallback(['m1'], invoker, { resilience, provider: 'gemini-test-a', circuitBreakerThreshold: 1 })
-    ).rejects.toThrow();
+    await rejects(
+      executeWithModelFallback(['m1'], invoker, { resilience, provider: 'gemini-test-a', circuitBreakerThreshold: 1 }));
     const callsAfterFirst = calls;
 
     // second invocation must fail fast: circuit open, no new provider call
-    await expect(
-      executeWithModelFallback(['m1'], invoker, { resilience, provider: 'gemini-test-a', circuitBreakerThreshold: 1 })
-    ).rejects.toThrow(/circuit|unavailable|degraded/i);
+    await rejects(
+      executeWithModelFallback(['m1'], invoker, { resilience, provider: 'gemini-test-a', circuitBreakerThreshold: 1 }), /circuit|unavailable|degraded/i);
     expect(calls).toBe(callsAfterFirst);
   });
 
@@ -64,9 +76,8 @@ describe('WA-012 shared circuit has observable effect across invocations', () =>
     let fail = true;
     const invoker = async () => { if (fail) throw transient429(); return 'ok'; };
 
-    await expect(
-      executeWithModelFallback(['m1'], invoker, { resilience, provider: 'gemini-test-b', circuitBreakerThreshold: 1 })
-    ).rejects.toThrow();
+    await rejects(
+      executeWithModelFallback(['m1'], invoker, { resilience, provider: 'gemini-test-b', circuitBreakerThreshold: 1 }));
 
     clock.advance(6_000); // cooldown elapsed -> half-open probe allowed
     fail = false;
@@ -84,12 +95,12 @@ describe('WA-012 shared circuit has observable effect across invocations', () =>
     let calls = 0;
     const invoker = async () => { calls++; throw transient429(); };
 
-    await expect(executeWithModelFallback(['m1'], invoker, { resilience, provider: 'gemini-test-c', circuitBreakerThreshold: 1 })).rejects.toThrow();
+    await rejects(executeWithModelFallback(['m1'], invoker, { resilience, provider: 'gemini-test-c', circuitBreakerThreshold: 1 }));
     clock.advance(6_000);
-    await expect(executeWithModelFallback(['m1'], invoker, { resilience, provider: 'gemini-test-c', circuitBreakerThreshold: 1 })).rejects.toThrow();
+    await rejects(executeWithModelFallback(['m1'], invoker, { resilience, provider: 'gemini-test-c', circuitBreakerThreshold: 1 }));
     const callsAfterProbe = calls;
     // re-opened: fail fast again without calling
-    await expect(executeWithModelFallback(['m1'], invoker, { resilience, provider: 'gemini-test-c', circuitBreakerThreshold: 1 })).rejects.toThrow(/circuit|unavailable|degraded/i);
+    await rejects(executeWithModelFallback(['m1'], invoker, { resilience, provider: 'gemini-test-c', circuitBreakerThreshold: 1 }), /circuit|unavailable|degraded/i);
     expect(calls).toBe(callsAfterProbe);
   });
 });
@@ -99,9 +110,8 @@ describe('WA-012 terminal errors never retry and never trip the circuit', () => 
     const clock = fakeClock();
     const resilience = createProviderResilience({ now: clock.now, sleep: clock.sleep, random: clock.random });
     let calls = 0;
-    await expect(
-      executeWithModelFallback(['m1', 'm2'], async () => { calls++; throw terminal401(); }, { resilience, provider: 'gemini-test-d', circuitBreakerThreshold: 1 })
-    ).rejects.toThrow(/UNAUTHENTICATED/);
+    await rejects(
+      executeWithModelFallback(['m1', 'm2'], async () => { calls++; throw terminal401(); }, { resilience, provider: 'gemini-test-d', circuitBreakerThreshold: 1 }), /UNAUTHENTICATED/);
     expect(calls).toBe(1);
 
     // circuit unaffected: a healthy call still goes through
@@ -117,7 +127,7 @@ describe('WA-012 bounded attempts, retry-after and jitter', () => {
     let calls = 0;
     const outcome = await executeWithModelFallback(['m1', 'm2'], async () => {
       calls++;
-      if (calls === 1) { const e: any = transient429(); e.retryAfterMs = 1200; throw e; }
+      if (calls === 1) { const e = transient429(); e.retryAfterMs = 1200; throw e; }
       return 'recovered';
     }, { resilience, provider: 'gemini-test-e' });
     expect(outcome.result).toBe('recovered');
@@ -128,9 +138,8 @@ describe('WA-012 bounded attempts, retry-after and jitter', () => {
     const clock = fakeClock();
     const resilience = createProviderResilience({ now: clock.now, sleep: clock.sleep, random: clock.random });
     let calls = 0;
-    await expect(
-      executeWithModelFallback(['m1', 'm2', 'm3'], async () => { calls++; throw transient429(); }, { resilience, provider: 'gemini-test-f', maxAttempts: 2 })
-    ).rejects.toThrow();
+    await rejects(
+      executeWithModelFallback(['m1', 'm2', 'm3'], async () => { calls++; throw transient429(); }, { resilience, provider: 'gemini-test-f', maxAttempts: 2 }));
     expect(calls).toBe(2);
   });
 });
@@ -139,8 +148,7 @@ describe('WA-012 concurrency budget and lanes', () => {
   it('bounds concurrent executions and lets interactive work through when background saturates', async () => {
     const clock = fakeClock();
     const resilience = createProviderResilience({ now: clock.now, sleep: clock.sleep, random: clock.random, maxConcurrent: 2, backgroundMax: 1 });
-    const gate = <T,>() => { let r!: (v: T) => void; const p = new Promise<T>((res) => { r = res; }); return { p, r }; };
-    const g1 = gate<string>(); const g2 = gate<string>();
+    const g1 = createGate<string>(); const g2 = createGate<string>();
     let bgStarted = 0;
     let interactiveStarted = 0;
 
@@ -165,8 +173,7 @@ describe('WA-012 concurrency budget and lanes', () => {
   it('rejects queued work when the deadline expires while waiting', async () => {
     const clock = fakeClock();
     const resilience = createProviderResilience({ now: clock.now, sleep: clock.sleep, random: clock.random, maxConcurrent: 1 });
-    const gate = <T,>() => { let r!: (v: T) => void; const p = new Promise<T>((res) => { r = res; }); return { p, r }; };
-    const g1 = gate<string>();
+    const g1 = createGate<string>();
     let secondInvoked = false;
 
     const first = executeWithModelFallback(['m1'], () => g1.p, { resilience, provider: 'gemini-test-h' });
@@ -174,7 +181,7 @@ describe('WA-012 concurrency budget and lanes', () => {
     await clock.sleep(0);
     clock.advance(600); // deadline passes while queued
     clock.advance(0);
-    await expect(second).rejects.toThrow(/deadline|timeout|expired/i);
+    await rejects(second, /deadline|timeout|expired/i);
     expect(secondInvoked).toBe(false);
     g1.r('done');
     await first;
@@ -186,9 +193,8 @@ describe('WA-012 concurrency budget and lanes', () => {
     const controller = new AbortController();
     controller.abort();
     let invoked = false;
-    await expect(
-      executeWithModelFallback(['m1'], async () => { invoked = true; return 'x'; }, { resilience, provider: 'gemini-test-i', signal: controller.signal })
-    ).rejects.toThrow(/abort|cancel/i);
+    await rejects(
+      executeWithModelFallback(['m1'], async () => { invoked = true; return 'x'; }, { resilience, provider: 'gemini-test-i', signal: controller.signal }), /abort|cancel/i);
     expect(invoked).toBe(false);
   });
 });

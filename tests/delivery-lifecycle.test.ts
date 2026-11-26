@@ -41,7 +41,8 @@ describe('delivery lifecycle across restarts', () => {
     const ledger = first.getSendLedger();
     const intent = ledger.createIntent(input());
     const t0 = Date.now();
-    const claimed = ledger.claim(intent.id, 'dead-worker', t0, 30_000)!;
+    const claimed = ledger.claim(intent.id, 'dead-worker', t0, 30_000);
+    if (!claimed) throw new Error('Expected claim');
     expect(ledger.tryMarkNetworkStarted(intent.id, claimed.attempt.id, t0 + 1)).toBe(true);
     first.close(); // process dies here: no outcome recorded
 
@@ -93,7 +94,7 @@ describe('delivery lifecycle across restarts', () => {
     const b = store(path);
     const created = a.getSendLedger().createIntent(input());
     let calls = 0;
-    const slow = async () => { calls++; await new Promise((r) => setTimeout(r, 20)); return { messageId: `native-${calls}` }; };
+    const slow = async () => { calls++; await new Promise((_resolve) => setTimeout(_resolve, 20)); return { messageId: `native-${calls}` }; };
     const serviceA = new SendIntentService({ memoryStore: a, sendText: slow });
     const serviceB = new SendIntentService({ memoryStore: b, sendText: slow });
     const [ra, rb] = await Promise.all([serviceA.dispatch(created.id), serviceB.dispatch(created.id)]);
@@ -161,11 +162,11 @@ describe('delivery lifecycle across restarts', () => {
     let calls = 0;
     const svc = new SendIntentService({
       memoryStore: s,
-      sendText: async () => { calls++; await new Promise((r) => setTimeout(r, 30)); return { messageId: 'late-native' }; }
+      sendText: async () => { calls++; await new Promise((_resolve) => setTimeout(_resolve, 30)); return { messageId: 'late-native' }; }
     });
     const created = s.getSendLedger().createIntent(input({ sourceId: 'm-4' }));
     const pending = svc.dispatch(created.id);
-    await new Promise((r) => setTimeout(r, 5));
+    await new Promise((_resolve) => setTimeout(_resolve, 5));
     // A sweeper in a second process runs after the lease while the first send is still in flight.
     store(path).getSendLedger().recoverInterrupted(Date.now() + 60_000);
     const result = await pending;
@@ -184,7 +185,8 @@ describe('delivery lifecycle across restarts', () => {
     const s = store(dbPath());
     const ledger = s.getSendLedger();
     const created = ledger.createIntent(input({ sourceId: 'm-5' }));
-    const claimed = ledger.claim(created.id, 'w', Date.now(), 1)!;
+    const claimed = ledger.claim(created.id, 'w', Date.now(), 1);
+    if (!claimed) throw new Error('Expected claim');
     ledger.recoverInterrupted(Date.now() + 10);
     expect(ledger.accepted(created.id, 'some-other-attempt', 'native-x')).toBeUndefined();
     expect(ledger.getIntent(created.id)?.state).toBe('uncertain');
@@ -198,7 +200,8 @@ describe('delivery lifecycle across restarts', () => {
     const s = store(dbPath());
     const ledger = s.getSendLedger();
     const created = ledger.createIntent(input({ sourceId: 'm-6' }));
-    const claimed = ledger.claim(created.id, 'w', Date.now(), 1)!;
+    const claimed = ledger.claim(created.id, 'w', Date.now(), 1);
+    if (!claimed) throw new Error('Expected claim');
     ledger.recoverInterrupted(Date.now() + 10);
     const child = ledger.createRetryIntent({ ...input({ sourceId: 'm-6-retry' }), parentIntentId: created.id });
     expect(ledger.accepted(created.id, claimed.attempt.id, 'native-late')?.state).toBe('accepted');
@@ -211,9 +214,11 @@ describe('delivery lifecycle across restarts', () => {
     const s = store(dbPath());
     const ledger = s.getSendLedger();
     const created = ledger.createIntent(input({ sourceId: 'm-7' }));
-    const claimed = ledger.claim(created.id, 'w', 1_000, 1)!;
+    const claimed = ledger.claim(created.id, 'w', 1_000, 1);
+    if (!claimed) throw new Error('Expected claim');
     ledger.recoverInterrupted(5_000);
-    const accepted = ledger.accepted(created.id, claimed.attempt.id, 'native-t', 2_000)!;
+    const accepted = ledger.accepted(created.id, claimed.attempt.id, 'native-t', 2_000);
+    if (!accepted) throw new Error('Expected accepted');
     expect(accepted.updatedAt).toBeGreaterThanOrEqual(5_000);
   });
 });

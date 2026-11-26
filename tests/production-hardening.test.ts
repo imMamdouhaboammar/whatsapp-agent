@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { rejects } from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { ProcessLifecycleCoordinator } from '../src/server/lifecycle';
 import { ConversationCoordinator } from '../src/agent/conversation-coordinator';
@@ -12,9 +13,28 @@ import { MemoryStore } from '../src/domain/memory-store';
 import { SSEBroadcaster } from '../src/server/sse';
 import { DiagnosticsCore } from '../src/observability/diagnostics-core';
 import { createDefaultFunnelEngine } from '../src/funnel/default-engine';
+import { GeminiClient } from '../src/ai/gemini-client';
+import { WhatsAppSocketClient } from '../src/transport/whatsapp-socket';
+import { ModeratorAgent } from '../src/ai/moderator-agent';
+import { SendIntentService } from '../src/domain/send-intent-service';
+import { runEvaluationLab } from "../src/evaluation-lab/runner";
+import evaluationSuite from "../fixtures/reply-evaluation/cases-v1.json";
+import approvedEvaluation from "../fixtures/reply-evaluation/synthetic-reference-v1.json";
+import candidateEvaluation from "../fixtures/reply-evaluation/candidate-demo.json";
 import type { ChatMessage } from '../src/domain/types';
 
 describe('Production Hardening & Reliability Regressions', () => {
+  it("rejects a malformed offline evaluation policy before replay", async () => {
+    const candidate = {
+      ...candidateEvaluation,
+      policy: { ...candidateEvaluation.policy, defaultAction: "unsupported" }
+    };
+    await rejects(
+      runEvaluationLab({ suite: evaluationSuite, approved: approvedEvaluation, candidate }),
+      { name: "Error", message: "Invalid evaluation snapshot" }
+    );
+  });
+
   it('ProcessLifecycleCoordinator > executes tasks in strict phase order', async () => {
     const lifecycle = new ProcessLifecycleCoordinator({ timeoutMs: 5000 });
     const executed: string[] = [];
@@ -62,11 +82,11 @@ describe('Production Hardening & Reliability Regressions', () => {
       return 'second';
     });
 
-    await expect(secondTask).rejects.toThrow(/timeout|expired/i);
+    await rejects(secondTask, /timeout|expired/i);
     expect(secondRan).toBe(false);
-    await expect(firstTask).resolves.toBe('first');
+    expect(await firstTask).toBe('first');
     // The queue recovers once the predecessor settles.
-    await expect(coordinator.run('brand_test', 'user_1', async () => 'third')).resolves.toBe('third');
+    expect(await coordinator.run('brand_test', 'user_1', async () => 'third')).toBe('third');
   });
 
   it('AgentTurnCoordinator > fails closed on timeout instead of hanging conversation', async () => {
@@ -107,17 +127,16 @@ describe('Production Hardening & Reliability Regressions', () => {
     const testDir = `./data/test_learning_${Date.now()}`;
     const memoryManager = new DualMemoryManager({ storageDir: testDir });
 
-    const fakeGemini: any = {
-      generateContent: async () => ({
-        text: JSON.stringify({
-          selfCorrections: [],
-          newEnforcedRules: ['NEVER ask for payment upfront'],
-          newBestPractices: ['Be courteous'],
-          customerInsights: [{ chatId: 'c1', traits: ['interested in wholesale'], stage: 'lead' }],
-          threadSemanticSummary: 'Customer asked about pricing'
-        })
+    const fakeGemini = new GeminiClient({ apiKey: 'test-key' });
+    fakeGemini.generateContent = async () => ({
+      text: JSON.stringify({
+        selfCorrections: [],
+        newEnforcedRules: ['NEVER ask for payment upfront'],
+        newBestPractices: ['Be courteous'],
+        customerInsights: [{ chatId: 'c1', traits: ['interested in wholesale'], stage: 'lead' }],
+        threadSemanticSummary: 'Customer asked about pricing'
       })
-    };
+    });
 
     const engine = new ReflectionEngine(fakeGemini, memoryManager);
 
@@ -186,7 +205,8 @@ describe('Production Hardening & Reliability Regressions', () => {
     const recoveredCount = ledger.recoverInterrupted(now + 6000);
     expect(recoveredCount).toBe(1);
 
-    const check = ledger.getIntent(intent.id)!;
+    const check = ledger.getIntent(intent.id);
+    if (!check) throw new Error('Expected intent');
     expect(check.state).toBe('uncertain');
     expect(check.leaseExpiresAt).toBeUndefined();
     db.close();
@@ -208,18 +228,20 @@ describe('Production Hardening & Reliability Regressions', () => {
     const sse = new SSEBroadcaster();
     const funnelEngine = createDefaultFunnelEngine();
 
+    const whatsappClient = new WhatsAppSocketClient();
+    whatsappClient.getState = () => ({ state: 'connected', updatedAt: Date.now() });
+    whatsappClient.disconnect = async () => {};
+    const moderatorAgent = new ModeratorAgent(new GeminiClient({ apiKey: 'test-key' }), memoryStore);
+    const sendIntents = new SendIntentService({
+      memoryStore,
+      sendText: async () => ({ messageId: 'test-msg' })
+    });
+
     const app = createApiServer({
       memoryStore,
-      whatsappClient: {
-        getState: () => ({ state: 'connected', updatedAt: Date.now() }),
-        disconnect: async () => {}
-      } as any,
-      moderatorAgent: {
-        getContextFoldEngine: () => undefined,
-        getPolicy: () => ({ version: 1 }),
-        getPersona: () => ({ name: 'Test' })
-      } as any,
-      sendIntents: {} as any,
+      whatsappClient,
+      moderatorAgent,
+      sendIntents,
       diagnostics,
       sse,
       funnelEngine
@@ -227,16 +249,16 @@ describe('Production Hardening & Reliability Regressions', () => {
 
     const healthRes = await app.request('/healthz');
     expect(healthRes.status).toBe(200);
-    const healthBody = await healthRes.json() as any;
-    expect(healthBody.status).toBe('ok');
-    expect(typeof healthBody.uptimeSeconds).toBe('number');
+    const healthBody: unknown = await healthRes.json();
+    expect(healthBody).toMatchObject({ status: 'ok', uptimeSeconds: expect.any(Number) });
 
     const readyRes = await app.request('/readyz');
     expect(readyRes.status).toBe(200);
-    const readyBody = await readyRes.json() as any;
-    expect(readyBody.status).toBe('ready');
-    expect(readyBody.checks.database).toBe('healthy');
-    expect(readyBody.checks.transport.state).toBe('connected');
+    const readyBody: unknown = await readyRes.json();
+    expect(readyBody).toMatchObject({
+      status: 'ready',
+      checks: { database: 'healthy', transport: { state: 'connected' } }
+    });
 
     memoryStore.close();
   });

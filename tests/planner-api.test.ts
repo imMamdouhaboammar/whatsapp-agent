@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { expect, test } from 'bun:test';
 import { createFableWhatsAppAgent } from '../src/index';
 import type { GeminiClient } from '../src/ai/gemini-client';
@@ -10,13 +11,13 @@ const invoke = (agent: Awaited<ReturnType<typeof createFableWhatsAppAgent>>, bod
 
 test('A05 authenticated owner executes a scoped read-and-ticket workflow with receipt, no WhatsApp connection', async () => {
   let step = 0;
-  const model = { generateContent: async () => {
+  const model: Pick<GeminiClient, 'generateContent'> = { generateContent: async () => {
     step++;
-    if (step === 1) return { functionCalls: [{ name: 'order_lookup', args: { orderId: '441' } }] };
-    if (step === 2) return { functionCalls: [{ name: 'ticket_create', args: { orderId: '441' } }] };
+    if (step === 1) return { text: '', functionCalls: [{ name: 'order_lookup', args: { orderId: '441' } }] };
+    if (step === 2) return { text: '', functionCalls: [{ name: 'ticket_create', args: { orderId: '441' } }] };
     return { text: 'تم فتح التذكرة للطلب' };
   } };
-  const agent = await createFableWhatsAppAgent({ dataDir: ':memory:', autoConnect: false, capabilityToken: 'owner-a05', capabilityModel: model as unknown as Pick<GeminiClient, 'generateContent'> });
+  const agent = await createFableWhatsAppAgent({ dataDir: ':memory:', autoConnect: false, capabilityToken: 'owner-a05', capabilityModel: model });
   const calls: string[] = [];
   try {
     agent.capabilities.registry.register('brand-a', {
@@ -35,7 +36,9 @@ test('A05 authenticated owner executes a scoped read-and-ticket workflow with re
     expect((await invoke(agent, request, { 'content-type': 'application/json' })).status).toBe(401);
     const complete = await invoke(agent, request);
     expect(complete.status).toBe(200);
-    const body = await complete.json() as {status:string;reply:string;evidence:unknown[]};
+    const body: unknown = await complete.json();
+    assert(body && typeof body === 'object' && 'status' in body && 'reply' in body && 'evidence' in body);
+    assert(typeof body.reply === 'string' && Array.isArray(body.evidence));
     expect(body.status).toBe('completed');
     expect(body.reply).toContain('T-441');
     expect(body.evidence).toHaveLength(2);

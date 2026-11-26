@@ -4,6 +4,16 @@ import { SendIntentService } from '../src/domain/send-intent-service';
 import { ContactIdentityDirectory } from '../src/identity/contact-directory';
 import type { SendTemplateIntentInput } from '../src/domain/send-ledger';
 
+async function expectRejection(promise: Promise<unknown>, message: RegExp): Promise<void> {
+  try {
+    await promise;
+  } catch (error) {
+    expect(() => { throw error; }).toThrow(message);
+    return;
+  }
+  throw new Error('Expected rejection matching ' + message.source);
+}
+
 const brandId = 'brand-alpha';
 const jid = '201112223334@s.whatsapp.net';
 const now = Date.now();
@@ -73,17 +83,19 @@ describe('S01 approved Meta template and S07 durable binding', () => {
       });
       expect(first.intent.template).toEqual(templateInput().template);
       expect(first.intent.templateEligibility).toEqual(templateInput().templateEligibility);
-      expect(memory.getSendLedger().getIntent(first.intent.id)?.recipientBinding).toEqual(first.intent.recipientBinding!);
+      const firstBinding = first.intent.recipientBinding;
+      if (!firstBinding) throw new Error('Expected recipientBinding');
+      expect(memory.getSendLedger().getIntent(first.intent.id)?.recipientBinding).toEqual(firstBinding);
       expect(sent).toEqual([{
         to: '201112223334',
         template: templateInput().template,
         eligibility: { optedInAtMs: now - 86_400_000, approvedTemplate: true }
       }]);
-      await expect(service.sendTemplate(templateInput({
+      await expectRejection(service.sendTemplate(templateInput({
         template: { name: 'delivery_update', languageCode: 'en_US', components: [
           { type: 'body', parameters: [{ type: 'text', text: 'Tampered order' }] }
         ] }
-      }))).rejects.toThrow(/conflict/i);
+      })), /conflict/i);
       expect(sent).toHaveLength(1);
     } finally { memory.close(); directory.close(); }
   });
@@ -109,7 +121,7 @@ describe('S01 approved Meta template and S07 durable binding', () => {
       expect(second.intent.state).toBe('uncertain');
       await service.dispatchDue(Date.now() + 10_000);
       expect(requests).toBe(1);
-      await expect(service.retryUncertain(first.intent.id, 'manual-repeat')).rejects.toThrow(/template/i);
+      await expectRejection(service.retryUncertain(first.intent.id, 'manual-repeat'), /template/i);
       expect(requests).toBe(1);
       expect(memory.getSendLedger().getAttempts(first.intent.id)).toHaveLength(1);
     } finally { memory.close(); directory.close(); }
@@ -142,7 +154,8 @@ describe('S01 S07 immutable destination and trusted policy refusal', () => {
       });
       const result = await service.dispatch(queued.id);
       expect(result.intent.state).toBe('failed');
-      expect(result.intent.recipientBinding).toEqual(originalBinding!);
+      if (!originalBinding) throw new Error('Expected originalBinding');
+      expect(result.intent.recipientBinding).toEqual(originalBinding);
       expect(memory.getSendLedger().getEvents(queued.id).at(-1)?.reason).toBe('recipient_binding_changed');
       expect(memory.getSendLedger().getAttempts(queued.id)[0]?.networkStartedAt).toBeUndefined();
       await service.dispatchDue(Date.now() + 60_000);
@@ -223,8 +236,7 @@ describe('S01 S07 immutable destination and trusted policy refusal', () => {
         sendText: async () => { throw new Error('text forbidden'); },
         sendTemplate: async () => { calls++; return { messageId: 'forbidden' }; }
       });
-      await expect(unverified.sendTemplate(templateInput({ sourceId: 'missing-verifier' })))
-        .rejects.toThrow(/trusted authorization/i);
+      await expectRejection(unverified.sendTemplate(templateInput({ sourceId: 'missing-verifier' })), /trusted authorization/i);
       expect(calls).toBe(0);
     } finally { memory.close(); directory.close(); }
   });
@@ -262,10 +274,10 @@ test('a first-contact template uses trusted brand authorization without weakenin
       sendText: async () => { freeform++; return { messageId: 'blocked-freeform' }; },
       sendTemplate: async () => { templates++; return { messageId: 'wamid.first-contact' }; }
     });
-    await expect(service.sendText({
+    await expectRejection(service.sendText({
       sourceKind: 'autopilot', sourceId: 'unsolicited-text', sourceRevision: 1,
       actionKind: 'text', chatId: jid, text: 'Unsolicited message', policyRevision: 1
-    })).rejects.toThrow(/chat mode/i);
+    }), /chat mode/i);
     expect(memory.getSendLedger().getBySource({
       sourceKind: 'autopilot', sourceId: 'unsolicited-text', sourceRevision: 1, actionKind: 'text'
     })).toBeUndefined();
@@ -345,7 +357,10 @@ describe('S01 draft approvals and safe template previews', () => {
       expect(first.created).toBe(true);
       expect(first.result?.intent.state).toBe('accepted');
       expect(first.result?.intent.recipientBinding).toMatchObject({ brandId, jid, contactId: contact.contactId });
-      expect(memory.getSendLedger().getIntent(first.result!.intent.id)?.recipientBinding).toEqual(first.result!.intent.recipientBinding!);
+      const firstResult = first.result;
+      const firstIntentBinding = firstResult?.intent.recipientBinding;
+      if (!firstResult || !firstIntentBinding) throw new Error('Expected first result recipientBinding');
+      expect(memory.getSendLedger().getIntent(firstResult.intent.id)?.recipientBinding).toEqual(firstIntentBinding);
       expect(memory.getDraft('review-approved')?.status).toBe('sent');
       expect(second.created).toBe(false);
       expect(sends).toBe(1);
@@ -366,8 +381,7 @@ describe('S01 draft approvals and safe template previews', () => {
         memoryStore: memory, brandId, recipientDirectory: directory,
         sendText: async () => { sends++; return { messageId: 'forbidden' }; }
       });
-      await expect(service.approveDraft('unbound-draft', 'Owner approved'))
-        .rejects.toThrow(/recipient|identity|binding/i);
+      await expectRejection(service.approveDraft('unbound-draft', 'Owner approved'), /recipient|identity|binding/i);
       expect(memory.getDraft('unbound-draft')?.status).toBe('pending');
       expect(memory.getSendLedger().getBySource({
         sourceKind: 'draft', sourceId: 'unbound-draft', sourceRevision: 1, actionKind: 'text'
@@ -427,7 +441,9 @@ test('repeat approval remains a read-only idempotent acknowledgement after recip
       });
       const duplicate = await restarted.approveDraft('already-sent-draft', 'Owner approved');
       expect(duplicate.created).toBe(false);
-      expect(duplicate.result?.intent.id).toBe(first.result!.intent.id);
+      const firstResult = first.result;
+      if (!firstResult) throw new Error('Expected first result');
+      expect(duplicate.result?.intent.id).toBe(firstResult.intent.id);
       expect(sends).toBe(1);
     } finally { restartedDirectory.close(); }
   } finally { memory.close(); directory.close(); }

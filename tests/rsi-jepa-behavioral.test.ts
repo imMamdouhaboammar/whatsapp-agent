@@ -8,16 +8,16 @@ import { RsiCycleOrchestrator } from '../src/ai/rsi-loop';
 import { DualMemoryManager } from '../src/domain/learning-memory';
 import { MemoryStore } from '../src/domain/memory-store';
 import { RsiLedger } from '../src/domain/rsi-ledger';
-import type { GeminiClient } from '../src/ai/gemini-client';
+import { GeminiClient } from '../src/ai/gemini-client';
 import type { ChatMessage } from '../src/domain/types';
 
 function createBoundaryGeminiStub(responder: (prompt: string) => string): GeminiClient {
-  return {
-    generateContent: async (contents: Array<{ parts: Array<{ text?: string }> }>) => {
-      const prompt = contents.map((c) => c.parts.map((p) => p.text ?? '').join('\n')).join('\n');
-      return { text: responder(prompt) };
-    }
-  } as unknown as GeminiClient;
+  const gemini = new GeminiClient({ apiKey: 'test-key' });
+  gemini.generateContent = async (contents) => {
+    const prompt = contents.map((c) => c.parts.map((p) => p.text ?? '').join('\n')).join('\n');
+    return { text: responder(prompt) };
+  };
+  return gemini;
 }
 
 describe('RSI-JEPA Behavioral Contracts', () => {
@@ -93,16 +93,20 @@ describe('RSI-JEPA Behavioral Contracts', () => {
     const discResult = await moderator.processInboundMessage(discountMsg);
 
     expect(greetResult.decision.worldPrediction).toBeTruthy();
-    expect(greetResult.decision.worldPrediction!.factors).toHaveLength(4);
+    const greetPred = greetResult.decision.worldPrediction;
+    if (!greetPred) throw new Error('Expected greetResult worldPrediction');
+    expect(greetPred.factors).toHaveLength(4);
     expect(['draft', 'human']).toContain(discResult.decision.action);
     expect(discResult.decision.worldPrediction).toBeTruthy();
+    const discPred = discResult.decision.worldPrediction;
+    if (!discPred) throw new Error('Expected discResult worldPrediction');
     // Financial intent must yield higher policy risk (pc_002), and drafting mitigates override risk vs direct reply
-    expect(discResult.decision.worldPrediction!.factors[2]).toBeGreaterThan(
-      greetResult.decision.worldPrediction!.factors[2]
+    expect(discPred.factors[2]).toBeGreaterThan(
+      greetPred.factors[2]
     );
     const directReplyPred = worldModel.predictOutcome(
       {
-        factors: discResult.decision.worldPrediction!.factors,
+        factors: discPred.factors,
         intent: 'financial_transaction',
         turnCount: 1,
         timestamp: Date.now()
@@ -111,7 +115,7 @@ describe('RSI-JEPA Behavioral Contracts', () => {
       0.72
     );
     expect(directReplyPred.predictedOverrideProb).toBeGreaterThan(
-      discResult.decision.worldPrediction!.predictedOverrideProb
+      discPred.predictedOverrideProb
     );
 
     memoryStore.close();
@@ -222,8 +226,10 @@ describe('RSI-JEPA Behavioral Contracts', () => {
     }
 
     const ranked = orchestrator.scoreTurnCandidates(riskyState, ['reply', 'draft', 'human'], 0.75);
-    expect(ranked[0].action).not.toBe('reply');
-    expect(ranked.find((r) => r.action === 'reply')!.prediction.predictedOverrideProb).toBeGreaterThan(0.5);
+    expect(ranked[0]?.action).not.toBe('reply');
+    const replyRank = ranked.find((r) => r.action === 'reply');
+    if (!replyRank) throw new Error('Expected reply rank');
+    expect(replyRank.prediction.predictedOverrideProb).toBeGreaterThan(0.5);
 
     ledger.close();
   });

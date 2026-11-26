@@ -5,12 +5,10 @@ import { DignityGuardian } from '../src/ai/dignity-guardian';
 import {
   extractDynamicsInput,
   planConversation,
-  compileDynamicsPrompt,
 } from '../src/ai/conversation-dynamics';
 import {
   evaluateSpontaneousReaction,
   calculateCognitiveReadingDelay,
-  calculateBubbleTypingDelay,
 } from '../src/domain/whatsapp-rhythm';
 import { MessageSplitter } from '../src/domain/message-splitter';
 import type { ChatMessage } from '../src/domain/types';
@@ -38,6 +36,7 @@ describe('Aggressive Behavioral & Adversarial Humanism Suite', () => {
 
       for (let i = 0; i < attacks.length; i++) {
         const attack = attacks[i];
+        if (!attack) continue;
         const evalRes = guardian.evaluateTurn(`${contactId}_${i}`, attack);
         expect(evalRes.violationType).toBe('prompt_injection');
         expect(evalRes.disgustDelta).toBeGreaterThanOrEqual(35);
@@ -222,7 +221,7 @@ describe('Aggressive Behavioral & Adversarial Humanism Suite', () => {
   describe('5. End-to-End ModeratorAgent Behavioral Invariants', () => {
     it('blocks hostile contact before calling Gemini when dignity is violated', async () => {
       let geminiCalled = false;
-      const mockGemini: any = {
+      const mockGemini: ConstructorParameters<typeof ModeratorAgent>[0] = {
         generateContent: async () => {
           geminiCalled = true;
           return { text: '{}' };
@@ -259,10 +258,10 @@ describe('Aggressive Behavioral & Adversarial Humanism Suite', () => {
       let capturedSystemInstruction = '';
       let capturedPrompt = '';
 
-      const mockGemini: any = {
-        generateContent: async (contents: any[], options: any) => {
-          capturedPrompt = contents[0].parts[0].text;
-          capturedSystemInstruction = options.systemInstruction;
+      const mockGemini: ConstructorParameters<typeof ModeratorAgent>[0] = {
+        generateContent: async (contents, options) => {
+          capturedPrompt = contents[0]?.parts?.[0]?.text ?? '';
+          capturedSystemInstruction = options?.systemInstruction ?? '';
           return {
             text: JSON.stringify({
               action: 'reply',

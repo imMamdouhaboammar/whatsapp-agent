@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'bun:test';
+import { rejects } from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { describe, expect, it, spyOn } from 'bun:test';
 import {
   routeTurnModel,
   JevModelRouter,
@@ -10,7 +14,10 @@ import { ModeratorAgent } from '../src/ai/moderator-agent';
 import { MemoryStore } from '../src/domain/memory-store';
 import type { ChatMessage } from '../src/domain/types';
 
-import type { GeminiClient } from '../src/ai/gemini-client';
+import { McpClientManager } from '../src/mcp/client-manager';
+import { DualMemoryManager } from '../src/domain/learning-memory';
+import { ReflectionEngine } from '../src/ai/reflection-engine';
+import { GeminiClient } from '../src/ai/gemini-client';
 function providerChoice(choice: 'trivial' | 'standard' | 'complex', confidence: number) {
   return {
     model: 'jev-latest',
@@ -35,18 +42,32 @@ function providerChoice(choice: 'trivial' | 'standard' | 'complex', confidence: 
   };
 }
 
+function routerResponse(body: ReturnType<typeof providerChoice>): typeof fetch {
+  return async () => Response.json(body);
+}
+
+const mockTimeoutFetch: typeof fetch = async () => {
+  const err = new Error('The operation was aborted due to timeout');
+  err.name = 'TimeoutError';
+  throw err;
+};
+
+const mock500Fetch: typeof fetch = async () => {
+  return new Response('Internal Server Error', { status: 500, statusText: 'Internal Server Error' });
+};
 
 describe('Jev Model Router Layer', () => {
   it('routes high-confidence trivial Arabic greetings to gemini-3.8-flash', async () => {
-    let capturedBody: Record<string, unknown> | null = null;
+    const requestBodies: unknown[] = [];
 
-    const mockFetch = (async (_url: string | URL | Request, init?: RequestInit) => {
-      capturedBody = JSON.parse(init?.body as string) as Record<string, unknown>;
+    const mockFetch: typeof fetch = async (_url: string | URL | Request, init?: RequestInit) => {
+      if (typeof init?.body !== 'string') throw new Error('Expected a JSON request body');
+      requestBodies.push(JSON.parse(init.body));
       return new Response(
         JSON.stringify(providerChoice('trivial', 0.96)),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
-    }) as unknown as typeof fetch;
+    };
 
     const decision = await routeTurnModel({
       message: 'السلام عليكم ورحمة الله وبركاته، صباح الخير',
@@ -59,16 +80,11 @@ describe('Jev Model Router Layer', () => {
     expect(decision.tier).toBe('trivial');
     expect(decision.confidence).toBe(0.96);
     expect(decision.bypassed).toBe(false);
-    expect(capturedBody!.state).toBe('السلام عليكم ورحمة الله وبركاته، صباح الخير');
+    expect(requestBodies[0]).toMatchObject({ state: 'السلام عليكم ورحمة الله وبركاته، صباح الخير' });
   });
 
   it('routes high-confidence standard product/pricing queries to gemini-3.8-flash', async () => {
-    const mockFetch = (async () => {
-      return new Response(
-        JSON.stringify(providerChoice('standard', 0.89)),
-        { status: 200, headers: { 'Content-Type': 'application/json' } }
-      );
-    }) as unknown as typeof fetch;
+    const mockFetch = routerResponse(providerChoice('standard', 0.89));
 
     const decision = await routeTurnModel({
       message: 'بكام كورس الذكاء الاصطناعي ومواعيده إمتى؟',
@@ -84,15 +100,16 @@ describe('Jev Model Router Layer', () => {
   });
 
   it('routes high-confidence complex/angry complaints to gemini-4-argon', async () => {
-    let capturedBody: Record<string, unknown> | null = null;
+    const requestBodies: unknown[] = [];
 
-    const mockFetch = (async (_url: string | URL | Request, init?: RequestInit) => {
-      capturedBody = JSON.parse(init?.body as string) as Record<string, unknown>;
+    const mockFetch: typeof fetch = async (_url: string | URL | Request, init?: RequestInit) => {
+      if (typeof init?.body !== 'string') throw new Error('Expected a JSON request body');
+      requestBodies.push(JSON.parse(init.body));
       return new Response(
         JSON.stringify(providerChoice('complex', 0.94)),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
-    }) as unknown as typeof fetch;
+    };
 
     const decision = await routeTurnModel({
       message: 'الخدمة سيئة جداً ومحدش بيرد عليا وعايز أسترجع فلوسي فوراً وإلا هشتكي في حماية المستهلك!',
@@ -106,16 +123,13 @@ describe('Jev Model Router Layer', () => {
     expect(decision.tier).toBe('complex');
     expect(decision.confidence).toBe(0.94);
     expect(decision.bypassed).toBe(false);
-    expect(capturedBody).not.toHaveProperty('context');
+    const body = requestBodies[0];
+    if (typeof body !== 'object' || body === null) throw new Error('Expected a captured request object');
+    expect(body).not.toHaveProperty('context');
   });
 
   it('overrides decision to gemini-3.8-flash when confidence is below threshold (< 0.75)', async () => {
-    const mockFetch = (async () => {
-      return new Response(
-        JSON.stringify(providerChoice('complex', 0.62)),
-        { status: 200, headers: { 'Content-Type': 'application/json' } }
-      );
-    }) as unknown as typeof fetch;
+    const mockFetch = routerResponse(providerChoice('complex', 0.62));
 
     const decision = await routeTurnModel({
       message: 'مش عارف أقرر، محتاج مساعدة عامة',
@@ -135,10 +149,10 @@ describe('Jev Model Router Layer', () => {
 
   it('bypasses immediately to gemini-3.8-flash with 0ms latency when TYPESAFE_API_KEY is missing', async () => {
     let fetchCalled = false;
-    const mockFetch = (async () => {
+    const mockFetch: typeof fetch = async () => {
       fetchCalled = true;
       return new Response('{}');
-    }) as unknown as typeof fetch;
+    };
 
     const decision = await routeTurnModel({
       message: 'صباح الخير',
@@ -157,12 +171,6 @@ describe('Jev Model Router Layer', () => {
 
   it('fails open to gemini-3.8-flash when Jev API times out (>800ms) or returns 500 error', async () => {
     // 1. Test timeout fail-open
-    const mockTimeoutFetch = (async () => {
-      const err = new Error('The operation was aborted due to timeout');
-      err.name = 'TimeoutError';
-      throw err;
-    }) as unknown as typeof fetch;
-
     const timeoutDecision = await routeTurnModel({
       message: 'رسالة أثناء انقطاع الشبكة',
       apiKey: 'test-typesafe-key',
@@ -177,10 +185,6 @@ describe('Jev Model Router Layer', () => {
     expect(timeoutDecision.reason).toContain('Router exception');
 
     // 2. Test 500 HTTP server error fail-open
-    const mock500Fetch = (async () => {
-      return new Response('Internal Server Error', { status: 500, statusText: 'Internal Server Error' });
-    }) as unknown as typeof fetch;
-
     const errorDecision = await routeTurnModel({
       message: 'رسالة أثناء عطل السيرفر',
       apiKey: 'test-typesafe-key',
@@ -195,15 +199,16 @@ describe('Jev Model Router Layer', () => {
   });
 
   it('scrubs sensitive credentials before dispatching request to Jev', async () => {
-    let capturedBody: Record<string, unknown> | null = null;
+    const requestBodies: unknown[] = [];
 
-    const mockFetch = (async (_url: string | URL | Request, init?: RequestInit) => {
-      capturedBody = JSON.parse(init?.body as string) as Record<string, unknown>;
+    const mockFetch: typeof fetch = async (_url: string | URL | Request, init?: RequestInit) => {
+      if (typeof init?.body !== 'string') throw new Error('Expected a JSON request body');
+      requestBodies.push(JSON.parse(init.body));
       return new Response(
         JSON.stringify(providerChoice('trivial', 0.99)),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
-    }) as unknown as typeof fetch;
+    };
 
     // Dynamically construct dummy secret tokens at runtime
     const dummyKey = ['sk', 'live', 'abcdef1234567890abcdef1234'].join('-');
@@ -216,19 +221,17 @@ describe('Jev Model Router Layer', () => {
       fetchFn: mockFetch
     });
 
-    expect(capturedBody).toBeDefined();
-    expect(capturedBody!.state).not.toContain(dummyKey);
-    expect(capturedBody!.state).not.toContain('mySecretPass123');
-    expect(capturedBody!.state).toContain('[REDACTED_CREDENTIAL]');
+    const body = requestBodies[0];
+    if (typeof body !== 'object' || body === null || !('state' in body) || typeof body.state !== 'string') {
+      throw new Error('Expected a captured request with a string state');
+    }
+    expect(body.state).not.toContain(dummyKey);
+    expect(body.state).not.toContain('mySecretPass123');
+    expect(body.state).toContain('[REDACTED_CREDENTIAL]');
   });
 
   it('supports JevModelRouter class instance and default options', async () => {
-    const mockFetch = (async () => {
-      return new Response(
-        JSON.stringify(providerChoice('trivial', 0.92)),
-        { status: 200, headers: { 'Content-Type': 'application/json' } }
-      );
-    }) as unknown as typeof fetch;
+    const mockFetch = routerResponse(providerChoice('trivial', 0.92));
 
     const router = new JevModelRouter({
       apiKey: 'test-typesafe-key',
@@ -281,37 +284,37 @@ describe('Model Fallback Dynamic Chain with preferredModel', () => {
   });
 });
 
+async function complexRouter(): Promise<RoutingDecision> {
+  return {
+    selectedModel: 'gemini-4-argon',
+    tier: 'complex',
+    confidence: 0.93,
+    routerLatencyMs: 38,
+    reason: 'Complex inquiry requiring reasoning',
+    bypassed: false
+  };
+}
+
 describe('ModeratorAgent + Jev Routing Integration', () => {
   it('populates modelRouting and embeds routing trace in reasoning', async () => {
     const memory = new MemoryStore({ dataDir: './data/test-memory-jev' });
     let modelCalledWith: string | null = null;
 
-    const mockGemini = {
-      generateContent: async (_contents: unknown, options?: { model?: string }) => {
-        modelCalledWith = options?.model ?? null;
-        return {
-          text: JSON.stringify({
-            action: 'reply',
-            intent: 'general_faq',
-            replyText: 'أهلاً بك، الكورس متاح حالياً!',
-            reasoning: 'Helpful answer about course availability',
-            confidence: 0.95
-          })
-        };
-      }
-    } as unknown as GeminiClient;
+    const mockGemini = new GeminiClient({ apiKey: 'test-key' });
+    mockGemini.generateContent = async (_contents, options) => {
+      modelCalledWith = options?.model ?? null;
+      return {
+        text: JSON.stringify({
+          action: 'reply',
+          intent: 'general_faq',
+          replyText: 'أهلاً بك، الكورس متاح حالياً!',
+          reasoning: 'Helpful answer about course availability',
+          confidence: 0.95
+        })
+      };
+    };
 
-    // Custom router simulating complex tier -> routes to gemini-4-argon
-    const mockRouter = async (): Promise<RoutingDecision> => ({
-      selectedModel: 'gemini-4-argon',
-      tier: 'complex',
-      confidence: 0.93,
-      routerLatencyMs: 38,
-      reason: 'Complex inquiry requiring reasoning',
-      bypassed: false
-    });
-
-    const agent = new ModeratorAgent(mockGemini, memory, { router: mockRouter });
+    const agent = new ModeratorAgent(mockGemini, memory, { router: complexRouter });
     const incoming: ChatMessage = {
       id: 'msg_jev_1',
       chatId: 'test_student@s.whatsapp.net',
@@ -336,5 +339,66 @@ describe('ModeratorAgent + Jev Routing Integration', () => {
     // Decision reasoning includes the formatted trace
     expect(result.decision.reasoning).toContain('[Jev: complex -> gemini-4-argon (93%, 38ms)]');
     expect(result.decision.reasoning).toContain('Helpful answer about course availability');
+  });
+});
+
+describe('AI response validation', () => {
+  it('rejects a malformed Gemini function call before exposing it to callers', async () => {
+    const spawn = spyOn(Bun, 'spawn').mockImplementation(() => { throw new Error('Cloud CLI disabled in test'); });
+    const fetcher = spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({
+      candidates: [{ content: { parts: [{ functionCall: { name: 42 } }] } }]
+    }));
+    try {
+      const client = new GeminiClient({ apiKey: 'fixture' });
+      await rejects(client.generateContent([{ role: 'user', parts: [{ text: 'Test' }] }]), /non-JSON response/);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    } finally {
+      fetcher.mockRestore();
+      spawn.mockRestore();
+    }
+  });
+
+  it('rejects a non-object reflection without persisting model output', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'wa-reflection-'));
+    try {
+      const memory = new DualMemoryManager({ storageDir: dir });
+      const workbook = memory.getWorkbook();
+      const model = new GeminiClient();
+      model.generateContent = async () => ({ text: '[]' });
+      const engine = new ReflectionEngine(model, memory);
+      await rejects(engine.evaluateThread({ chatId: 'test', messages: [] }), /Reflection response must be a JSON object/);
+      expect(memory.getWorkbook()).toEqual(workbook);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('hands off a structured tool-loop reply with a non-string replyText', async () => {
+    const memory = new MemoryStore({ dataDir: ':memory:' });
+    const manager = new McpClientManager({ config: { servers: [] } });
+    manager.listAvailableTools = () => [{
+      namespacedName: 'fixture__read',
+      serverName: 'fixture',
+      rawToolName: 'read',
+      description: 'Read fixture',
+      inputSchema: { type: 'object' },
+      risk: 'readOnly',
+      requiresHumanApproval: false
+    }];
+    const agent = new ModeratorAgent({
+      generateContent: async () => ({ text: JSON.stringify({ action: 'reply', replyText: { unexpected: 'value' } }) })
+    }, memory, { router: complexRouter, mcpClientManager: manager });
+    const result = await agent.processInboundMessage({
+      id: 'invalid-tool-reply',
+      chatId: 'customer@s.whatsapp.net',
+      sender: 'customer@s.whatsapp.net',
+      text: 'Can you explain the service?',
+      timestamp: 1,
+      isFromMe: false,
+      type: 'text'
+    });
+    expect(result.decision.intent).toBe('error_fallback');
+    expect(result.decision.replyText).toBeUndefined();
+    expect(result.shouldSendImmediately).toBe(false);
   });
 });

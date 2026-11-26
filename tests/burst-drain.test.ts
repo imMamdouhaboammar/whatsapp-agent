@@ -9,11 +9,11 @@ function makeMessage(id: string, chatId = 'chat1@s.whatsapp.net'): ChatMessage {
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  const promise = new Promise<T>((_resolve, _reject) => { resolve = _resolve; reject = _reject; });
   return { promise, resolve, reject };
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe('WA-007 burst drain integrity', () => {
   it('drain stays pending until an already-started callback completes', async () => {
@@ -29,7 +29,7 @@ describe('WA-007 burst drain integrity', () => {
 
     // The callback has started but is blocked; drain must not report done.
     let drained = false;
-    void drainP.then(() => { drained = true; });
+    void drainP.then(() => { drained = true; return undefined; });
     await sleep(80);
     expect(finished).toBe(false);
     expect(drained).toBe(false);
@@ -54,7 +54,7 @@ describe('WA-007 burst drain integrity', () => {
 
     await acc.drain();
     expect(delivered).toHaveLength(1);
-    expect(delivered[0].messages.map((m) => m.id)).toEqual(['m1']);
+    expect(delivered[0]?.messages.map((m) => m.id)).toEqual(['m1']);
   });
 
   it('drain is idempotent and releases timers', async () => {

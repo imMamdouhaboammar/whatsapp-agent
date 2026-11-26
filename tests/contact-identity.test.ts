@@ -1,3 +1,4 @@
+import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -13,6 +14,13 @@ const phoneA = '201112223334@s.whatsapp.net';
 const phoneB = '201112223335@s.whatsapp.net';
 const lidA = '100002222333@lid';
 const group = '120363000123456789@g.us';
+
+function requireValue<T>(value: T | undefined | null, label = 'value'): T {
+  if (value === undefined || value === null) {
+    throw new Error(`Expected ${label} to be defined`);
+  }
+  return value;
+}
 
 describe('S07 canonical contact identities', () => {
   test('observations stay separate until an explicit verified phone-to-LID mapping', () => {
@@ -33,12 +41,12 @@ describe('S07 canonical contact identities', () => {
       });
       expect(decision.created).toBe(true);
       expect(directory.resolve({ brandId: brand, jid: phoneA })?.contactId)
-        .toBe(directory.resolve({ brandId: brand, jid: lidA })!.contactId);
+        .toBe(requireValue(directory.resolve({ brandId: brand, jid: lidA })).contactId);
       expect(directory.resolve({ brandId: brand, jid: lidA })?.verified).toBe(true);
 
       expect(directory.undoMerge({ brandId: brand, decisionId: decision.id })).toBe(true);
       expect(directory.resolve({ brandId: brand, jid: phoneA })?.contactId)
-        .not.toBe(directory.resolve({ brandId: brand, jid: lidA })!.contactId);
+        .not.toBe(requireValue(directory.resolve({ brandId: brand, jid: lidA })).contactId);
     } finally {
       directory.close();
     }
@@ -103,7 +111,7 @@ describe('S07 canonical contact identities', () => {
       });
       expect(() => directory.revalidateRecipient(queued)).toThrow(RecipientBindingChangedError);
       const fresh = directory.bindRecipient({ brandId: brand, jid: lidA });
-      expect(fresh.contactId).toBe(directory.resolve({ brandId: brand, jid: phoneA })!.contactId);
+      expect(fresh.contactId).toBe(requireValue(directory.resolve({ brandId: brand, jid: phoneA })).contactId);
       expect(directory.revalidateRecipient(fresh)).toBe(lidA);
     } finally {
       directory.close();
@@ -130,12 +138,12 @@ describe('S07 canonical contact identities', () => {
 
       directory = new ContactIdentityDirectory({ dbPath, verifyEvidence: () => true });
       expect(directory.resolve({ brandId: brand, jid: phoneA })?.contactId)
-        .toBe(directory.resolve({ brandId: brand, jid: lidA })!.contactId);
+        .toBe(requireValue(directory.resolve({ brandId: brand, jid: lidA })).contactId);
       expect(directory.undoMerge({ brandId: brand, decisionId: decision.id })).toBe(true);
-      expect(directory.resolve({ brandId: brand, jid: phoneA })?.rawContactId).toBe(aBefore!);
-      expect(directory.resolve({ brandId: brand, jid: lidA })?.rawContactId).toBe(bBefore!);
+      expect(directory.resolve({ brandId: brand, jid: phoneA })?.rawContactId).toBe(requireValue(aBefore));
+      expect(directory.resolve({ brandId: brand, jid: lidA })?.rawContactId).toBe(requireValue(bBefore));
       expect(directory.resolve({ brandId: brand, jid: phoneA })?.contactId)
-        .not.toBe(directory.resolve({ brandId: brand, jid: lidA })!.contactId);
+        .not.toBe(requireValue(directory.resolve({ brandId: brand, jid: lidA })).contactId);
       directory.close();
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
@@ -150,13 +158,13 @@ describe('S07 canonical contact identities', () => {
       expect(alpha.contactId).not.toBe(beta.contactId);
       expect(directory.resolve({ brandId: 'brand-beta', jid: lidA })).toBeUndefined();
       directory.observeAlias({ brandId: brand, jid: lidA });
-      expect(() => directory.verifyAliasRelationship({
+      expect(() => Reflect.apply(directory.verifyAliasRelationship.bind(directory), undefined, [{
         brandId: brand,
         primaryJid: phoneA,
         relatedJid: lidA,
-        source: 'display_name' as 'owner_verified',
+        source: 'display_name',
         evidenceRef: 'matching-name',
-      })).toThrow(IdentityEvidenceError);
+      }])).toThrow(IdentityEvidenceError);
       expect(() => directory.verifyAliasRelationship({
         brandId: brand,
         primaryJid: phoneA,
@@ -207,8 +215,8 @@ describe('S07 canonical contact identities', () => {
       expect(reverse.created).toBe(true);
       expect(reverse.id).not.toBe(first.id);
       expect(directory.undoMerge({ brandId: brand, decisionId: first.id })).toBe(true);
-      expect(directory.resolve({ brandId: brand, jid: phoneA })!.contactId)
-        .toBe(directory.resolve({ brandId: brand, jid: lidA })!.contactId);
+      expect(requireValue(directory.resolve({ brandId: brand, jid: phoneA })).contactId)
+        .toBe(requireValue(directory.resolve({ brandId: brand, jid: lidA })).contactId);
     } finally {
       directory.close();
     }
@@ -231,12 +239,12 @@ describe('S07 reversible merge graph and recipient stability', () => {
         source: 'owner_verified', evidenceRef: 'related-contact-review-001',
       });
       expect(directory.resolve({ brandId: brand, jid: phoneB })?.contactId)
-        .toBe(directory.resolve({ brandId: brand, jid: phoneA })!.contactId);
+        .toBe(requireValue(directory.resolve({ brandId: brand, jid: phoneA })).contactId);
       expect(directory.undoMerge({ brandId: brand, decisionId: first.id })).toBe(true);
       expect(directory.resolve({ brandId: brand, jid: lidA })?.contactId)
-        .toBe(directory.resolve({ brandId: brand, jid: phoneB })!.contactId);
+        .toBe(requireValue(directory.resolve({ brandId: brand, jid: phoneB })).contactId);
       expect(directory.resolve({ brandId: brand, jid: lidA })?.contactId)
-        .not.toBe(directory.resolve({ brandId: brand, jid: phoneA })!.contactId);
+        .not.toBe(requireValue(directory.resolve({ brandId: brand, jid: phoneA })).contactId);
     } finally {
       directory.close();
     }
@@ -346,15 +354,15 @@ describe('S07 verified evidence graph integrity', () => {
       expect(independent.id).not.toBe(first.id);
       expect(independent.id).not.toBe(later.id);
       expect(directory.undoMerge({ brandId: brand, decisionId: first.id })).toBe(true);
-      expect(directory.resolve({ brandId: brand, jid: phoneA })!.contactId)
-        .toBe(directory.resolve({ brandId: brand, jid: phoneB })!.contactId);
-      expect(directory.resolve({ brandId: brand, jid: lidA })!.contactId)
-        .toBe(directory.resolve({ brandId: brand, jid: phoneB })!.contactId);
+      expect(requireValue(directory.resolve({ brandId: brand, jid: phoneA })).contactId)
+        .toBe(requireValue(directory.resolve({ brandId: brand, jid: phoneB })).contactId);
+      expect(requireValue(directory.resolve({ brandId: brand, jid: lidA })).contactId)
+        .toBe(requireValue(directory.resolve({ brandId: brand, jid: phoneB })).contactId);
       expect(directory.undoMerge({ brandId: brand, decisionId: later.id })).toBe(true);
-      expect(directory.resolve({ brandId: brand, jid: phoneA })!.contactId)
-        .toBe(directory.resolve({ brandId: brand, jid: phoneB })!.contactId);
-      expect(directory.resolve({ brandId: brand, jid: lidA })!.contactId)
-        .not.toBe(directory.resolve({ brandId: brand, jid: phoneB })!.contactId);
+      expect(requireValue(directory.resolve({ brandId: brand, jid: phoneA })).contactId)
+        .toBe(requireValue(directory.resolve({ brandId: brand, jid: phoneB })).contactId);
+      expect(requireValue(directory.resolve({ brandId: brand, jid: lidA })).contactId)
+        .not.toBe(requireValue(directory.resolve({ brandId: brand, jid: phoneB })).contactId);
     } finally {
       directory.close();
     }
@@ -410,22 +418,45 @@ describe('S07 deep reconciliation components', () => {
       const ids = Array.from({ length: 130 }, (_, index) =>
         `${100000000000 + index}@lid`);
       for (const jid of ids) directory.observeAlias({ brandId: brand, jid });
-      const firstRaw = directory.resolve({ brandId: brand, jid: ids[0]! })!.rawContactId;
+      const firstId = requireValue(ids[0]);
+      const lastId = requireValue(ids[129]);
+      const firstRaw = requireValue(directory.resolve({ brandId: brand, jid: firstId })).rawContactId;
       let lastDecision = '';
       for (let index = 0; index < ids.length - 1; index++) {
         lastDecision = directory.verifyAliasRelationship({
-          brandId: brand, primaryJid: ids[index]!, relatedJid: ids[index + 1]!,
+          brandId: brand, primaryJid: requireValue(ids[index]), relatedJid: requireValue(ids[index + 1]),
           source: 'provider_verified', evidenceRef: `provider-link-${index.toString().padStart(3, '0')}`,
         }).id;
       }
-      expect(directory.resolve({ brandId: brand, jid: ids[129]! })!.contactId)
-        .toBe(directory.resolve({ brandId: brand, jid: ids[0]! })!.contactId);
-      expect(directory.resolve({ brandId: brand, jid: ids[0]! })?.rawContactId).toBe(firstRaw);
+      expect(requireValue(directory.resolve({ brandId: brand, jid: lastId })).contactId)
+        .toBe(requireValue(directory.resolve({ brandId: brand, jid: firstId })).contactId);
+      expect(directory.resolve({ brandId: brand, jid: firstId })?.rawContactId).toBe(firstRaw);
       expect(directory.undoMerge({ brandId: brand, decisionId: lastDecision })).toBe(true);
-      expect(directory.resolve({ brandId: brand, jid: ids[129]! })?.contactId)
-        .not.toBe(directory.resolve({ brandId: brand, jid: ids[0]! })?.contactId);
+      expect(directory.resolve({ brandId: brand, jid: lastId })?.contactId)
+        .not.toBe(directory.resolve({ brandId: brand, jid: firstId })?.contactId);
     } finally {
       directory.close();
     }
   });
+});
+
+test('rejects corrupt persisted identity verification evidence', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wa-identity-corrupt-'));
+  const dbPath = join(dir, 'identity.sqlite');
+  const directory = new ContactIdentityDirectory({ dbPath, verifyEvidence: () => true });
+  const db = new Database(dbPath);
+  try {
+    directory.observeAlias({ brandId: brand, jid: phoneA });
+    directory.observeAlias({ brandId: brand, jid: lidA });
+    const decision = directory.verifyAliasRelationship({
+      brandId: brand, primaryJid: phoneA, relatedJid: lidA,
+      source: 'owner_verified', evidenceRef: 'owner-event-corrupt',
+    });
+    db.run('UPDATE identity_merges SET verification_source = ? WHERE id = ?', ['history_import', decision.id]);
+    expect(() => directory.resolve({ brandId: brand, jid: phoneA })).toThrow(IdentityEvidenceError);
+  } finally {
+    db.close();
+    directory.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

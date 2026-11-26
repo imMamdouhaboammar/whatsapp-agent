@@ -88,10 +88,15 @@ describe('B2 Meta runtime composition', () => {
   });
 
   test('refuses Meta mode before initializing a transport when required account credentials are absent', async () => {
-    await expect(createFableWhatsAppAgent({
+    const result = await createFableWhatsAppAgent({
       dataDir: ':memory:',
       autoConnect: false,
       transport: 'meta-cloud'
-    })).rejects.toThrow(/meta|credential|config/i);
+    }).then(
+      () => { throw new Error('Meta runtime started without credentials'); },
+      (error: unknown) => error
+    );
+    expect(result).toBeInstanceOf(Error);
+    expect(result).toMatchObject({ message: expect.stringMatching(/meta|credential|config/i) });
   });
 });

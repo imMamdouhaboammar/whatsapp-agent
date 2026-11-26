@@ -1,6 +1,6 @@
+import { rejects } from 'node:assert/strict';
 import { describe, expect, it } from 'bun:test';
 import { orchestrateModel } from '../src/ai/model-orchestrator';
-import { executeWithModelFallback } from '../src/ai/model-fallback';
 import { GeminiClient } from '../src/ai/gemini-client';
 import { ModeratorAgent } from '../src/ai/moderator-agent';
 import { MemoryStore } from '../src/domain/memory-store';
@@ -95,19 +95,22 @@ describe('Behavioral & Adversarial: ModelOrchestrator', () => {
   });
 });
 
+async function throwingRouter(): Promise<never> {
+  throw new Error('Network unreachable');
+}
+
 describe('Behavioral & Adversarial: Fallback & Fail-Closed Security', () => {
   it('fails closed immediately on 401/403 auth errors during orchestrated ModeratorAgent turn (never falls back)', async () => {
     const memory = new MemoryStore({ dataDir: './data/test-memory-orch-auth' });
     const attempted: string[] = [];
 
-    const mockGemini = {
-      generateContent: async (_contents: unknown, options?: { model?: string }) => {
-        attempted.push(options?.model || 'unknown');
-        const err: any = new Error('UNAUTHENTICATED: Invalid token');
-        err.status = 401;
-        throw err;
-      }
-    } as unknown as GeminiClient;
+    const mockGemini = new GeminiClient({ apiKey: 'test-key' });
+    mockGemini.generateContent = async (_contents, options) => {
+      attempted.push(options?.model || 'unknown');
+      const err: Error & { status?: number } = new Error('UNAUTHENTICATED: Invalid token');
+      err.status = 401;
+      throw err;
+    };
 
     const agent = new ModeratorAgent(mockGemini, memory);
     const result = await agent.processInboundMessage(
@@ -125,26 +128,25 @@ describe('Behavioral & Adversarial: Fallback & Fail-Closed Security', () => {
     const memory = new MemoryStore({ dataDir: './data/test-memory-orch-429' });
     const attempted: string[] = [];
 
-    const mockGemini = {
-      generateContent: async (_contents: unknown, options?: { model?: string }) => {
-        const model = options?.model || 'unknown';
-        attempted.push(model);
-        if (model === 'gemini-4-carbon') {
-          const err: any = new Error('RESOURCE_EXHAUSTED: 429');
-          err.status = 429;
-          throw err;
-        }
-        return {
-          text: JSON.stringify({
-            action: 'draft',
-            intent: 'sensitive_inquiry',
-            replyText: 'هراجع طلب الاسترجاع مع الإدارة حالاً.',
-            reasoning: 'Escalated refund request to draft',
-            confidence: 0.92
-          })
-        };
+    const mockGemini = new GeminiClient({ apiKey: 'test-key' });
+    mockGemini.generateContent = async (_contents, options) => {
+      const model = options?.model || 'unknown';
+      attempted.push(model);
+      if (model === 'gemini-4-carbon') {
+        const err: Error & { status?: number } = new Error('RESOURCE_EXHAUSTED: 429');
+        err.status = 429;
+        throw err;
       }
-    } as unknown as GeminiClient;
+      return {
+        text: JSON.stringify({
+          action: 'draft',
+          intent: 'sensitive_inquiry',
+          replyText: 'هراجع طلب الاسترجاع مع الإدارة حالاً.',
+          reasoning: 'Escalated refund request to draft',
+          confidence: 0.92
+        })
+      };
+    };
 
     const agent = new ModeratorAgent(mockGemini, memory);
     const result = await agent.processInboundMessage(
@@ -178,23 +180,18 @@ describe('Behavioral & Adversarial: Fallback & Fail-Closed Security', () => {
     const memory = new MemoryStore({ dataDir: './data/test-memory-orch-throw' });
     let usedModel: string | undefined;
 
-    const mockGemini = {
-      generateContent: async (_contents: unknown, options?: { model?: string }) => {
-        usedModel = options?.model;
-        return {
-          text: JSON.stringify({
-            action: 'reply',
-            intent: 'greeting',
-            replyText: 'أهلاً بك!',
-            reasoning: 'Normal reply',
-            confidence: 0.95
-          })
-        };
-      }
-    } as unknown as GeminiClient;
-
-    const throwingRouter = async () => {
-      throw new Error('Network unreachable');
+    const mockGemini = new GeminiClient({ apiKey: 'test-key' });
+    mockGemini.generateContent = async (_contents, options) => {
+      usedModel = options?.model;
+      return {
+        text: JSON.stringify({
+          action: 'reply',
+          intent: 'greeting',
+          replyText: 'أهلاً بك!',
+          reasoning: 'Normal reply',
+          confidence: 0.95
+        })
+      };
     };
 
     const agent = new ModeratorAgent(mockGemini, memory, { router: throwingRouter });
@@ -205,46 +202,47 @@ describe('Behavioral & Adversarial: Fallback & Fail-Closed Security', () => {
     expect(res.decision.modelRouting?.bypassed).toBe(false);
   });
 
-  it('GeminiClient cascades 404 on Vertex from carbon -> argon -> 3.8-flash and fails closed on 403', async () => {
+  it('GeminiClient cascades 404 on Vertex from carbon -> argon -> 2.5-flash and fails closed on 403', async () => {
     const client = new GeminiClient({ apiKey: 'test-key' });
-    (client as any).ensureAuth = async () => ({ type: 'vertex', tokenOrKey: 'tok', project: 'p' });
+    Reflect.set(client, 'ensureAuth', async () => ({ type: 'vertex', tokenOrKey: 'tok', project: 'p' }));
 
     const originalFetch = globalThis.fetch;
     const calls: string[] = [];
-    globalThis.fetch = (async (url: string | URL | Request) => {
-      const m = String(url).match(/models\/([^:]+):generateContent/)?.[1] || '';
+    globalThis.fetch = async (url: string | URL | Request) => {
+      const m = (url instanceof Request ? url.url : url.toString()).match(/models\/([^:]+):generateContent/)?.[1] || '';
       calls.push(m);
       if (m === 'gemini-4-carbon' || m === 'gemini-4-argon') {
         return new Response(JSON.stringify({ error: { message: 'Not enabled' } }), { status: 404 });
       }
       return new Response(
-        JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok-from-3.8' }] } }] }),
+        JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok-from-2.5' }] } }] }),
         { status: 200 }
       );
-    }) as any;
+    };
 
     try {
       const out = await client.generateContent([{ role: 'user', parts: [{ text: 'hi' }] }], {
         model: 'gemini-4-carbon'
       });
-      expect(calls).toEqual(['gemini-4-carbon', 'gemini-4-argon', 'gemini-3.8-flash']);
-      expect(out.text).toBe('ok-from-3.8');
+      expect(calls).toEqual(['gemini-4-carbon', 'gemini-4-argon', 'gemini-2.5-flash']);
+      expect(out.text).toBe('ok-from-2.5');
     } finally {
       globalThis.fetch = originalFetch;
     }
 
     // Now verify 403 fails closed without fallback
     const authCalls: string[] = [];
-    globalThis.fetch = (async (url: string | URL | Request) => {
-      const m = String(url).match(/models\/([^:]+):generateContent/)?.[1] || '';
+    globalThis.fetch = async (url: string | URL | Request) => {
+      const m = (url instanceof Request ? url.url : url.toString()).match(/models\/([^:]+):generateContent/)?.[1] || '';
       authCalls.push(m);
       return new Response(JSON.stringify({ error: { message: 'Forbidden' } }), { status: 403 });
-    }) as any;
+    };
 
     try {
-      await expect(
-        client.generateContent([{ role: 'user', parts: [{ text: 'hi' }] }], { model: 'gemini-4-carbon' })
-      ).rejects.toThrow('403');
+      await rejects(
+        client.generateContent([{ role: 'user', parts: [{ text: 'hi' }] }], { model: 'gemini-4-carbon' }),
+        /403/
+      );
       expect(authCalls).toEqual(['gemini-4-carbon']);
     } finally {
       globalThis.fetch = originalFetch;

@@ -1,7 +1,11 @@
+import { Database } from 'bun:sqlite';
+import { InboundJobLedger } from '../src/domain/inbound-job-ledger';
+import { BroadcastStore } from '../src/domain/broadcast-store';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ModeratorAgent } from '../src/ai/moderator-agent';
 import { MemoryStore } from '../src/domain/memory-store';
 import { SendIntentService } from '../src/domain/send-intent-service';
 import { createApiServer } from '../src/server/api';
@@ -145,23 +149,29 @@ describe('S01 reliable send ledger', () => {
     const second = ledger.approveDraft('draft-1', 'Edited answer', 3);
     expect(first.created).toBe(true);
     expect(second.created).toBe(false);
-    expect(second.intent!.id).toBe(first.intent!.id);
+    if (!first.intent || !second.intent) throw new Error('Expected intents');
+    expect(second.intent.id).toBe(first.intent.id);
     expect(memory.getDraft('draft-1')?.status).toBe('approved');
-    expect(ledger.getAttempts(first.intent!.id)).toHaveLength(0);
+    expect(ledger.getAttempts(first.intent.id)).toHaveLength(0);
   });
 });
 
+function makeApi(memory: MemoryStore, sender: (chatId: string, text: string) => Promise<{ messageId: string }>) {
+  const whatsappClient = new WhatsAppSocketClient();
+  whatsappClient.sendMessage = sender;
+  whatsappClient.canonicalizeJid = async (chatId) => chatId;
+  const moderatorAgent = new ModeratorAgent({
+    generateContent: async () => { throw new Error('Gemini should not run during a send'); }
+  }, memory);
+  return createApiServer({
+    memoryStore: memory,
+    whatsappClient,
+    moderatorAgent,
+    sse: new SSEBroadcaster()
+  });
+}
+
 describe('S01 HTTP send paths', () => {
-  const makeApi = (memory: MemoryStore, sender: (chatId: string, text: string) => Promise<{ messageId: string }>) =>
-    createApiServer({
-      memoryStore: memory,
-      whatsappClient: {
-        sendMessage: sender,
-        canonicalizeJid: async (chatId: string) => chatId
-      } as any,
-      moderatorAgent: {} as any,
-      sse: new SSEBroadcaster()
-    });
 
   it('one UI mutation ID creates one send and a conflict is rejected', async () => {
     const memory = makeStore();
@@ -205,7 +215,7 @@ describe('S01 HTTP send paths', () => {
     });
     const responses = await Promise.all([request(), request()]);
     expect(calls).toBe(1);
-    expect(responses.map((r) => r.status).sort()).toEqual([200, 202]);
+    expect(responses.map((r) => r.status).toSorted((a, b) => a - b)).toEqual([200, 202]);
     const payloads = await Promise.all(responses.map((r) => r.json()));
     expect(payloads.filter((p) => p.alreadyProcessed)).toHaveLength(1);
     expect(payloads[0].intentId).toBe(payloads[1].intentId);
@@ -265,18 +275,10 @@ describe('S01 receipt correlation and deliberate retries', () => {
   it('keeps a retry behind explicit approval and allows only one child retry', async () => {
     const memory = makeStore();
     let calls = 0;
-    const app = createApiServer({
-      memoryStore: memory,
-      whatsappClient: {
-        canonicalizeJid: async (id: string) => id,
-        sendMessage: async () => {
-          calls++;
-          if (calls === 1) throw new Error('unknown after transmit');
-          return { messageId: 'native-retry' };
-        }
-      } as any,
-      moderatorAgent: {} as any,
-      sse: new SSEBroadcaster()
+    const app = makeApi(memory, async () => {
+      calls++;
+      if (calls === 1) throw new Error('unknown after transmit');
+      return { messageId: 'native-retry' };
     });
     const chatId = input().chatId;
     const sent = await app.request(`/api/chats/${encodeURIComponent(chatId)}/messages`, {
@@ -301,12 +303,17 @@ describe('S01 receipt correlation and deliberate retries', () => {
       body: JSON.stringify({ confirm: true, clientMutationId: id })
     });
     const [one, two] = await Promise.all([confirmed('explicit-1'), confirmed('explicit-2')]);
-    expect([one.status, two.status].sort()).toEqual([200, 202]);
+    expect([one.status, two.status].toSorted((a, b) => a - b)).toEqual([200, 202]);
     expect(calls).toBe(2);
     const [payloadOne, payloadTwo] = await Promise.all([one.json(), two.json()]);
     expect(payloadOne.intentId).toBe(payloadTwo.intentId);
     const finalList = await app.request(`/api/chats/${encodeURIComponent(chatId)}/messages`);
-    expect((await finalList.json()).messages.every((message: any) => message.deliveryState !== 'uncertain')).toBe(true);
+    const finalPayload: unknown = await finalList.json();
+    if (!finalPayload || typeof finalPayload !== 'object' || !('messages' in finalPayload)
+        || !Array.isArray(finalPayload.messages)) throw new Error('Expected a messages array');
+    expect(finalPayload.messages.every((message: unknown) =>
+      typeof message === 'object' && message !== null
+      && (!('deliveryState' in message) || message.deliveryState !== 'uncertain'))).toBe(true);
   });
 });
 
@@ -382,7 +389,7 @@ describe('S01 proven pre-network boundaries', () => {
     const first = await service.sendVoice(input({ actionKind: 'voice', sourceId: 'voice-preflight' }));
     expect(first.intent.state).toBe('queued');
     expect(sends).toBe(0);
-    expect(memory.getSendLedger().getAttempts(first.intent.id)[0].networkStartedAt).toBeUndefined();
+    expect(memory.getSendLedger().getAttempts(first.intent.id)[0]?.networkStartedAt).toBeUndefined();
     const retry = await service.dispatch(first.intent.id, Date.now() + 1000);
     expect(retry.intent.state).toBe('accepted');
     expect(sends).toBe(1);
@@ -399,7 +406,7 @@ describe('S01 proven pre-network boundaries', () => {
     await service.dispatchDue(Date.now() + 60_000);
     expect(first.intent.state).toBe('uncertain');
     expect(calls).toBe(1);
-    expect(memory.getSendLedger().getAttempts(first.intent.id)[0].networkStartedAt).toBeDefined();
+    expect(memory.getSendLedger().getAttempts(first.intent.id)[0]?.networkStartedAt).toBeDefined();
   });
 });
 
@@ -408,10 +415,10 @@ describe('S01 native transport acceptance boundary', () => {
     const memory = makeStore();
     const client = new WhatsAppSocketClient();
     let networkCalls = 0;
-    (client as any).sock = {
+    Reflect.set(client, 'sock', {
       sendPresenceUpdate: async () => {},
       sendMessage: async () => { networkCalls++; return { key: {}, message: {} }; }
-    };
+    });
     const service = new SendIntentService({
       memoryStore: memory,
       sendText: (chatId, text, options) => client.sendMessage(chatId, text, options)
@@ -429,10 +436,10 @@ describe('S01 native transport acceptance boundary', () => {
     const memory = makeStore();
     const client = new WhatsAppSocketClient();
     let networkCalls = 0;
-    (client as any).sock = {
+    Reflect.set(client, 'sock', {
       sendPresenceUpdate: async () => {},
       sendMessage: async () => { networkCalls++; return { key: {}, message: {} }; }
-    };
+    });
     const service = new SendIntentService({
       memoryStore: memory,
       sendText: async () => { throw new Error('text should not run'); },
@@ -452,4 +459,28 @@ describe('S01 native transport acceptance boundary', () => {
     await service.sendVoice(input({ actionKind: 'voice', sourceId: 'ambiguous-voice' }));
     expect(networkCalls).toBe(2);
   });
+});
+
+it('rejects an invalid persisted inbound payload before claiming work', () => {
+  using db = new Database(':memory:');
+  const ledger = new InboundJobLedger(db);
+  const { job } = ledger.createJob({
+    id: 'inbound-1', chatId: input().chatId, sender: input().chatId,
+    text: 'Hello', timestamp: 100, isFromMe: false, type: 'text',
+  });
+  db.run('UPDATE inbound_jobs SET payload_json = ? WHERE id = ?', ['{"type":"unknown"}', job.id]);
+  expect(() => ledger.claim(job.id, 'worker')).toThrow(/inbound job payload/i);
+  expect(db.query('SELECT state FROM inbound_jobs WHERE id = ?').get(job.id)).toEqual({ state: 'pending' });
+});
+
+it('rejects invalid persisted broadcast delivery states', () => {
+  using db = new Database(':memory:');
+  const store = new BroadcastStore(db);
+  const [recipient] = store.addRecipients('campaign-1', [{
+    chatId: input().chatId, contactName: 'Test Contact', personalizedText: 'Hello',
+    richContent: { kind: 'text', messageGoal: 'Hello' }, status: 'queued',
+  }]);
+  if (!recipient) throw new Error('Expected a recipient');
+  db.run('UPDATE broadcast_recipients SET status = ? WHERE id = ?', ['unknown', recipient.id]);
+  expect(() => store.getRecipient(recipient.id)).toThrow(/recipient status/i);
 });

@@ -60,7 +60,7 @@ describe("User Memory & Privacy Store", () => {
     const listRes = await manager.handleCommand(brandId, jid, "What do you remember about me?");
     expect(listRes.status).toBe("listed");
     expect(listRes.memories?.length).toBe(1);
-    expect(listRes.memories?.[0].content).toBe("my shoe size is 43");
+    expect(listRes.memories?.[0]?.content).toBe("my shoe size is 43");
 
     // 4. Save second memory
     await manager.handleCommand(brandId, jid, "Remember that I speak Arabic");
@@ -72,7 +72,7 @@ describe("User Memory & Privacy Store", () => {
     expect(delRes.status).toBe("deleted");
     const remaining = await manager.getMemories(brandId, jid);
     expect(remaining.length).toBe(1);
-    expect(remaining[0].content).toBe("I speak Arabic");
+    expect(remaining[0]?.content).toBe("I speak Arabic");
 
     // 6. Clear all
     const clearRes = await manager.handleCommand(brandId, jid, "Clear all memories");

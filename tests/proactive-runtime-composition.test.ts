@@ -23,13 +23,14 @@ describe('B2 A08 to S01 official Meta runtime composition', () => {
       capabilityAutopilotBrandId: 'store',
       metaCloud: {
         config: META_CONFIG,
-        fetch: (async (_url: RequestInfo | URL, init?: RequestInit) => {
-          transportRequests.push(JSON.parse(String(init?.body)));
+        fetch: async (_url, init) => {
+          if (typeof init?.body !== 'string') throw new Error('Expected a JSON transport payload');
+          transportRequests.push(JSON.parse(init.body));
           return new Response(JSON.stringify({ messages: [{ id: 'wamid.proactive-one' }] }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' }
           });
-        }) as unknown as typeof fetch
+        }
       },
       proactiveEligibility: async (trigger, now) => ({
         now,
@@ -50,7 +51,9 @@ describe('B2 A08 to S01 official Meta runtime composition', () => {
       })
     });
     try {
-      const alias = agent.recipientDirectory!.observeAlias({ brandId: 'store', jid: JID });
+      const recipientDirectory = agent.recipientDirectory;
+      if (!recipientDirectory) throw new Error('Expected recipientDirectory');
+      const alias = recipientDirectory.observeAlias({ brandId: 'store', jid: JID });
       const now = Date.now();
       const triggerId = agent.capabilities.followups.schedule({
         brandId: 'store',
@@ -62,12 +65,12 @@ describe('B2 A08 to S01 official Meta runtime composition', () => {
         dueAt: now - 1000
       });
       expect(agent.proactiveScheduler).toBeDefined();
-      const first = await agent.proactiveScheduler!.runOnce(now);
+      const proactiveScheduler = agent.proactiveScheduler;
+      if (!proactiveScheduler) throw new Error('Expected proactiveScheduler');
+      const first = await proactiveScheduler.runOnce(now);
       expect(first.find(result => result.triggerId === triggerId)?.status).toBe('sent');
       expect(transportRequests).toHaveLength(1);
-      const sent = transportRequests[0] as { type: string; template: { name: string } };
-      expect(sent.type).toBe('template');
-      expect(sent.template.name).toBe('order_followup');
+      expect(transportRequests[0]).toMatchObject({ type: 'template', template: { name: 'order_followup' } });
       const persisted = agent.capabilities.followups.get(triggerId);
       expect(persisted?.status).toBe('sent');
       expect(persisted?.receiptId).toBe('wamid.proactive-one');
@@ -80,7 +83,7 @@ describe('B2 A08 to S01 official Meta runtime composition', () => {
       expect(intent?.state).toBe('accepted');
       expect(intent?.recipientBinding?.jid).toBe(JID);
       expect(intent?.nativeMessageId).toBe('wamid.proactive-one');
-      await agent.proactiveScheduler!.runOnce(now + 1000);
+      await proactiveScheduler.runOnce(now + 1000);
       expect(transportRequests).toHaveLength(1);
     } finally {
       agent.inboundPlanner?.close();
@@ -100,10 +103,10 @@ describe('B2 A08 to S01 official Meta runtime composition', () => {
       transport: 'meta-cloud', capabilityAutopilotBrandId: 'store',
       metaCloud: {
         config: META_CONFIG,
-        fetch: (async () => {
+        fetch: async () => {
           networkCalls++;
           return new Response(JSON.stringify({ messages: [{ id: 'wamid.forbidden' }] }));
-        }) as unknown as typeof fetch
+        }
       },
       proactiveEligibility: async (trigger, now) => ({
         now, channel: 'meta-cloud',
@@ -120,14 +123,18 @@ describe('B2 A08 to S01 official Meta runtime composition', () => {
       })
     });
     try {
-      const contact = agent.recipientDirectory!.observeAlias({ brandId: 'store', jid: JID });
+      const recipientDirectory = agent.recipientDirectory;
+      if (!recipientDirectory) throw new Error('Expected recipientDirectory');
+      const contact = recipientDirectory.observeAlias({ brandId: 'store', jid: JID });
       const triggerId = agent.capabilities.followups.schedule({
         brandId: 'store', contactId: contact.contactId,
         reason: 'Status', sourceWorkflowId: 'order-442',
         consentRef: 'crm-optin-442', templateRef: 'order_followup',
         dueAt: Date.now() - 1000
       });
-      const result = await agent.proactiveScheduler!.runOnce();
+      const proactiveScheduler = agent.proactiveScheduler;
+      if (!proactiveScheduler) throw new Error('Expected proactiveScheduler');
+      const result = await proactiveScheduler.runOnce();
       expect(result.find(value => value.triggerId === triggerId)?.status).toBe('skipped');
       expect(agent.capabilities.followups.get(triggerId)?.status).toBe('cancelled');
       expect(agent.capabilities.followups.get(triggerId)?.decisionReason).toBe('template_policy_denied');
@@ -161,7 +168,9 @@ describe('B2 A08 to S01 official Meta runtime composition', () => {
       })
     });
     try {
-      const contact = agent.recipientDirectory!.observeAlias({ brandId: 'store', jid: JID });
+      const recipientDirectory = agent.recipientDirectory;
+      if (!recipientDirectory) throw new Error('Expected recipientDirectory');
+      const contact = recipientDirectory.observeAlias({ brandId: 'store', jid: JID });
       const input = {
         brandId: 'store', contactId: contact.contactId, reason: 'Pending confirmation',
         sourceWorkflowId: 'order-443', consentRef: 'consent-443',

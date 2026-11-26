@@ -1,18 +1,29 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Database } from 'bun:sqlite';
-import { MemoryStore } from '../src/domain/memory-store';
+import { GeminiClient, type ChatContent, type GeminiGenerateOptions } from '../src/ai/gemini-client';
+import { ModeratorAgent } from '../src/ai/moderator-agent';
 import { ContextFoldEngine } from '../src/domain/context-fold-engine';
 import { buildFoldContext } from '../src/domain/context-fold-prompt';
-import { ModeratorAgent } from '../src/ai/moderator-agent';
+import { MemoryStore } from '../src/domain/memory-store';
+import type { ChatMessage, ConversationFold } from '../src/domain/types';
 import { createWhatsAppMcpServer } from '../src/mcp/server';
 import { createApiServer } from '../src/server/api';
 import { SSEBroadcaster } from '../src/server/sse';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import type { ChatMessage, ConversationFold } from '../src/domain/types';
+import { WhatsAppSocketClient } from '../src/transport/whatsapp-socket';
 
 const chatId = 'contact-one@s.whatsapp.net';
 const otherChat = 'contact-other@s.whatsapp.net';
 const stores: MemoryStore[] = [];
+
+function requireValue<T>(value: T | undefined | null, label = 'value'): T {
+  if (value === undefined || value === null) {
+    throw new Error(`Expected ${label} to be defined`);
+  }
+  return value;
+}
+
 function setup() {
   const memory = new MemoryStore({ dataDir: ':memory:' });
   stores.push(memory);
@@ -24,36 +35,40 @@ function setup() {
   const fold: ConversationFold = {
     id: 'historical-epoch', chatId, tier: 1, topic: 'Previous price discussion',
     summary: 'Quoted price was subject to human approval',
-    startMessageId: messages[0]!.id, endMessageId: messages[9]!.id,
+    startMessageId: requireValue(messages[0]).id, endMessageId: requireValue(messages[9]).id,
     directMessageIds: messages.slice(0, 10).map(item => item.id),
     sourceFoldIds: [], messageCount: 10, factsExtracted: [], createdAt: 1_770_000_000_000
   };
   return { memory, messages, fold };
 }
-afterEach(() => { for (const store of stores.splice(0)) store.close(); });
+
+afterEach(() => {
+  for (const store of stores.splice(0)) store.close();
+});
 
 describe('Fold prompt assembly and lineage safety', () => {
   test('places historical fold before verbatim recent tail with stable system instruction', async () => {
     const { memory, messages, fold } = setup();
     memory.saveFold(fold);
-    let observed: { prompt: string; systemInstruction: string }[] = [];
-    const mockGemini: any = {
-      generateContent: async (contents: any[], options: any) => {
-        observed.push({ prompt: contents[0].parts[0].text, systemInstruction: options.systemInstruction });
-        return { text: JSON.stringify({ action: 'reply', intent: 'greeting', replyText: 'تمام', confidence: 0.99 }) };
-      }
+    const observed: { prompt: string; systemInstruction?: string }[] = [];
+    const mockGemini = new GeminiClient({ apiKey: 'test-key' });
+    mockGemini.generateContent = async (contents: ChatContent[], options?: GeminiGenerateOptions) => {
+      observed.push({ prompt: contents[0]?.parts[0]?.text ?? '', systemInstruction: options?.systemInstruction });
+      return { text: JSON.stringify({ action: 'reply', intent: 'greeting', replyText: 'تمام', confidence: 0.99 }) };
     };
     const agent = new ModeratorAgent(mockGemini, memory);
     const incoming: ChatMessage = {
-      ...messages[19]!, id: 'new-inbound', text: 'فاكر الاتفاق القديم؟'
+      ...requireValue(messages[19]), id: 'new-inbound', text: 'فاكر الاتفاق القديم؟'
     };
     await agent.processInboundMessage(incoming, { dryRun: true });
     await agent.processInboundMessage({ ...incoming, text: 'تمام' }, { dryRun: true });
     expect(observed).toHaveLength(2);
-    expect(observed[0]!.prompt).toContain(fold.summary);
-    expect(observed[0]!.prompt.indexOf(fold.summary)).toBeLessThan(observed[0]!.prompt.indexOf('Offer 19'));
-    expect(observed[0]!.prompt).not.toContain('Offer 0\n');
-    expect(observed[0]!.systemInstruction).toBe(observed[1]!.systemInstruction);
+    const firstObserved = requireValue(observed[0]);
+    const secondObserved = requireValue(observed[1]);
+    expect(firstObserved.prompt).toContain(fold.summary);
+    expect(firstObserved.prompt.indexOf(fold.summary)).toBeLessThan(firstObserved.prompt.indexOf('Offer 19'));
+    expect(firstObserved.prompt).not.toContain('Offer 0\n');
+    expect(firstObserved.systemInstruction).toBe(requireValue(secondObserved.systemInstruction));
     expect(buildFoldContext(memory, otherChat)).toBe('');
   });
 
@@ -61,7 +76,8 @@ describe('Fold prompt assembly and lineage safety', () => {
     const { memory, fold } = setup();
     memory.saveFold(fold);
     expect(buildFoldContext(memory, chatId)).toContain('Previous price discussion');
-    const db = (memory.getSqliteStore() as unknown as { db: Database }).db;
+    const db: unknown = Reflect.get(memory.getSqliteStore(), 'db');
+    if (!(db instanceof Database)) throw new Error('Expected SQLite database');
     db.query('DELETE FROM messages WHERE id = ?').run('item-5');
     expect(memory.getFoldMessages(fold.id)).toHaveLength(9);
     expect(buildFoldContext(memory, chatId)).toBe('');
@@ -70,8 +86,10 @@ describe('Fold prompt assembly and lineage safety', () => {
 
   test('redacts source credentials before AI summary callback and preserves source rows', async () => {
     const { memory, messages } = setup();
+    const firstMsg = requireValue(messages[0]);
+    const lastMsg = requireValue(messages[19]);
     const secret = ['sk', 'fake', 'X'.repeat(32)].join('-');
-    memory.getSqliteStore().saveMessage({ ...messages[0]!, id: 'new-secret', text: `Customer shared ${secret}`, timestamp: messages[0]!.timestamp - 1000 });
+    memory.getSqliteStore().saveMessage({ ...firstMsg, id: 'new-secret', text: `Customer shared ${secret}`, timestamp: firstMsg.timestamp - 1000 });
     let sawSecret = false;
     const worker = new ContextFoldEngine({
       memoryStore: memory,
@@ -79,12 +97,13 @@ describe('Fold prompt assembly and lineage safety', () => {
         sawSecret = JSON.stringify(source).includes(secret);
         return { topic: 'Historical quote', summary: 'No verified commitment', factsExtracted: [] };
       },
-      now: () => messages[19]!.timestamp + 3_600_000
+      now: () => lastMsg.timestamp + 3_600_000
     });
     expect(await worker.foldChatIncrement(chatId)).toBeDefined();
     expect(sawSecret).toBe(false);
     expect(memory.getMessage(chatId, 'new-secret')?.text).toContain(secret);
   });
+
   test('keeps lineage validation query count bounded across hundreds of historical folds', () => {
     const { memory } = setup();
     const totalFolds = 120;
@@ -122,7 +141,7 @@ describe('Fold prompt assembly and lineage safety', () => {
     const { memory, messages } = setup();
     for (let chat = 1; chat < 5; chat++) {
       for (let index = 0; index < messages.length; index++) {
-        const item = messages[index]!;
+        const item = requireValue(messages[index]);
         memory.addMessage({
           ...item, id: `chat-${chat}-message-${index}`,
           chatId: `chat-${chat}@s.whatsapp.net`,
@@ -148,40 +167,66 @@ describe('Fold prompt assembly and lineage safety', () => {
     expect(results.every(Boolean)).toBe(true);
     expect(peak).toBe(2);
   });
-
 });
 
 describe('Fold operator tools and REST API', () => {
   test('MCP tools are registered, chat-scoped, searched and decompressed with bounded context', async () => {
     const { memory, messages, fold } = setup();
     memory.saveFold(fold);
-    const agent = new ModeratorAgent({ generateContent: async () => ({ text: '{}' }) } as any, memory);
+    const gemini = new GeminiClient({ apiKey: 'test-key' });
+    gemini.generateContent = async () => ({ text: '{}' });
+    const agent = new ModeratorAgent(gemini, memory);
     const server = createWhatsAppMcpServer({
       memoryStore: memory,
       moderatorAgent: agent,
-      whatsappClient: { getState: () => ({ state: 'connected' }) } as any
+      whatsappClient: new WhatsAppSocketClient()
     });
-    const list = (server as any)._requestHandlers.get(ListToolsRequestSchema.shape.method.value);
-    const names = (await list({ method: 'tools/list' }, {})).tools.map((tool: any) => tool.name);
-    for (const name of ['whatsapp_search_chat_memory', 'whatsapp_get_chat_folds', 'whatsapp_decompress_fold']) {
-      expect(names).toContain(name);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: 'test-mcp-client', version: '1.0.0' }, { capabilities: {} });
+    await client.connect(clientTransport);
+
+    try {
+      const listRes = await client.listTools();
+      const names = listRes.tools.map(tool => tool.name);
+      for (const name of ['whatsapp_search_chat_memory', 'whatsapp_get_chat_folds', 'whatsapp_decompress_fold']) {
+        expect(names).toContain(name);
+      }
+      const call = async (name: string, args: Record<string, unknown>) => {
+        const res = await client.callTool({ name, arguments: args });
+        const content: unknown = Array.isArray(res.content) ? res.content[0] : undefined;
+        const text = typeof content === 'object' && content !== null && 'type' in content &&
+          content.type === 'text' && 'text' in content && typeof content.text === 'string' ? content.text : undefined;
+        if (res.isError) throw new Error(text ?? 'MCP tool error');
+        return text ?? '';
+      };
+      const folds: unknown = JSON.parse(await call('whatsapp_get_chat_folds', { chatId }));
+      expect(Array.isArray(folds)).toBe(true);
+      expect(folds).toHaveLength(1);
+      const search: unknown = JSON.parse(await call('whatsapp_search_chat_memory', { chatId, query: 'Offer 2' }));
+      if (typeof search !== 'object' || search === null || !('messages' in search) || !Array.isArray(search.messages)) {
+        throw new Error('Expected search messages');
+      }
+      expect(search.messages[0]).toMatchObject({ id: requireValue(messages[2]).id });
+      const expanded: unknown = JSON.parse(await call('whatsapp_decompress_fold', {
+        chatId, foldId: fold.id, aroundMessageId: requireValue(messages[5]).id
+      }));
+      expect(expanded).toMatchObject({
+        messages: messages.slice(3, 8).map(message => ({ id: message.id }))
+      });
+      for (const args of [
+        { chatId: otherChat, foldId: fold.id },
+        { chatId, foldId: fold.id, aroundMessageId: requireValue(messages[11]).id }
+      ]) {
+        await call('whatsapp_decompress_fold', args).then(
+          () => { throw new Error('Unexpected fold decompression success'); },
+          (error: unknown) => { expect(error).toBeInstanceOf(Error); }
+        );
+      }
+    } finally {
+      await client.close();
+      await server.close();
     }
-    const invoke = (server as any)._requestHandlers.get(CallToolRequestSchema.shape.method.value);
-    const call = async (name: string, args: Record<string, unknown>) =>
-      invoke({ method: 'tools/call', params: { name, arguments: args } }, {});
-    const folds = JSON.parse((await call('whatsapp_get_chat_folds', { chatId })).content[0].text);
-    expect(folds).toHaveLength(1);
-    const search = JSON.parse((await call('whatsapp_search_chat_memory', { chatId, query: 'Offer 2' })).content[0].text);
-    expect(search.messages[0].id).toBe(messages[2]!.id);
-    const expanded = JSON.parse((await call('whatsapp_decompress_fold', {
-      chatId, foldId: fold.id, aroundMessageId: messages[5]!.id
-    })).content[0].text);
-    expect(expanded.messages.map((message: ChatMessage) => message.id))
-      .toEqual(messages.slice(3, 8).map(message => message.id));
-    await expect(call('whatsapp_decompress_fold', { chatId: otherChat, foldId: fold.id })).rejects.toThrow();
-    await expect(call('whatsapp_decompress_fold', {
-      chatId, foldId: fold.id, aroundMessageId: messages[11]!.id
-    })).rejects.toThrow();
   });
 
   test('REST fold routes are owner-protected and manual folding schedules background work', async () => {
@@ -191,14 +236,13 @@ describe('Fold operator tools and REST API', () => {
       memoryStore: memory,
       summarizer: async () => ({ topic: 'History', summary: 'Verified history', factsExtracted: [] })
     });
-    const agent = new ModeratorAgent(
-      { generateContent: async () => ({ text: '{}' }) } as any,
-      memory, { contextFoldEngine: engine }
-    );
+    const gemini = new GeminiClient({ apiKey: 'test-key' });
+    gemini.generateContent = async () => ({ text: '{}' });
+    const agent = new ModeratorAgent(gemini, memory, { contextFoldEngine: engine });
     const app = createApiServer({
       memoryStore: memory, moderatorAgent: agent,
       dashboardToken: 'local-owner-token-for-context-fold-tests',
-      whatsappClient: { getState: () => ({ state: 'connected' }) } as any,
+      whatsappClient: new WhatsAppSocketClient(),
       sse: new SSEBroadcaster()
     });
     const route = `/api/chats/${encodeURIComponent(chatId)}/folds`;
@@ -206,9 +250,14 @@ describe('Fold operator tools and REST API', () => {
     const headers = { Authorization: 'Bearer local-owner-token-for-context-fold-tests' };
     const res = await app.request(route, { headers });
     expect(res.status).toBe(200);
-    expect((await res.json()).folds).toHaveLength(1);
+    const body: unknown = await res.json();
+    if (typeof body !== 'object' || body === null || !('folds' in body) || !Array.isArray(body.folds)) {
+      throw new Error('Expected response folds');
+    }
+    expect(body.folds).toHaveLength(1);
     const manual = await app.request(`/api/chats/${encodeURIComponent(chatId)}/fold-now`, { method: 'POST', headers });
     expect(manual.status).toBe(202);
-    expect((await manual.json()).status).toBe('scheduled');
+    const manualBody: unknown = await manual.json();
+    expect(manualBody).toMatchObject({ status: 'scheduled' });
   });
 });

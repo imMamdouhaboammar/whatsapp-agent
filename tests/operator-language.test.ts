@@ -1,16 +1,17 @@
 import {describe,test,expect} from 'bun:test';
 import {BrandKnowledgeStore} from '../src/agent/brand-knowledge';
 import {ActionJournal,ToolRegistry} from '../src/agent/tools';
+import { isRecord } from '../src/mcp/records';
 import {AutonomousOperator} from '../src/agent/autonomous-operator';
 
 const ARABIC=/\p{Script=Arabic}/u;
 
-function setup(withInventory:boolean,scout?:unknown){
+function setup(withInventory:boolean,scout?:ConstructorParameters<typeof AutonomousOperator>[0]['webScout']){
  const knowledge=new BrandKnowledgeStore({dbPath:':memory:'});
  const journal=new ActionJournal({dbPath:':memory:'});
  const registry=new ToolRegistry(journal);
- if(withInventory)registry.register('brand',{name:'inventory.lookup',kind:'read',scope:'inventory:read',validate:(v):v is {sku:string}=>typeof (v as any)?.sku==='string',execute:async ({sku})=>({sku,stock:4,price:120,currency:'SAR'})});
- const operator=new AutonomousOperator({knowledge,registry,journal,webScout:scout as any});
+ if(withInventory)registry.register('brand',{name:'inventory.lookup',kind:'read',scope:'inventory:read',validate:(v):v is {sku:string}=>isRecord(v) && typeof v.sku==='string',execute:async ({sku})=>({sku,stock:4,price:120,currency:'SAR'})});
+ const operator=new AutonomousOperator({knowledge,registry,journal,webScout:scout});
  return {operator,close:()=>{knowledge.close();journal.close();}};
 }
 
@@ -51,7 +52,7 @@ describe('reply language follows the customer language',()=>{
   close();
  });
  test('English web answer lists sources with an English label',async()=>{
-  const scout={search:async()=>({status:'grounded',answer:'Official update',sources:[{url:'https://example.test/a',observedAt:1700000000000,title:'t'}]})};
+  const scout={search:async()=>({status:'grounded' as const,answer:'Official update',sources:[{url:'https://example.test/a',observedAt:1700000000000,title:'t',publisher:'Example'}]})};
   const {operator,close}=setup(false,scout);
   const r=await operator.resolve({brandId:'brand',contactId:'c',text:'What are the latest transport news today?'});
   expect(r.status).toBe('answered');
@@ -67,7 +68,7 @@ describe('reply language follows the customer language',()=>{
   close();
  });
  test('English question with no safe web sources gets an English clarification',async()=>{
-  const scout={search:async()=>({status:'insufficient_evidence',answer:'\u0645\u0627 \u0642\u062F\u0631\u062A\u0634 \u0623\u062A\u062D\u0642\u0642',sources:[]})};
+  const scout={search:async()=>({status:'insufficient_evidence' as const,answer:'\u0645\u0627 \u0642\u062F\u0631\u062A\u0634 \u0623\u062A\u062D\u0642\u0642',sources:[]})};
   const {operator,close}=setup(false,scout);
   const r=await operator.resolve({brandId:'brand',contactId:'c',text:'What are the latest transport news today?'});
   expect(r.status).toBe('clarification');

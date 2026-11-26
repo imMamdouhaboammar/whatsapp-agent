@@ -148,7 +148,8 @@ describe('RSI-Anything & JEPA-OPF Recursive Self-Improvement', () => {
 
     expect(promoted.promoted).toBe(true);
     expect(promoted.stageReached).toBe('retain');
-    expect(promoted.generation?.status).toBe('promoted');
+    if (!promoted.generation) throw new Error('Expected a promoted generation');
+    expect(promoted.generation.status).toBe('promoted');
     expect(memoryManager.getWorkbook().enforcedRules).toContain(
       'NEVER quote delivery times without confirming governorate'
     );
@@ -159,7 +160,7 @@ describe('RSI-Anything & JEPA-OPF Recursive Self-Improvement', () => {
     ledger.close();
 
     const reopened = new RsiLedger({ dbPath: join(tempDir, 'rsi.sqlite') });
-    expect(reopened.getLatestPromotedGeneration('brand-a')?.generationId).toBe(promoted.generation!.generationId);
+    expect(reopened.getLatestPromotedGeneration('brand-a')?.generationId).toBe(promoted.generation.generationId);
     expect(reopened.getRecentTransitions('brand-a', 10).length).toBe(2);
     reopened.close();
   });
@@ -206,15 +207,16 @@ describe('RSI-Anything & JEPA-OPF Recursive Self-Improvement', () => {
       })
     });
     expect(cycleRes.status).toBe(200);
-    const cycleJson = await cycleRes.json() as any;
-    expect(cycleJson.success).toBe(true);
-    expect(cycleJson.result.promoted).toBe(true);
+    const cycleJson: unknown = await cycleRes.json();
+    expect(cycleJson).toMatchObject({ success: true, result: { promoted: true } });
 
     const statusRes = await app.request('/api/learning/rsi/status?brandId=default');
     expect(statusRes.status).toBe(200);
-    const statusJson = await statusRes.json() as any;
-    expect(statusJson.latestGeneration.status).toBe('promoted');
-    expect(statusJson.opfDiagnostics.sampleCount).toBe(1);
+    const statusJson: unknown = await statusRes.json();
+    expect(statusJson).toMatchObject({
+      latestGeneration: { status: 'promoted' },
+      opfDiagnostics: { sampleCount: 1 }
+    });
 
     ledger.close();
     memoryStore.close();

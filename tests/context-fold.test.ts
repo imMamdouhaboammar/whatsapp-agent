@@ -1,5 +1,7 @@
+import { Database } from 'bun:sqlite';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { MemoryStore } from '../src/domain/memory-store';
+import { FoldRepository } from '../src/domain/fold-repository';
 import { ContextFoldEngine } from '../src/domain/context-fold-engine';
 import type { ChatMessage, ConversationFold } from '../src/domain/types';
 
@@ -74,6 +76,7 @@ describe('WhatsApp Context Fold persistence and lineage', () => {
   test('stores tiered folds with exact chat-scoped direct message lineage', () => {
     const store = createStore();
     const [first, second] = addMessages(store, 2);
+    if (!first || !second) throw new Error('Expected 2 messages');
     const record = fold({
       startMessageId: first.id,
       endMessageId: second.id,
@@ -88,17 +91,18 @@ describe('WhatsApp Context Fold persistence and lineage', () => {
 
   test('rejects forged, cross-chat and noncontiguous lineage without persisting a fold', () => {
     const store = createStore();
-    const messages = addMessages(store, 4);
+    const [m0, , , m3] = addMessages(store, 4);
     const [foreign] = addMessages(store, 1, otherChat);
+    if (!m0 || !m3 || !foreign) throw new Error('Expected messages');
     expect(() => store.saveFold(fold({
-      startMessageId: messages[0]!.id,
-      endMessageId: foreign!.id,
-      directMessageIds: [messages[0]!.id, foreign!.id]
+      startMessageId: m0.id,
+      endMessageId: foreign.id,
+      directMessageIds: [m0.id, foreign.id]
     }))).toThrow();
     expect(() => store.saveFold(fold({
-      startMessageId: messages[0]!.id,
-      endMessageId: messages[3]!.id,
-      directMessageIds: [messages[0]!.id, messages[3]!.id]
+      startMessageId: m0.id,
+      endMessageId: m3.id,
+      directMessageIds: [m0.id, m3.id]
     }))).toThrow();
     expect(store.getFolds(chatId)).toEqual([]);
   });
@@ -107,15 +111,18 @@ describe('WhatsApp Context Fold persistence and lineage', () => {
     const store = createStore();
     const messages = addMessages(store, 20);
     addMessages(store, 3, otherChat);
+    const m0 = messages[0];
+    const m5 = messages[5];
+    if (!m0 || !m5) throw new Error('Expected messages');
     store.saveFold(fold({
-      startMessageId: messages[0]!.id,
-      endMessageId: messages[5]!.id,
+      startMessageId: m0.id,
+      endMessageId: m5.id,
       directMessageIds: messages.slice(0, 6).map(message => message.id),
       messageCount: 6
     }));
-    expect(store.getMessageWindow(chatId, messages[5]!.id, 2).map(message => message.id))
+    expect(store.getMessageWindow(chatId, m5.id, 2).map(message => message.id))
       .toEqual(messages.slice(3, 8).map(message => message.id));
-    expect(store.getMessageWindow(otherChat, messages[5]!.id, 2)).toEqual([]);
+    expect(store.getMessageWindow(otherChat, m5.id, 2)).toEqual([]);
     expect(store.getUnfoldedMessages(chatId, 10).map(message => message.id))
       .toEqual(messages.slice(6, 10).map(message => message.id));
     const matches = store.searchMemory(chatId, 'quotation');
@@ -131,10 +138,10 @@ describe('Context Fold growth-gated background engine', () => {
     const { worker } = engine(store);
     expect(await worker.shouldFold(chatId)).toBe(true);
     const result = await worker.foldChatIncrement(chatId);
-    expect(result).toBeDefined();
-    expect(result?.tier).toBe(1);
-    expect(result?.directMessageIds).toEqual(messages.slice(0, 10).map(message => message.id));
-    expect(store.getFoldMessages(result!.id)).toHaveLength(10);
+    if (!result) throw new Error('Expected fold result');
+    expect(result.tier).toBe(1);
+    expect(result.directMessageIds).toEqual(messages.slice(0, 10).map(message => message.id));
+    expect(store.getFoldMessages(result.id)).toHaveLength(10);
     expect(store.getMessages(chatId, 10).map(message => message.id)).toEqual(messages.slice(10).map(message => message.id));
     expect(await worker.shouldFold(chatId)).toBe(false);
   });
@@ -167,10 +174,13 @@ describe('Context Fold growth-gated background engine', () => {
     const messages = addMessages(store, 25);
     for (let index = 0; index < 5; index++) {
       const slice = messages.slice(index * 3, index * 3 + 3);
+      const firstMsg = slice[0];
+      const lastMsg = slice.at(-1);
+      if (!firstMsg || !lastMsg) throw new Error('Expected slice messages');
       store.saveFold(fold({
         id: `fold-${index}`,
-        startMessageId: slice[0]!.id,
-        endMessageId: slice.at(-1)!.id,
+        startMessageId: firstMsg.id,
+        endMessageId: lastMsg.id,
         directMessageIds: slice.map(message => message.id),
         messageCount: slice.length
       }));
@@ -219,4 +229,14 @@ describe('Context Fold growth-gated background engine', () => {
     failure = false;
     expect(await worker.triggerFoldCheck(chatId)).toBeDefined();
   });
+});
+
+test('rejects persisted fold lineage containing non-string message IDs', () => {
+  using db = new Database(':memory:');
+  const repository = new FoldRepository(db);
+  db.run(`
+    INSERT INTO conversation_folds VALUES
+      ('invalid-fold', 'chat', 1, 'Topic', 'Summary', 'm1', 'm1', '[1]', '[]', 1, '[]', 1)
+  `);
+  expect(() => repository.getFold('invalid-fold')).toThrow('Invalid direct_message_ids');
 });

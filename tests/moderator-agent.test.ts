@@ -1,23 +1,28 @@
 import { describe, expect, it } from 'bun:test';
 import { ModeratorAgent } from '../src/ai/moderator-agent';
+import { GeminiClient } from '../src/ai/gemini-client';
 import { MemoryStore } from '../src/domain/memory-store';
 import type { ChatMessage } from '../src/domain/types';
+
+function makeGeminiStub(fn: GeminiClient['generateContent']): GeminiClient {
+  const client = new GeminiClient({ apiKey: 'test-key' });
+  client.generateContent = fn;
+  return client;
+}
 
 describe('ModeratorAgent', () => {
   it('automatically replies in autopilot mode for casual greeting', async () => {
     const memory = new MemoryStore({ dataDir: './data/test-memory-1' });
-    const mockGemini: any = {
-      generateContent: async () => ({
-        text: JSON.stringify({
-          action: 'reply',
-          intent: 'greeting',
-          replyText: 'أهلاً يا صديقي! إزيك؟',
-          reasoning: 'Warm greeting',
-          confidence: 0.95,
-          suggestedReaction: '👋'
-        })
+    const mockGemini = makeGeminiStub(async () => ({
+      text: JSON.stringify({
+        action: 'reply',
+        intent: 'greeting',
+        replyText: 'أهلاً يا صديقي! إزيك؟',
+        reasoning: 'Warm greeting',
+        confidence: 0.95,
+        suggestedReaction: '👋'
       })
-    };
+    }));
 
     const agent = new ModeratorAgent(mockGemini, memory);
     const incoming: ChatMessage = {
@@ -40,17 +45,15 @@ describe('ModeratorAgent', () => {
 
   it('generates a draft when intent is sensitive or requires approval', async () => {
     const memory = new MemoryStore({ dataDir: './data/test-memory-2' });
-    const mockGemini: any = {
-      generateContent: async () => ({
-        text: JSON.stringify({
-          action: 'reply',
-          intent: 'financial_transaction',
-          replyText: 'تمام هحولك الفلوس حالاً',
-          reasoning: 'Payment request',
-          confidence: 0.92
-        })
+    const mockGemini = makeGeminiStub(async () => ({
+      text: JSON.stringify({
+        action: 'reply',
+        intent: 'financial_transaction',
+        replyText: 'تمام هحولك الفلوس حالاً',
+        reasoning: 'Payment request',
+        confidence: 0.92
       })
-    };
+    }));
 
     const agent = new ModeratorAgent(mockGemini, memory);
     const incoming: ChatMessage = {
@@ -74,16 +77,14 @@ describe('ModeratorAgent', () => {
     const memory = new MemoryStore({ dataDir: './data/test-memory-3' });
     memory.setChatMode('contact3@s.whatsapp.net', 'copilot');
 
-    const mockGemini: any = {
-      generateContent: async () => ({
-        text: JSON.stringify({
-          action: 'reply',
-          intent: 'greeting',
-          replyText: 'صباح الورد والياسمين',
-          confidence: 0.98
-        })
+    const mockGemini = makeGeminiStub(async () => ({
+      text: JSON.stringify({
+        action: 'reply',
+        intent: 'greeting',
+        replyText: 'صباح الورد والياسمين',
+        confidence: 0.98
       })
-    };
+    }));
 
     const agent = new ModeratorAgent(mockGemini, memory);
     const incoming: ChatMessage = {
@@ -106,19 +107,17 @@ describe('ModeratorAgent', () => {
     const memory = new MemoryStore({ dataDir: './data/test-memory-4' });
     let capturedPrompt = '';
 
-    const mockGemini: any = {
-      generateContent: async (contents: any) => {
-        capturedPrompt = JSON.stringify(contents);
-        return {
-          text: JSON.stringify({
-            action: 'reply',
-            intent: 'product_inquiry',
-            replyText: 'الباقة بتشمل إدارة كاملة لحسابات السوشيال ميديا مع الرد الآلي والمتابعة.',
-            confidence: 0.96
-          })
-        };
-      }
-    };
+    const mockGemini = makeGeminiStub(async (contents) => {
+      capturedPrompt = JSON.stringify(contents);
+      return {
+        text: JSON.stringify({
+          action: 'reply',
+          intent: 'product_inquiry',
+          replyText: 'الباقة بتشمل إدارة كاملة لحسابات السوشيال ميديا مع الرد الآلي والمتابعة.',
+          confidence: 0.96
+        })
+      };
+    });
 
     const agent = new ModeratorAgent(mockGemini, memory);
     const swipedIncoming: ChatMessage = {
@@ -150,22 +149,20 @@ describe('ModeratorAgent', () => {
     const memory = new MemoryStore({ dataDir: ':memory:' });
     let capturedPrompt = '';
 
-    const mockGemini: any = {
-      generateContent: async (contents: any) => {
-        capturedPrompt = JSON.stringify(contents);
-        return {
-          text: JSON.stringify({
-            action: 'reply',
-            intent: 'business_consultation',
-            replyText: 'أهلاً بك يا فندم، يشرفنا التعامل معك',
-            confidence: 0.94,
-            extractedFacts: ['يعمل مدير تسويق في شركة النور', 'الميزانية المتاحة 10 آلاف دولار'],
-            extractedCommitments: ['وعدته بإرسال بروفايل الشركة غداً'],
-            contactStage: 'qualified'
-          })
-        };
-      }
-    };
+    const mockGemini = makeGeminiStub(async (contents) => {
+      capturedPrompt = JSON.stringify(contents);
+      return {
+        text: JSON.stringify({
+          action: 'reply',
+          intent: 'business_consultation',
+          replyText: 'أهلاً بك يا فندم، يشرفنا التعامل معك',
+          confidence: 0.94,
+          extractedFacts: ['يعمل مدير تسويق في شركة النور', 'الميزانية المتاحة 10 آلاف دولار'],
+          extractedCommitments: ['وعدته بإرسال بروفايل الشركة غداً'],
+          contactStage: 'qualified'
+        })
+      };
+    });
 
     const agent = new ModeratorAgent(mockGemini, memory);
     const incoming: ChatMessage = {

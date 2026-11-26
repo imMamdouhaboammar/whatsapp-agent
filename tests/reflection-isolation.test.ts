@@ -3,7 +3,7 @@ import { rmSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DualMemoryManager } from '../src/domain/learning-memory';
 import { ReflectionEngine } from '../src/ai/reflection-engine';
-import type { GeminiClient } from '../src/ai/gemini-client';
+import { GeminiClient } from '../src/ai/gemini-client';
 import type { ChatMessage } from '../src/domain/types';
 
 const CHAT_A = '201018880001@s.whatsapp.net';
@@ -30,12 +30,11 @@ const messages = (chatId: string): ChatMessage[] => [
     id: 'm2', chatId, sender: 'me', text: 'تحت أمرك، هجهزهولك',
     timestamp: Date.now() - 30_000, isFromMe: true, type: 'text'
   }
-] as ChatMessage[];
+];
 
 const engineWith = (memoryManager: DualMemoryManager, output: unknown) => {
-  const mockGemini = {
-    generateContent: async () => ({ text: JSON.stringify(output) })
-  } as unknown as GeminiClient;
+  const mockGemini = new GeminiClient({ apiKey: 'test-key' });
+  mockGemini.generateContent = async () => ({ text: JSON.stringify(output) });
   return new ReflectionEngine(mockGemini, memoryManager, { model: 'gemini-4-argon' });
 };
 
@@ -140,7 +139,7 @@ describe('WA-008 stale learning-state overwrites and partial persistence', () =>
     failNext = 0;
     remote: Record<string, { content: string; version: number; updatedAt: number } | undefined> = {};
     async saveLearningState(_brandId: string, stateType: 'workbook' | 'notebook', content: string) {
-      if (this.holdSaves) await new Promise<void>((r) => this.gates.push(r));
+      if (this.holdSaves) await new Promise<void>((resolve) => this.gates.push(resolve));
       if (this.failNext > 0) { this.failNext--; throw new Error('db down'); }
       this.saved.push({ stateType, content });
       this.remote[stateType] = {
@@ -159,9 +158,9 @@ describe('WA-008 stale learning-state overwrites and partial persistence', () =>
     mm.addEnforcedRule('NEVER rule A');
     mm.addEnforcedRule('NEVER rule B');
     // Let both persist attempts reach their gate.
-    await new Promise((r) => setTimeout(r, 20));
+    await new Promise((resolve) => setTimeout(resolve, 20));
     // Complete out of order: the second save resolves before the first.
-    for (const release of [...store.gates].reverse()) release();
+    for (const release of [...store.gates].toReversed()) release();
     store.holdSaves = false;
     await mm.flushPendingWrites();
     const remote = store.remote['workbook']?.content ?? '';

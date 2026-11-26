@@ -1,3 +1,4 @@
+import { rejects } from 'node:assert/strict';
 import { describe, expect, it } from 'bun:test';
 import { CircuitBreaker } from '../../src/funnel/circuit-breaker';
 
@@ -25,16 +26,16 @@ describe('Funnel CircuitBreaker', () => {
     });
 
     // 1st failure
-    await expect(cb.execute(async () => { throw new Error('fail 1'); })).rejects.toThrow('fail 1');
+    await rejects(cb.execute(async () => { throw new Error('fail 1'); }), /fail 1/);
     expect(cb.getState()).toBe('CLOSED');
 
     // 2nd failure -> trips
-    await expect(cb.execute(async () => { throw new Error('fail 2'); })).rejects.toThrow('fail 2');
+    await rejects(cb.execute(async () => { throw new Error('fail 2'); }), /fail 2/);
     expect(cb.getState()).toBe('OPEN');
     expect(cb.canExecute()).toBe(false);
 
     // Fast-fails while OPEN
-    await expect(cb.execute(async () => 'should not run')).rejects.toThrow(/Circuit breaker OPEN/);
+    await rejects(cb.execute(async () => 'should not run'), /Circuit breaker OPEN/);
   });
 
   it('transitions to HALF_OPEN after cooldown and recovers on success', async () => {
@@ -45,11 +46,11 @@ describe('Funnel CircuitBreaker', () => {
     });
 
     // Trip it
-    await expect(cb.execute(async () => { throw new Error('boom'); })).rejects.toThrow();
+    await rejects(cb.execute(async () => { throw new Error('boom'); }), Error);
     expect(cb.getState()).toBe('OPEN');
 
     // Wait for cooldown
-    await new Promise((r) => setTimeout(r, 25));
+    await new Promise((resolve) => setTimeout(resolve, 25));
 
     // Can execute trial run
     expect(cb.canExecute()).toBe(true);
@@ -68,7 +69,7 @@ describe('Funnel CircuitBreaker', () => {
       cooldownMs: 10000
     });
 
-    await expect(cb.execute(async () => { throw new Error('fail'); })).rejects.toThrow();
+    await rejects(cb.execute(async () => { throw new Error('fail'); }), Error);
     expect(cb.getState()).toBe('OPEN');
 
     cb.reset();

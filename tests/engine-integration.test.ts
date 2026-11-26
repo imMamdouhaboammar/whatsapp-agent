@@ -18,9 +18,8 @@ describe('Engine Integration & Autonomous Loop', () => {
     // Verify REST status endpoint
     const res = await agent.app.request('/api/status');
     expect(res.status).toBe(200);
-    const body = (await res.json()) as any;
-    expect(body.state).toBe('disconnected');
-    expect(body.pendingDraftsCount).toBe(0);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ state: 'disconnected', pendingDraftsCount: 0 });
 
     agent.memoryStore.close();
   });
@@ -37,10 +36,10 @@ describe('Engine Integration & Autonomous Loop', () => {
     // 1. Get empty dossier
     const getRes1 = await agent.app.request(`/api/contacts/${chatId}/dossier`);
     expect(getRes1.status).toBe(200);
-    const body1 = (await getRes1.json()) as any;
-    expect(body1.dossier.chatId).toBe(chatId);
-    expect(body1.dossier.stage).toBe('lead');
-    expect(body1.dossier.facts).toEqual([]);
+    const body1: unknown = await getRes1.json();
+    expect(body1).toEqual(expect.objectContaining({
+      dossier: expect.objectContaining({ chatId, stage: 'lead', facts: [] })
+    }));
 
     // 2. Add fact
     const factRes = await agent.app.request(`/api/contacts/${chatId}/dossier/facts`, {
@@ -49,8 +48,10 @@ describe('Engine Integration & Autonomous Loop', () => {
       body: JSON.stringify({ fact: 'العميل مهتم بخطة النمو السنوية' })
     });
     expect(factRes.status).toBe(200);
-    const factBody = (await factRes.json()) as any;
-    expect(factBody.dossier.facts).toContain('العميل مهتم بخطة النمو السنوية');
+    const factBody: unknown = await factRes.json();
+    expect(factBody).toMatchObject({
+      dossier: { facts: expect.arrayContaining(['العميل مهتم بخطة النمو السنوية']) }
+    });
 
     // 3. Add commitment
     const commRes = await agent.app.request(`/api/contacts/${chatId}/dossier/commitments`, {
@@ -59,8 +60,10 @@ describe('Engine Integration & Autonomous Loop', () => {
       body: JSON.stringify({ commitment: 'إرسال العقد للتوقيع يوم الأحد' })
     });
     expect(commRes.status).toBe(200);
-    const commBody = (await commRes.json()) as any;
-    expect(commBody.dossier.commitments).toContain('إرسال العقد للتوقيع يوم الأحد');
+    const commBody: unknown = await commRes.json();
+    expect(commBody).toMatchObject({
+      dossier: { commitments: expect.arrayContaining(['إرسال العقد للتوقيع يوم الأحد']) }
+    });
 
     // 4. Update stage
     const updateRes = await agent.app.request(`/api/contacts/${chatId}/dossier`, {
@@ -69,8 +72,8 @@ describe('Engine Integration & Autonomous Loop', () => {
       body: JSON.stringify({ stage: 'negotiation' })
     });
     expect(updateRes.status).toBe(200);
-    const updateBody = (await updateRes.json()) as any;
-    expect(updateBody.dossier.stage).toBe('negotiation');
+    const updateBody: unknown = await updateRes.json();
+    expect(updateBody).toMatchObject({ dossier: { stage: 'negotiation' } });
 
     agent.memoryStore.close();
   });
@@ -80,8 +83,11 @@ describe('S01 no automated replies to history or duplicate inbound messages',()=
  it('persists historical messages but never adds them to the live burst queue',async()=>{
   const agent=await createFableWhatsAppAgent({dataDir:':memory:',autoConnect:false});
   try{
+   const { whatsappClient } = agent;
+   if (!whatsappClient) throw new Error('Expected the Baileys transport');
    const inbound:ChatMessage={id:'old-message-id',chatId:'201099900000@s.whatsapp.net',sender:'contact',text:'Hello from history',timestamp:Date.now()-100000,type:'text',isFromMe:false};
-   const onMessage=(agent.whatsappClient as any).onMessageCallback as (msg:ChatMessage,meta?:{historical:boolean})=>Promise<void>;
+   const onMessage: unknown = Reflect.get(whatsappClient, 'onMessageCallback');
+   if (typeof onMessage !== 'function') throw new Error('Expected onMessageCallback');
    await onMessage(inbound,{historical:true});
    expect(agent.memoryStore.getMessage(inbound.chatId,inbound.id)?.text).toBe(inbound.text);
    expect(agent.burstAccumulator.hasPending(inbound.chatId)).toBe(false);
@@ -99,25 +105,29 @@ describe('E10 simulated WhatsApp-to-confirmed-provider round trip',()=>{
   const sent:Array<{chatId:string;text:string}>=[];
   const chatId='201018880000@s.whatsapp.net';
   try {
+   const { whatsappClient } = agent;
+   if (!whatsappClient) throw new Error('Expected the Baileys transport');
    agent.capabilities.registry.register('store',{
      name:'inventory.lookup',kind:'read',scope:'inventory:read',
-     validate:(args):args is {sku:string}=>typeof (args as any)?.sku==='string',
+     validate:(args):args is {sku:string}=>typeof args === 'object' && args !== null && 'sku' in args && typeof args.sku === 'string',
      execute:async({sku})=>({sku,stock:3,price:240,currency:'SAR',observedAt:Date.now()})
    });
-   (agent.whatsappClient as any).sendMessage=async(chat:string,text:string)=>{
-     sent.push({chatId:chat,text});return {messageId:'simulated-sent-001'};
+   whatsappClient.sendMessage = async (chat, text) => {
+     sent.push({chatId:chat,text});
+     return {messageId:'simulated-sent-001'};
    };
    const inbound:ChatMessage={
      id:'inbound-001',chatId,sender:chatId,text:'هل SKU-42 موجود وبكام؟',
      timestamp:Date.now(),isFromMe:false,type:'text'
    };
-   const handler=(agent.whatsappClient as any).onMessageCallback as (msg:ChatMessage,meta?:{historical:boolean})=>Promise<void>;
+   const handler: unknown = Reflect.get(whatsappClient, 'onMessageCallback');
+   if (typeof handler !== 'function') throw new Error('Expected onMessageCallback');
    await handler(inbound,{historical:false});
    expect(agent.burstAccumulator.hasPending(chatId)).toBe(true);
    await agent.burstAccumulator.flush(chatId);
    expect(sent).toHaveLength(1);
-   expect(sent[0].text).toContain('SKU-42');
-   expect(sent[0].text).toContain('240 SAR');
+   expect(sent[0]?.text).toContain('SKU-42');
+   expect(sent[0]?.text).toContain('240 SAR');
    expect(agent.memoryStore.getMessage(chatId,'simulated-sent-001')?.status).toBe('sent');
   } finally{
    agent.burstAccumulator.destroy();agent.capabilities.close();agent.memoryStore.close();
@@ -140,8 +150,8 @@ describe('E10 simulated WhatsApp-to-confirmed-provider round trip',()=>{
     });
     const saveRes = await agent.app.request(saveReq);
     expect(saveRes.status).toBe(200);
-    const saveBody: any = await saveRes.json();
-    expect(saveBody.status).toBe('saved');
+    const saveBody: unknown = await saveRes.json();
+    expect(saveBody).toMatchObject({ status: 'saved' });
 
     // 2. Reject sensitive credentials
     const credReq = new Request(`http://localhost/api/contacts/${contactJid}/memories`, {
@@ -156,9 +166,10 @@ describe('E10 simulated WhatsApp-to-confirmed-provider round trip',()=>{
     const listReq = new Request(`http://localhost/api/contacts/${contactJid}/memories`);
     const listRes = await agent.app.request(listReq);
     expect(listRes.status).toBe(200);
-    const listBody: any = await listRes.json();
-    expect(listBody.memories.length).toBe(1);
-    expect(listBody.memories[0].content).toBe('Prefers express delivery');
+    const listBody: unknown = await listRes.json();
+    expect(listBody).toEqual(expect.objectContaining({
+      memories: [expect.objectContaining({ content: 'Prefers express delivery' })]
+    }));
 
     // 4. Update style
     const styleReq = new Request(`http://localhost/api/chats/${contactJid}/style`, {
@@ -172,8 +183,8 @@ describe('E10 simulated WhatsApp-to-confirmed-provider round trip',()=>{
     // 5. Get style
     const getStyleReq = new Request(`http://localhost/api/chats/${contactJid}/style`);
     const getStyleRes = await agent.app.request(getStyleReq);
-    const styleBody: any = await getStyleRes.json();
-    expect(styleBody.style).toBe('playful');
+    const styleBody: unknown = await getStyleRes.json();
+    expect(styleBody).toMatchObject({ style: 'playful' });
   } finally {
     agent.burstAccumulator.destroy();
     agent.capabilities.close();

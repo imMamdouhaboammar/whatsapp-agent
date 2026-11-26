@@ -3,6 +3,36 @@ import { FableFunnelEngine } from '../../src/funnel/engine';
 import { FunnelRegistry } from '../../src/funnel/registry';
 import type { FunnelMethodConfig } from '../../src/funnel/types';
 
+const mockMultiWhFetcher: typeof fetch = async (input) => {
+  const url = (input instanceof Request ? input.url : input.toString());
+  if (url.includes('wh1')) {
+    return new Response(JSON.stringify({ stock: 15 }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }
+  if (url.includes('wh2')) {
+    return new Response(JSON.stringify({ stock: 0 }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }
+  return new Response('Not Found', { status: 404 });
+};
+
+const mockHedgedFetcher: typeof fetch = async (input, init) => {
+  const url = (input instanceof Request ? input.url : input.toString());
+  if (url.includes('slow')) {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    if (init?.signal?.aborted) throw new Error('Aborted');
+    return new Response(JSON.stringify({ text: 'slow response' }), { status: 200 });
+  }
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  return new Response(JSON.stringify({ text: 'fast winner' }), { status: 200 });
+};
+
+const mockQuorumFetcher: typeof fetch = async (input) => {
+  const url = (input instanceof Request ? input.url : input.toString());
+  if (url.includes('node1')) {
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  }
+  return new Response('Error', { status: 500 });
+};
+
 describe('FableFunnelEngine (Scatter-Gather & Hedged Race)', () => {
   it('executes ALL_SETTLED scatter-gather across multiple targets in parallel', async () => {
     const registry = new FunnelRegistry();
@@ -19,18 +49,7 @@ describe('FableFunnelEngine (Scatter-Gather & Hedged Race)', () => {
     };
     registry.registerMethod(config);
 
-    // Mock fetcher returning responses
-    const mockFetcher = async (url: string) => {
-      if (url.includes('wh1')) {
-        return new Response(JSON.stringify({ stock: 15 }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (url.includes('wh2')) {
-        return new Response(JSON.stringify({ stock: 0 }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      return new Response('Not Found', { status: 404 });
-    };
-
-    const engine = new FableFunnelEngine({ registry, fetcher: mockFetcher as any });
+    const engine = new FableFunnelEngine({ registry, fetcher: mockMultiWhFetcher });
 
     const receipt = await engine.dispatch({
       method: 'MULTI_WH_CHECK',
@@ -46,7 +65,7 @@ describe('FableFunnelEngine (Scatter-Gather & Hedged Race)', () => {
 
     const r1 = receipt.results.find((r) => r.targetId === 'wh-1');
     expect(r1?.statusCode).toBe(200);
-    expect((r1?.data as any)?.stock).toBe(15);
+    expect(r1?.data).toEqual(expect.objectContaining({ stock: 15 }));
   });
 
   it('executes FIRST_SUCCESS hedged race and aborts slower targets', async () => {
@@ -63,19 +82,7 @@ describe('FableFunnelEngine (Scatter-Gather & Hedged Race)', () => {
     };
     registry.registerMethod(config);
 
-    const mockFetcher = async (url: string, init?: RequestInit) => {
-      if (url.includes('slow')) {
-        // Simulates 150ms delay
-        await new Promise((r) => setTimeout(r, 150));
-        if (init?.signal?.aborted) throw new Error('Aborted');
-        return new Response(JSON.stringify({ text: 'slow response' }), { status: 200 });
-      }
-      // Fast finishes in 10ms
-      await new Promise((r) => setTimeout(r, 10));
-      return new Response(JSON.stringify({ text: 'fast winner' }), { status: 200 });
-    };
-
-    const engine = new FableFunnelEngine({ registry, fetcher: mockFetcher as any });
+    const engine = new FableFunnelEngine({ registry, fetcher: mockHedgedFetcher });
 
     const receipt = await engine.dispatch({
       method: 'LLM_HEDGED_PROMPT',
@@ -84,7 +91,8 @@ describe('FableFunnelEngine (Scatter-Gather & Hedged Race)', () => {
 
     expect(receipt.success).toBe(true);
     expect(receipt.winningTargetId).toBe('model-fast');
-    expect((receipt.results.find((r) => r.targetId === 'model-fast')?.data as any)?.text).toBe('fast winner');
+    const winner = receipt.results.find((result) => result.targetId === 'model-fast');
+    expect(winner?.data).toEqual(expect.objectContaining({ text: 'fast winner' }));
   });
 
   it('trips circuit breaker and fast-fails target after repeated errors', async () => {
@@ -102,12 +110,12 @@ describe('FableFunnelEngine (Scatter-Gather & Hedged Race)', () => {
     });
 
     let callCount = 0;
-    const mockFetcher = async () => {
+    const mockFetcher: typeof fetch = async () => {
       callCount++;
       throw new Error('Connection refused');
     };
 
-    const engine = new FableFunnelEngine({ registry, fetcher: mockFetcher as any });
+    const engine = new FableFunnelEngine({ registry, fetcher: mockFetcher });
 
     // Call 1 -> Fail
     await engine.dispatch({ method: 'UNSTABLE_API' });
@@ -118,8 +126,8 @@ describe('FableFunnelEngine (Scatter-Gather & Hedged Race)', () => {
 
     // Call 3 -> Should fast-fail via Circuit Breaker without calling fetcher!
     const receipt3 = await engine.dispatch({ method: 'UNSTABLE_API' });
-    expect(receipt3.results[0].statusCode).toBe(503);
-    expect(receipt3.results[0].error).toContain('Circuit breaker OPEN');
+    expect(receipt3.results[0]?.statusCode).toBe(503);
+    expect(receipt3.results[0]?.error).toContain('Circuit breaker OPEN');
     expect(callCount).toBe(2); // Verify fetcher was NOT called again
   });
 
@@ -138,15 +146,7 @@ describe('FableFunnelEngine (Scatter-Gather & Hedged Race)', () => {
       ]
     });
 
-    // 1 succeeds, 2 fail -> Quorum of 2 NOT met
-    const mockFetcher = async (url: string) => {
-      if (url.includes('node1')) {
-        return new Response(JSON.stringify({ ok: true }), { status: 200 });
-      }
-      return new Response('Error', { status: 500 });
-    };
-
-    const engine = new FableFunnelEngine({ registry, fetcher: mockFetcher as any });
+    const engine = new FableFunnelEngine({ registry, fetcher: mockQuorumFetcher });
 
     const receipt = await engine.dispatch({ method: 'CONSENSUS_VOTE' });
     expect(receipt.successfulCount).toBe(1);

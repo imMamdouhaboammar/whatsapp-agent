@@ -2,18 +2,15 @@ import { describe, expect, it } from 'bun:test';
 import {
   GEMINI_4_MODELS,
   SUPPORTED_GEMINI_MODELS,
-  isGemini4Model,
-  ROUTER_MODEL_MAP,
-  routeTurnModel
+  isGemini4Model
 } from '../src/ai/model-router';
 import {
   resolveModelChain,
-  executeWithModelFallback,
-  DEFAULT_GEMINI_FALLBACK_CHAIN,
-  GEMINI_4_FALLBACK_CHAIN
+  executeWithModelFallback
 } from '../src/ai/model-fallback';
 import { GeminiClient } from '../src/ai/gemini-client';
 import { ModeratorAgent, DEFAULT_MODERATOR_PERSONA } from '../src/ai/moderator-agent';
+import { MemoryStore } from '../src/domain/memory-store';
 
 describe('Gemini 4 Models Family Support', () => {
   it('defines all major Gemini 4 model identifiers and descriptors', () => {
@@ -80,7 +77,7 @@ describe('Gemini 4 Models Family Support', () => {
       async (model) => {
         attemptedModels.push(model);
         if (model === 'gemini-4-carbon') {
-          const err: any = new Error('429 Resource Exhausted');
+          const err: Error & { status?: number } = new Error('429 Resource Exhausted');
           err.status = 429;
           throw err;
         }
@@ -101,14 +98,14 @@ describe('Gemini 4 Models Family Support', () => {
     // Subclass or mock GeminiClient to inspect model fallback without network calls
     const mockClient = new GeminiClient({ apiKey: 'test-key' });
     // Patch internal fetcher / auth
-    (mockClient as any).ensureAuth = async () => ({ type: 'vertex', tokenOrKey: 'fake-token', project: 'proj' });
+    Reflect.set(mockClient, 'ensureAuth', async () => ({ type: 'vertex', tokenOrKey: 'fake-token', project: 'proj' }));
 
     // Mock fetch globally for this test
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (url: string | URL | Request) => {
-      const urlStr = String(url);
+    globalThis.fetch = async (url) => {
+      const urlStr = url instanceof Request ? url.url : url instanceof URL ? url.href : url;
       const match = urlStr.match(/models\/([^:]+):generateContent/);
-      const model = match ? match[1] : '';
+      const model = match?.[1] ?? '';
       calledModels.push(model);
 
       if (model === 'gemini-4-carbon') {
@@ -123,7 +120,7 @@ describe('Gemini 4 Models Family Support', () => {
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
-    }) as any;
+    };
 
     try {
       const res = await mockClient.generateContent([{ role: 'user', parts: [{ text: 'Hello' }] }], {
@@ -143,17 +140,22 @@ describe('Gemini 4 Models Family Support', () => {
 
     // Create a moderator persona with Gemini 4 Carbon
     const mockGemini = new GeminiClient({ apiKey: 'dummy-key' });
-    const agent = new ModeratorAgent(mockGemini, undefined, {
-      persona: {
-        model: 'gemini-4-carbon'
-      }
-    });
+    const memory = new MemoryStore({ dataDir: ':memory:' });
+    try {
+      const agent = new ModeratorAgent(mockGemini, memory, {
+        persona: {
+          model: 'gemini-4-carbon'
+        }
+      });
 
-    const persona = agent.getPersona();
-    expect(persona.model).toBe('gemini-4-carbon');
+      const persona = agent.getPersona();
+      expect(persona.model).toBe('gemini-4-carbon');
 
-    // Update to Gemini 4 Hydrogen
-    agent.updatePersona({ model: 'gemini-4-hydrogen' });
-    expect(agent.getPersona().model).toBe('gemini-4-hydrogen');
+      // Update to Gemini 4 Hydrogen
+      agent.updatePersona({ model: 'gemini-4-hydrogen' });
+      expect(agent.getPersona().model).toBe('gemini-4-hydrogen');
+    } finally {
+      memory.close();
+    }
   });
 });
