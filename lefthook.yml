@@ -1,0 +1,24 @@
+min_version: 2.2.4
+no_tty: true
+commit-msg:
+  commands:
+    commitlint:
+      run: bunx --no-install commitlint --edit "{1}"
+pre-commit:
+  parallel: true
+  commands:
+    legacy-pre-commit:
+      run: hook="$(git rev-parse --git-path hooks)/pre-commit.old"; if [ -x "$hook" ]; then "$hook"; fi
+    anti-suppression:
+      run: bun scripts/quality-guard.mjs staged
+    staged-quality:
+      run: bun scripts/quality-staged.mjs
+pre-push:
+  parallel: true
+  commands:
+    legacy-pre-push:
+      run: hook="$(git rev-parse --git-path hooks)/pre-push.old"; if [ -x "$hook" ]; then "$hook"; fi
+    quality:
+      run: bun run lint:ts && bun run typecheck
+    tests:
+      run: bun test && (cd ui && bun test:ui && bun run build) && bun run cli doctor --preflight --strict
