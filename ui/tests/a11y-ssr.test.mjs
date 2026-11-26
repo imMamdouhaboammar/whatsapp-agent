@@ -15,7 +15,6 @@ const { LocaleProvider } = await vite.ssrLoadModule('/src/i18n.tsx');
 const { App } = await vite.ssrLoadModule('/src/App.tsx');
 const { OwnerAccessLogin } = await vite.ssrLoadModule('/src/components/OwnerAccessGate.tsx');
 const { PairingModal } = await vite.ssrLoadModule('/src/components/PairingModal.tsx');
-const { SimulatorModal } = await vite.ssrLoadModule('/src/components/SimulatorModal.tsx');
 const { StickerStudioModal } = await vite.ssrLoadModule('/src/components/StickerStudioModal.tsx');
 const { ModeratorDrawer } = await vite.ssrLoadModule('/src/components/ModeratorDrawer.tsx');
 const { PersonaSettingsPage } = await vite.ssrLoadModule('/src/components/PersonaSettingsPage.tsx');
@@ -104,11 +103,11 @@ await test('dialog headings are not page-level banner landmarks', () => {
   const pairing = render('en', React.createElement(PairingModal, {
     status: { state: 'disconnected', pendingDraftsCount: 0, updatedAt: 0 }, isOpen: true, onClose() {}, onConnect: async () => {}, onDisconnect: async () => {}
   }));
-  const sim = render('en', React.createElement(SimulatorModal, { isOpen: true, onClose() {}, onSimulate: async () => ({}) }));
-  const sticker = render('en', React.createElement(StickerStudioModal, { isOpen: true, onClose() {}, onSendSticker: async () => {} }));
+  const sticker = render('en', React.createElement(StickerStudioModal, { isOpen: true, onClose() {} }));
   assert.doesNotMatch(pairing, /<header/);
-  assert.doesNotMatch(sim, /<header/);
   assert.doesNotMatch(sticker, /<header/);
+  assert.match(pairing, /aria-labelledby=/);
+  assert.match(sticker, /aria-labelledby=/);
 });
 
 function parseCSS(source) {

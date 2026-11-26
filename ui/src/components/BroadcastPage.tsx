@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ArrowRight, CheckCircle2, Pause, Play, Radio, RefreshCw, Send, Users, XCircle } from 'lucide-react';
+import { ArrowRight, Pause, Play, Radio, RefreshCw, Send, Users, XCircle } from 'lucide-react';
 import { api } from '../api/client';
 import type {
   BroadcastApprovalMode,
@@ -9,16 +9,21 @@ import type {
   BroadcastTransport,
   EligibleBroadcastContact,
 } from '../api/types';
+import { ConfirmAction } from './ToolDialog';
 import { useLocale } from '../locale-context';
+
+const sentCount = (campaign: BroadcastCampaignSummary) => campaign.stats.sent + campaign.stats.delivered + campaign.stats.read + campaign.stats.replied + campaign.stats.followedUp;
 
 export function BroadcastPage({ onClose }: { onClose: () => void }) {
   const { direction, tr } = useLocale();
   const [campaigns, setCampaigns] = useState<BroadcastCampaignSummary[]>([]);
   const [selectedCampaign, setSelectedCampaign] = useState<BroadcastCampaignSummary | null>(null);
   const [recipients, setRecipients] = useState<BroadcastRecipient[]>([]);
-  const [audiencePreview, setAudiencePreview] = useState<EligibleBroadcastContact[]>([]);
+  const [audiencePreview, setAudiencePreview] = useState<EligibleBroadcastContact[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [edits, setEdits] = useState<Record<string, string>>({});
+  const [confirmation, setConfirmation] = useState<'create' | 'approve' | 'cancel' | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [name, setName] = useState('');
@@ -51,6 +56,7 @@ export function BroadcastPage({ onClose }: { onClose: () => void }) {
       const res = await api.getBroadcast(id);
       setSelectedCampaign(res.campaign);
       setRecipients(res.recipients || []);
+      setEdits({});
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load campaign');
     }
@@ -104,9 +110,9 @@ export function BroadcastPage({ onClose }: { onClose: () => void }) {
         richContent: {
           kind,
           messageGoal: goal.trim(),
-          ...(mediaUrl.trim() ? { mediaUrl: mediaUrl.trim() } : {}),
-          ...(fileName.trim() ? { fileName: fileName.trim() } : {}),
-          ...(templateName.trim() ? { templateName: templateName.trim(), templateLanguage: 'en_US' } : {}),
+          ...(['image', 'video', 'document'].includes(kind) && mediaUrl.trim() ? { mediaUrl: mediaUrl.trim() } : {}),
+          ...(kind === 'document' && fileName.trim() ? { fileName: fileName.trim() } : {}),
+          ...(kind === 'template' && templateName.trim() ? { templateName: templateName.trim(), templateLanguage: 'en_US' } : {}),
         },
         followUp: {
           enabled: followUpEnabled,
@@ -117,6 +123,7 @@ export function BroadcastPage({ onClose }: { onClose: () => void }) {
       });
       setSelectedCampaign(created.campaign);
       setRecipients(created.recipients);
+      setEdits({});
       await loadCampaigns();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create campaign');
@@ -125,262 +132,114 @@ export function BroadcastPage({ onClose }: { onClose: () => void }) {
     }
   };
 
-  const handleEditRecipient = async (recipientId: string, personalizedText: string) => {
+  const perform = async (action: () => Promise<void>) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try { await action(); }
+    catch (err) { setError(err instanceof Error ? err.message : tr('تعذّر تنفيذ الإجراء', 'Action failed')); }
+    finally { setBusy(false); }
+  };
+
+  const handleEditRecipient = (recipientId: string, personalizedText: string) => perform(async () => {
     if (!selectedCampaign) return;
     const res = await api.updateBroadcastRecipient(selectedCampaign.id, recipientId, { personalizedText });
-    setRecipients((prev) => prev.map((r) => (r.id === recipientId ? res.recipient : r)));
-  };
+    setRecipients(prev => prev.map(r => r.id === recipientId ? res.recipient : r));
+    setEdits(prev => { const next = { ...prev }; delete next[recipientId]; return next; });
+  });
 
-  const handleToggleSkip = async (recipient: BroadcastRecipient) => {
+  const handleToggleSkip = (recipient: BroadcastRecipient) => perform(async () => {
     if (!selectedCampaign) return;
-    const nextStatus = recipient.status === 'skipped' ? 'draft' : 'skipped';
-    const res = await api.updateBroadcastRecipient(selectedCampaign.id, recipient.id, { status: nextStatus });
-    setRecipients((prev) => prev.map((r) => (r.id === recipient.id ? res.recipient : r)));
-  };
-
-  const handleApprove = async () => {
-    if (!selectedCampaign) return;
-    setBusy(true);
-    try {
-      const res = await api.approveBroadcast(selectedCampaign.id);
-      setSelectedCampaign(res.campaign);
-      await selectCampaign(selectedCampaign.id);
-      await loadCampaigns();
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handlePause = async () => {
-    if (!selectedCampaign) return;
-    const res = await api.pauseBroadcast(selectedCampaign.id);
-    setSelectedCampaign(res.campaign);
+    const res = await api.updateBroadcastRecipient(selectedCampaign.id, recipient.id, { status: recipient.status === 'skipped' ? 'draft' : 'skipped' });
+    setRecipients(prev => prev.map(r => r.id === recipient.id ? res.recipient : r));
     await loadCampaigns();
-  };
+  });
 
-  const handleCancel = async () => {
+  const handleCampaignAction = (action: 'approve' | 'pause' | 'cancel') => perform(async () => {
     if (!selectedCampaign) return;
-    const res = await api.cancelBroadcast(selectedCampaign.id);
-    setSelectedCampaign(res.campaign);
+    if (action === 'approve') await api.approveBroadcast(selectedCampaign.id);
+    else if (action === 'pause') await api.pauseBroadcast(selectedCampaign.id);
+    else await api.cancelBroadcast(selectedCampaign.id);
+    await selectCampaign(selectedCampaign.id);
     await loadCampaigns();
+  });
+
+  const hasEdits = Object.keys(edits).length > 0;
+  const isMedia = kind === 'image' || kind === 'video' || kind === 'document';
+  const valid = Boolean(name.trim() && goal.trim() && (!isMedia || mediaUrl.trim()) && (kind !== 'template' || templateName.trim()) && (!followUpEnabled || (Number.isInteger(followUpDelay) && followUpDelay >= 1)));
+  const statusLabel = (status: string) => {
+    const labels: Record<string, string> = {
+      draft: tr('مسودة', 'Draft'), approved: tr('معتمدة', 'Approved'), queued: tr('في الانتظار', 'Queued'),
+      running: tr('قيد الإرسال', 'Running'), paused: tr('متوقفة مؤقتًا', 'Paused'), completed: tr('مكتملة', 'Completed'),
+      cancelled: tr('ملغاة', 'Cancelled'), sent: tr('أُرسلت', 'Sent'), delivered: tr('وصلت', 'Delivered'),
+      read: tr('قُرئت', 'Read'), replied: tr('تم الرد', 'Replied'), followed_up: tr('تمت المتابعة', 'Followed up'),
+      skipped: tr('مستبعدة', 'Skipped'), failed: tr('فشلت', 'Failed'), opted_out: tr('ألغى الاشتراك', 'Opted out')
+    };
+    return labels[status] ?? status;
   };
 
-  return (
-    <div dir={direction} style={{ padding: '24px', maxWidth: '1160px', margin: '0 auto', color: '#111827', fontSize: '13px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px', borderBottom: '1px solid #e5e7eb', paddingBottom: '14px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <Radio size={20} color="#0f766e" />
-          <h1 style={{ margin: 0, fontSize: '18px', fontWeight: 700 }}>{tr('البث الذكي التفاعلي (Agentic Broadcast)', 'Smart Agentic Broadcast')}</h1>
-        </div>
-        <div style={{ display: 'flex', gap: '8px' }}>
-          <button type="button" onClick={() => void loadCampaigns()} style={{ padding: '8px 12px', borderRadius: '999px', border: '1px solid #d1d5db', background: '#fff', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '12px' }}>
-            <RefreshCw size={14} /> {tr('تحديث', 'Refresh')}
-          </button>
-          <button type="button" onClick={onClose} style={{ padding: '8px 14px', borderRadius: '999px', border: '1px solid #d1d5db', background: '#f9fafb', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '12px' }}>
-            <ArrowRight size={14} /> {tr('العودة للمحادثات', 'Back to Chats')}
-          </button>
-        </div>
+  return <main dir={direction} className="wa-broadcast-page">
+    <div className="wa-broadcast-inner">
+      <div className="wa-broadcast-header">
+        <div><button type="button" className="wa-broadcast-back" onClick={onClose}><ArrowRight size={16}/>{tr('المحادثات', 'Back to chats')}</button>
+          <h1><Radio size={24}/>{tr('البث الذكي', 'Smart Agentic Broadcast')}</h1>
+          <p>{tr('جهّز رسائل مخصصة للعملاء، وراجع المستلمين وتابع حالة الإرسال.', 'Compose personalized messages, review recipients and track delivery.')}</p></div>
+        <button type="button" className="wa-tool-button" disabled={loading || busy || hasEdits} onClick={() => void perform(async () => { await loadCampaigns(); if (selectedCampaign) await selectCampaign(selectedCampaign.id); })}><RefreshCw size={16}/>{tr('تحديث', 'Refresh')}</button>
       </div>
-
-      {error && (
-        <div role="alert" style={{ padding: '10px 14px', borderRadius: '10px', background: '#fef2f2', color: '#991b1b', marginBottom: '16px', border: '1px solid #fecaca' }}>
-          {error}
-        </div>
-      )}
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 1fr) minmax(380px, 1.25fr)', gap: '20px', alignItems: 'start' }}>
-        <section style={{ background: '#ffffff', border: '1px solid #e5e7eb', borderRadius: '14px', padding: '18px' }}>
-          <h2 style={{ margin: '0 0 14px', fontSize: '15px', fontWeight: 700 }}>{tr('إنشاء حملة بث جديدة', 'Create Broadcast Campaign')}</h2>
-
-          <label style={{ display: 'block', marginBottom: '10px' }}>
-            <span style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>{tr('اسم الحملة', 'Campaign Name')}</span>
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder={tr('مثال: عرض الجمعة للعملاء السابقين', 'e.g. VIP Offer for Past Leads')} style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '13px' }} />
-          </label>
-
-          <label style={{ display: 'block', marginBottom: '10px' }}>
-            <span style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>{tr('وصف الجمهور المستهدف (ممن لهم تواصل سابق)', 'Target Audience (Previous Connections Only)')}</span>
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <input value={audiencePrompt} onChange={(e) => setAudiencePrompt(e.target.value)} placeholder={tr('مثال: العملاء المهتمين بالباقة السنوية', 'e.g. leads interested in annual plan')} style={{ flex: 1, padding: '8px 10px', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '13px' }} />
-              <button type="button" disabled={busy} onClick={() => void handlePreviewAudience()} style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid #0f766e', background: '#f0fdfa', color: '#0f766e', cursor: 'pointer', fontSize: '12px', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
-                <Users size={14} /> {tr('معاينة', 'Preview')}
-              </button>
+      {error && <p className="wa-tool-error" role="alert">{error}</p>}
+      <div className="wa-broadcast-layout">
+        <section className="wa-broadcast-panel" aria-labelledby="broadcast-compose-title">
+          <div className="wa-broadcast-panel-heading"><h2 id="broadcast-compose-title">{tr('إنشاء حملة', 'New campaign')}</h2><p>{tr('حدّد هدف الرسائل والجمهور قبل الإرسال.', 'Define your audience and message goal before sending.')}</p></div>
+          <fieldset className="wa-broadcast-fields" disabled={busy}>
+            <label className="wa-tool-field">{tr('اسم الحملة', 'Campaign name')}<input value={name} onChange={e => setName(e.target.value)} placeholder={tr('عرض العملاء السابقين', 'Returning customer offer')}/></label>
+            <div className="wa-tool-stack"><label className="wa-tool-field" htmlFor="broadcast-audience">{tr('الجمهور المستهدف', 'Target audience')}</label>
+              <div className="wa-tool-search"><input id="broadcast-audience" value={audiencePrompt} onChange={e => { setAudiencePrompt(e.target.value); setAudiencePreview(null); }} placeholder={tr('صف العملاء المناسبين', 'Describe the eligible contacts')}/><button type="button" className="wa-tool-button" onClick={() => void handlePreviewAudience()}><Users size={16}/>{tr('معاينة', 'Preview')}</button></div>
+              <p className="wa-tool-note">{tr('العملاء الذين سبق لهم التواصل فقط.', 'Only contacts with previous interactions are eligible.')}</p>
+              {audiencePreview !== null && <output className="wa-tool-status">{tr('عدد العملاء المؤهلين:', 'Eligible contacts:')} {audiencePreview.length}</output>}
             </div>
-          </label>
-
-          {audiencePreview.length > 0 && (
-            <div style={{ padding: '8px 12px', borderRadius: '8px', background: '#f0fdfa', color: '#115e59', fontSize: '12px', marginBottom: '10px' }}>
-              {tr(`تم العثور على ${audiencePreview.length} عميل مؤهل بتواصل سابق.`, `Found ${audiencePreview.length} eligible contacts with previous connection.`)}
+            <label className="wa-tool-field">{tr('هدف الرسالة', 'Message goal')}<textarea rows={4} value={goal} onChange={e => setGoal(e.target.value)} placeholder={tr('اشرح العرض وما تريد من العميل فعله', 'Describe the offer and desired customer action')}/></label>
+            <div className="wa-broadcast-pair">
+              <label className="wa-tool-field">{tr('قناة الإرسال', 'Transport')}<select value={transport} onChange={({currentTarget:{value}}) => { if (value === 'auto' || value === 'baileys' || value === 'meta-cloud') setTransport(value); }}><option value="auto">{tr('تلقائي', 'Auto')}</option><option value="baileys">Baileys</option><option value="meta-cloud">Meta Cloud API</option></select></label>
+              <label className="wa-tool-field">{tr('نوع المحتوى', 'Content type')}<select value={kind} onChange={({currentTarget:{value}}) => { if (value === 'text' || value === 'image' || value === 'video' || value === 'document' || value === 'voice_note' || value === 'template') setKind(value); }}><option value="text">{tr('نص مخصص', 'Personalized text')}</option><option value="image">{tr('صورة', 'Image')}</option><option value="video">{tr('فيديو', 'Video')}</option><option value="document">{tr('مستند', 'Document')}</option><option value="voice_note">{tr('رسالة صوتية', 'Voice note')}</option><option value="template">{tr('قالب Meta', 'Meta template')}</option></select></label>
             </div>
-          )}
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '10px' }}>
-            <label>
-              <span style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>{tr('قناة الإرسال', 'Transport')}</span>
-              <select value={transport} onChange={({ currentTarget: { value } }) => { if (value === 'auto' || value === 'baileys' || value === 'meta-cloud') setTransport(value); }} style={{ width: '100%', padding: '8px', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '13px' }}>
-                <option value="auto">{tr('تلقائي (Auto)', 'Auto')}</option>
-                <option value="baileys">Baileys (WhatsApp Web)</option>
-                <option value="meta-cloud">Meta Cloud API</option>
-              </select>
-            </label>
-            <label>
-              <span style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>{tr('نوع المحتوى (Rich)', 'Rich Content Type')}</span>
-              <select value={kind} onChange={({ currentTarget: { value } }) => { if (value === 'text' || value === 'image' || value === 'video' || value === 'document' || value === 'voice_note' || value === 'template') setKind(value); }} style={{ width: '100%', padding: '8px', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '13px' }}>
-                <option value="text">{tr('نص مخصص', 'Personalized Text')}</option>
-                <option value="image">{tr('صورة + وصف', 'Image + Caption')}</option>
-                <option value="video">{tr('فيديو + وصف', 'Video + Caption')}</option>
-                <option value="document">{tr('ملف PDF / مستند', 'PDF / Document')}</option>
-                <option value="voice_note">{tr('رسالة صوتية (AI Voice)', 'AI Voice Note')}</option>
-                <option value="template">{tr('قالب Meta رسمي', 'Meta Approved Template')}</option>
-              </select>
-            </label>
-          </div>
-
-          {(kind === 'image' || kind === 'video' || kind === 'document') && (
-            <div style={{ display: 'grid', gridTemplateColumns: kind === 'document' ? '1fr 1fr' : '1fr', gap: '8px', marginBottom: '10px' }}>
-              <input value={mediaUrl} onChange={(e) => setMediaUrl(e.target.value)} placeholder="https://example.com/media..." style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '13px' }} />
-              {kind === 'document' && (
-                <input value={fileName} onChange={(e) => setFileName(e.target.value)} placeholder="brochure.pdf" style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '13px' }} />
-              )}
+            {isMedia && <label className="wa-tool-field">{tr('رابط الملف', 'Media URL')}<input type="url" dir="ltr" value={mediaUrl} onChange={e => setMediaUrl(e.target.value)} placeholder="https://…"/></label>}
+            {kind === 'document' && <label className="wa-tool-field">{tr('اسم الملف', 'File name')}<input value={fileName} onChange={e => setFileName(e.target.value)} placeholder="brochure.pdf"/></label>}
+            {kind === 'template' && <label className="wa-tool-field">{tr('اسم القالب المعتمد', 'Approved template name')}<input value={templateName} onChange={e => setTemplateName(e.target.value)}/></label>}
+            <label className="wa-tool-field">{tr('طريقة الإطلاق', 'Approval mode')}<select value={approvalMode} onChange={({currentTarget:{value}}) => { if (value === 'preview_approve' || value === 'autonomous') setApprovalMode(value); }}><option value="preview_approve">{tr('مراجعة ثم اعتماد', 'Review and approve')}</option><option value="autonomous">{tr('إرسال تلقائي', 'Autonomous dispatch')}</option></select></label>
+            <div className="wa-broadcast-followup">
+              <label className="wa-broadcast-check"><input type="checkbox" checked={followUpEnabled} onChange={e => setFollowUpEnabled(e.target.checked)}/><strong>{tr('متابعة تلقائية عند القراءة دون رد', 'Follow up after read without reply')}</strong></label>
+              {followUpEnabled && <div className="wa-tool-stack"><label className="wa-tool-field">{tr('التأخير بالدقائق', 'Delay in minutes')}<input type="number" min={1} step={1} value={followUpDelay} onChange={e => setFollowUpDelay(Number(e.target.value))}/></label><label className="wa-tool-field">{tr('توجيه المتابعة', 'Follow-up instructions')}<input value={followUpPrompt} onChange={e => setFollowUpPrompt(e.target.value)}/></label></div>}
             </div>
-          )}
-
-          {kind === 'template' && (
-            <input value={templateName} onChange={(e) => setTemplateName(e.target.value)} placeholder={tr('اسم القالب المعتمد في Meta (مثال: promo_offer)', 'Approved Meta template name')} style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '13px', marginBottom: '10px' }} />
-          )}
-
-          <label style={{ display: 'block', marginBottom: '10px' }}>
-            <span style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>{tr('هدف الرسالة (يصيغها الـ AI لكل عميل)', 'Message Goal (AI personalizes per user)')}</span>
-            <textarea rows={3} value={goal} onChange={(e) => setGoal(e.target.value)} placeholder={tr('اكتب العرض أو الرسالة الأساسية وسيتولى المساعد تخصيصها لكل عميل بناءً على سياقه...', 'Describe the offer and AI will tailor it to each contact...')} style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '13px' }} />
-          </label>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '12px' }}>
-            <label>
-              <span style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>{tr('وضع الإطلاق', 'Approval Mode')}</span>
-              <select value={approvalMode} onChange={({ currentTarget: { value } }) => { if (value === 'preview_approve' || value === 'autonomous') setApprovalMode(value); }} style={{ width: '100%', padding: '8px', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '13px' }}>
-                <option value="preview_approve">{tr('معاينة وموافقة بشرية', 'Preview & Approve')}</option>
-                <option value="autonomous">{tr('تلقائي بالكامل (Autonomous)', 'Autonomous Dispatch')}</option>
-              </select>
-            </label>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingTop: '20px', cursor: 'pointer' }}>
-              <input type="checkbox" checked={followUpEnabled} onChange={(e) => setFollowUpEnabled(e.target.checked)} />
-              <span style={{ fontSize: '12px', fontWeight: 600 }}>{tr('متابعة تلقائية لو قرأ ومردش', 'Auto follow-up if read & no reply')}</span>
-            </label>
-          </div>
-
-          {followUpEnabled && (
-            <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr', gap: '8px', marginBottom: '12px' }}>
-              <input type="number" min={1} value={followUpDelay} onChange={(e) => setFollowUpDelay(Number(e.target.value) || 60)} title={tr('التأخير بالدقائق', 'Delay (minutes)')} style={{ padding: '8px', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '13px' }} />
-              <input value={followUpPrompt} onChange={(e) => setFollowUpPrompt(e.target.value)} placeholder={tr('توجيه رسالة المتابعة التلقائية...', 'Follow-up AI prompt...')} style={{ padding: '8px 10px', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '13px' }} />
-            </div>
-          )}
-
-          <button type="button" disabled={busy} onClick={() => void handleCreateCampaign()} style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: 'none', background: '#0f766e', color: '#ffffff', fontWeight: 700, fontSize: '13px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
-            <Send size={15} /> {busy ? tr('جارٍ التجهيز...', 'Preparing...') : tr('توليد الحملة بالذكاء الاصطناعي', 'Generate AI Broadcast')}
-          </button>
+            <button type="button" className="wa-tool-button wa-tool-primary wa-broadcast-submit" disabled={!valid || busy || hasEdits} onClick={() => { if (approvalMode === 'autonomous') setConfirmation('create'); else void handleCreateCampaign(); }}><Send size={16}/>{busy ? tr('جارٍ التنفيذ', 'Working…') : approvalMode === 'autonomous' ? tr('إنشاء وإطلاق الحملة', 'Create & launch campaign') : tr('إنشاء مسودات الرسائل', 'Generate message drafts')}</button>
+          </fieldset>
         </section>
-
-        <section style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          <div style={{ background: '#ffffff', border: '1px solid #e5e7eb', borderRadius: '14px', padding: '18px' }}>
-            <h2 style={{ margin: '0 0 12px', fontSize: '15px', fontWeight: 700 }}>{tr('الحملات', 'Campaigns')} ({campaigns.length})</h2>
-            {loading ? (
-              <p style={{ color: '#6b7280', margin: 0 }}>{tr('جارٍ التحميل...', 'Loading...')}</p>
-            ) : campaigns.length === 0 ? (
-              <p style={{ color: '#6b7280', margin: 0 }}>{tr('لا توجد حملات بث بعد.', 'No broadcast campaigns yet.')}</p>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                {campaigns.map((c) => (
-                  <button
-                    key={c.id}
-                    type="button"
-                    onClick={() => void selectCampaign(c.id)}
-                    style={{
-                      textAlign: 'start',
-                      padding: '10px 14px',
-                      borderRadius: '999px',
-                      border: selectedCampaign?.id === c.id ? '1px solid #0f766e' : '1px solid #e5e7eb',
-                      background: selectedCampaign?.id === c.id ? '#f0fdfa' : '#f9fafb',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      gap: '10px',
-                    }}
-                  >
-                    <span style={{ fontWeight: 600, fontSize: '13px' }}>{c.name}</span>
-                    <span style={{ fontSize: '12px', color: '#374151' }}>
-                      {c.status} · {c.stats.sent + c.stats.delivered + c.stats.read + c.stats.replied}/{c.stats.total}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
+        <section className="wa-broadcast-history" aria-labelledby="broadcast-history-title">
+          <div className="wa-broadcast-panel">
+            <div className="wa-broadcast-panel-heading"><h2 id="broadcast-history-title">{tr('الحملات', 'Campaigns')} <span className="wa-broadcast-count">{campaigns.length}</span></h2><p>{tr('اختر حملة لعرض حالتها والمستلمين.', 'Select a campaign to review its status and recipients.')}</p></div>
+            {loading ? <output className="wa-tool-note">{tr('جارٍ التحميل', 'Loading…')}</output> : campaigns.length === 0 ? <div className="wa-tool-empty wa-broadcast-empty"><Radio size={28}/><strong>{tr('لا توجد حملات بعد', 'No campaigns yet')}</strong><span>{tr('ستظهر حملاتك هنا بعد إنشائها.', 'Your campaigns will appear here once created.')}</span></div> :
+              <div className="wa-broadcast-list">{campaigns.map(c => <button type="button" key={c.id} className="wa-broadcast-campaign" aria-pressed={selectedCampaign?.id === c.id} disabled={busy || hasEdits} onClick={() => void perform(() => selectCampaign(c.id))}><span><strong>{c.name}</strong><small>{statusLabel(c.status)}</small></span><span className="wa-broadcast-campaign-progress">{sentCount(c)} / {c.stats.total}<small>{tr('تم الإرسال', 'Sent')}</small></span></button>)}</div>}
           </div>
-
-          {selectedCampaign && (
-            <div style={{ background: '#ffffff', border: '1px solid #e5e7eb', borderRadius: '14px', padding: '18px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px', gap: '10px' }}>
-                <div>
-                  <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700 }}>{selectedCampaign.name}</h3>
-                  <span style={{ fontSize: '12px', color: '#4b5563' }}>
-                    {selectedCampaign.status} · {selectedCampaign.transport} · {selectedCampaign.richContent.kind}
-                  </span>
-                </div>
-                <div style={{ display: 'flex', gap: '6px' }}>
-                  {(selectedCampaign.status === 'draft' || selectedCampaign.status === 'paused') && (
-                    <button type="button" disabled={busy} onClick={() => void handleApprove()} style={{ padding: '7px 12px', borderRadius: '999px', border: 'none', background: '#0f766e', color: '#fff', cursor: 'pointer', fontSize: '12px', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                      <Play size={13} /> {tr('اعتماد وإرسال', 'Approve & Send')}
-                    </button>
-                  )}
-                  {selectedCampaign.status === 'running' && (
-                    <button type="button" onClick={() => void handlePause()} style={{ padding: '7px 12px', borderRadius: '999px', border: '1px solid #d1d5db', background: '#fff', cursor: 'pointer', fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                      <Pause size={13} /> {tr('إيقاف مؤقت', 'Pause')}
-                    </button>
-                  )}
-                  {selectedCampaign.status !== 'completed' && selectedCampaign.status !== 'cancelled' && (
-                    <button type="button" onClick={() => void handleCancel()} style={{ padding: '7px 12px', borderRadius: '999px', border: '1px solid #fecaca', background: '#fef2f2', color: '#991b1b', cursor: 'pointer', fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                      <XCircle size={13} /> {tr('إلغاء', 'Cancel')}
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '420px', overflowY: 'auto' }}>
-                {recipients.map((r) => (
-                  <div key={r.id} style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid #e5e7eb', background: '#f9fafb' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
-                      <strong style={{ fontSize: '13px' }}>{r.contactName}</strong>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <span style={{ fontSize: '12px', color: '#0f766e', fontWeight: 600 }}>{r.status}</span>
-                        {r.status === 'draft' || r.status === 'skipped' ? (
-                          <button type="button" onClick={() => void handleToggleSkip(r)} style={{ padding: '3px 8px', borderRadius: '999px', border: '1px solid #d1d5db', background: '#fff', fontSize: '11px', cursor: 'pointer' }}>
-                            {r.status === 'skipped' ? tr('تضمين', 'Include') : tr('تخطي', 'Skip')}
-                          </button>
-                        ) : (
-                          <CheckCircle2 size={14} color="#0f766e" />
-                        )}
-                      </div>
-                    </div>
-                    <textarea
-                      rows={2}
-                      value={r.personalizedText}
-                      disabled={r.status !== 'draft'}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setRecipients((prev) => prev.map((item) => (item.id === r.id ? { ...item, personalizedText: val } : item)));
-                      }}
-                      onBlur={(e) => {
-                        if (r.status === 'draft') void handleEditRecipient(r.id, e.target.value);
-                      }}
-                      style={{ width: '100%', padding: '6px 8px', borderRadius: '6px', border: '1px solid #d1d5db', fontSize: '12px', background: r.status === 'draft' ? '#fff' : '#f3f4f6' }}
-                    />
-                    {r.error && <div style={{ color: '#991b1b', fontSize: '11px', marginTop: '4px' }}>{r.error}</div>}
-                  </div>
-                ))}
-              </div>
+          {selectedCampaign && <div className="wa-broadcast-panel">
+            <div className="wa-broadcast-panel-heading"><h2 dir="auto">{selectedCampaign.name}</h2><p>{statusLabel(selectedCampaign.status)} · {selectedCampaign.transport}</p></div>
+            <dl className="wa-context-metrics"><div><dt>{tr('المستلمون', 'Recipients')}</dt><dd>{selectedCampaign.stats.total}</dd></div><div><dt>{tr('أُرسلت', 'Sent')}</dt><dd>{sentCount(selectedCampaign)}</dd></div><div><dt>{tr('فشلت', 'Failed')}</dt><dd>{selectedCampaign.stats.failed}</dd></div></dl>
+            <div className="wa-broadcast-actions">
+              {(selectedCampaign.status === 'draft' || selectedCampaign.status === 'paused') && <button type="button" className="wa-tool-button wa-tool-primary" disabled={busy || hasEdits} onClick={() => setConfirmation('approve')}><Play size={15}/>{tr('اعتماد وإرسال', 'Approve & send')}</button>}
+              {selectedCampaign.status === 'running' && <button type="button" className="wa-tool-button" disabled={busy} onClick={() => void handleCampaignAction('pause')}><Pause size={15}/>{tr('إيقاف مؤقت', 'Pause')}</button>}
+              {selectedCampaign.status !== 'completed' && selectedCampaign.status !== 'cancelled' && <button type="button" className="wa-tool-button wa-tool-danger-outline" disabled={busy || hasEdits} onClick={() => setConfirmation('cancel')}><XCircle size={15}/>{tr('إلغاء الحملة', 'Cancel campaign')}</button>}
             </div>
-          )}
+            {hasEdits && <output className="wa-tool-note">{tr('احفظ تعديلات الرسائل أو تراجع عنها قبل المتابعة.', 'Save or discard message edits before continuing.')}</output>}
+            <h3 className="wa-broadcast-recipient-title">{tr('المستلمون', 'Recipients')}</h3>
+            {recipients.length === 0 && <p className="wa-tool-note">{tr('لا يوجد مستلمون.', 'No recipients.')}</p>}
+            <div className="wa-broadcast-recipients">{recipients.map(r => <article key={r.id} className="wa-broadcast-recipient"><div className="wa-tool-row"><strong dir="auto">{r.contactName}</strong><span className="wa-tool-note">{statusLabel(r.status)}</span></div>
+              <label className="wa-tool-field"><span>{tr('الرسالة المخصصة', 'Personalized message')}</span><textarea rows={3} dir="auto" value={edits[r.id] ?? r.personalizedText} disabled={busy || r.status !== 'draft'} onChange={e => setEdits(prev => ({ ...prev, [r.id]: e.target.value }))}/></label>
+              <div className="wa-broadcast-actions">{edits[r.id] !== undefined && <><button type="button" className="wa-tool-button wa-tool-primary" disabled={busy || !edits[r.id]?.trim()} onClick={() => void handleEditRecipient(r.id, edits[r.id] ?? '')}>{tr('حفظ', 'Save')}</button><button type="button" className="wa-tool-button" disabled={busy} onClick={() => setEdits(prev => { const next = { ...prev }; delete next[r.id]; return next; })}>{tr('تراجع', 'Discard')}</button></>}
+              {(r.status === 'draft' || r.status === 'skipped') && <button type="button" className="wa-tool-button" disabled={busy || edits[r.id] !== undefined} onClick={() => void handleToggleSkip(r)}>{r.status === 'skipped' ? tr('تضمين', 'Include') : tr('استبعاد', 'Skip')}</button>}</div>
+              {r.error && <p className="wa-tool-error" role="alert">{r.error}</p>}
+            </article>)}</div>
+          </div>}
         </section>
       </div>
     </div>
-  );
+    {confirmation && <ConfirmAction title={confirmation === 'cancel' ? tr('إلغاء الحملة؟', 'Cancel campaign?') : tr('تأكيد الإرسال', 'Confirm dispatch')} description={confirmation === 'cancel' ? tr('سيتم إلغاء الرسائل التي لم تُرسل بعد.', 'Remaining unsent messages will be cancelled.') : tr('قد يبدأ إرسال الرسائل للعملاء المؤهلين فور التأكيد.', 'Messages may be sent to eligible contacts immediately after confirmation.')} confirmLabel={confirmation === 'cancel' ? tr('إلغاء الحملة', 'Cancel campaign') : tr('تأكيد الإرسال', 'Confirm dispatch')} onClose={() => setConfirmation(null)} onConfirm={() => { const action = confirmation; setConfirmation(null); if (action === 'create') void handleCreateCampaign(); else void handleCampaignAction(action); }}/>}
+  </main>;
 }

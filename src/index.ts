@@ -549,6 +549,9 @@ export async function createFableWhatsAppAgent(options: {
         .reduce((latest, message) => Math.max(latest, message.timestamp), 0);
       return metaClient.sendText({ to: chatId, text, lastInboundAtMs });
     },
+    sendSticker: transportMode === 'baileys' && whatsappClient
+      ? (chatId, bytes, sendOptions) => whatsappClient.sendSticker(chatId, bytes, sendOptions)
+      : undefined,
     prepareVoice: transportMode === 'baileys' && voiceSynthesizer
       ? (text) => voiceSynthesizer.synthesizeVoice(text, moderatorAgent.getPersona().voiceName)
       : undefined,

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
 import { streamSSE } from 'hono/streaming';
-import { MEDIA_LIMITS, sniffImageMime, sharedMediaLimiter } from '../agent/media-bounds';
+import { MEDIA_LIMITS, sniffImageMime, sharedMediaLimiter, decodeStickerBase64, readRequestBodyTextWithCap, MediaTooLargeError } from '../agent/media-bounds';
 import type { AudioTranscriber } from '../ai/audio-transcriber';
 import type { ModeratorAgent } from '../ai/moderator-agent';
 import type { VoiceSynthesizer } from '../ai/voice-synthesizer';
@@ -76,6 +76,12 @@ export function createApiServer(deps: ApiDependencies): Hono {
       if (!deps.whatsappClient) throw new Error('Baileys transport is not enabled in this runtime profile');
       return deps.whatsappClient.sendMessage(chatId, text, options);
     },
+    sendSticker: deps.whatsappClient && deps.transportMode !== 'meta-cloud'
+      ? (chatId, bytes, options) => {
+          if (!deps.whatsappClient) throw new Error('WhatsApp client unavailable');
+          return deps.whatsappClient.sendSticker(chatId, bytes, options);
+        }
+      : undefined,
     prepareVoice: deps.voiceSynthesizer
       ? (text) => {
           if (!deps.voiceSynthesizer) throw new Error('Voice synthesizer unavailable');
@@ -419,6 +425,39 @@ export function createApiServer(deps: ApiDependencies): Hono {
       const msg = error instanceof Error ? error.message : String(error);
       const name = error instanceof Error ? error.name : '';
       return c.json({ error: msg }, name === 'SendIntentConflictError' ? 409 : 500);
+    }
+  });
+
+  app.post('/api/chats/:chatId/stickers', async (c) => {
+    if (!deps.whatsappClient || deps.transportMode === 'meta-cloud') {
+      return c.json({ error: 'Sticker delivery requires Baileys transport' }, 503);
+    }
+    const maxBody = 144_000;
+    if (Number(c.req.header('content-length') ?? 0) > maxBody) return c.json({ error: 'Sticker request too large' }, 413);
+    let payload: unknown;
+    try {
+      payload = JSON.parse(await readRequestBodyTextWithCap(c.req.raw, maxBody));
+    } catch (err) {
+      return c.json({ error: 'Invalid sticker request' }, err instanceof MediaTooLargeError ? 413 : 400);
+    }
+    if (typeof payload !== 'object' || payload === null ||
+        !('stickerBase64' in payload) || typeof payload.stickerBase64 !== 'string' || !decodeStickerBase64(payload.stickerBase64) ||
+        !('clientMutationId' in payload) || typeof payload.clientMutationId !== 'string' ||
+        !payload.clientMutationId.trim() || payload.clientMutationId.length > 128) {
+      return c.json({ error: 'A valid WebP sticker and client mutation ID are required' }, 400);
+    }
+    try {
+      const chatId = await deps.whatsappClient.canonicalizeJid(c.req.param('chatId'));
+      const result = await getDelivery().sendSticker({
+        sourceKind: 'ui', sourceId: payload.clientMutationId, sourceRevision: 1,
+        actionKind: 'sticker', chatId, text: '[Sticker]', stickerBase64: payload.stickerBase64, policyRevision: 1,
+      });
+      const success = ['accepted', 'delivered', 'read'].includes(result.intent.state);
+      const response = { success, intentId: result.intent.id, state: result.intent.state, message: result.message };
+      return c.json(response, success ? 200 : 202);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Sticker delivery failed';
+      return c.json({ error: message }, err instanceof Error && err.name === 'SendIntentConflictError' ? 409 : 500);
     }
   });
 

@@ -92,6 +92,16 @@ export function sniffImageMime(buf: Buffer): 'png' | 'jpeg' | 'gif' | 'webp' | n
   return null;
 }
 
+/** Bounded, canonical base64 containing a complete RIFF WebP container. */
+export function decodeStickerBase64(value: unknown): Buffer | null {
+  if (typeof value !== 'string' || !value || value.length > 4 * Math.ceil(101888 / 3)) return null;
+  const bytes = Buffer.from(value, 'base64');
+  if (bytes.length < 20 || bytes.length > 101888 || bytes.toString('base64') !== value ||
+      sniffImageMime(bytes) !== 'webp' || bytes.readUInt32LE(4) !== bytes.length - 8) return null;
+  if (!['VP8 ', 'VP8L', 'VP8X'].includes(bytes.toString('ascii', 12, 16))) return null;
+  return bytes;
+}
+
 export interface MediaLimiter {
   run<T>(fn: () => Promise<T>, opts?: { waitMs?: number }): Promise<T>;
   activeCount(): number;

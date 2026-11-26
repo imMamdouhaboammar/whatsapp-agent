@@ -1,3 +1,4 @@
+import { decodeStickerBase64 } from '../agent/media-bounds';
 import { isRecord } from './sqlite-values';
 import { createHash, randomUUID } from 'node:crypto';
 import type { Database } from 'bun:sqlite';
@@ -12,7 +13,7 @@ export interface PersistedSendSummary {
   states: Record<SendIntentState, number>;
   oldestUncertainAgeMs: number;
 }
-export type SendActionKind = 'text' | 'voice' | 'template';
+export type SendActionKind = 'text' | 'voice' | 'template' | 'sticker';
 
 export interface SendTemplateComponent {
   type: 'header' | 'body';
@@ -41,6 +42,7 @@ export interface SendIntentInput {
   actionKind: SendActionKind;
   chatId: string;
   text: string;
+  stickerBase64?: string;
   replyToMessageId?: string;
   simulatedDelayMs?: number;
   policyRevision: number;
@@ -152,6 +154,7 @@ const payloadHash = (input: SendIntentInput): string => {
     parts.push(input.recipientBinding ?? null, input.template ?? null,
       input.templateEligibility ?? null, input.expiresAt ?? null);
   }
+  if (input.actionKind === 'sticker') parts.push(input.stickerBase64);
   return createHash('sha256').update(JSON.stringify(parts)).digest('hex');
 };
 
@@ -297,13 +300,15 @@ export class SendLedger {
     if (sourceKind !== 'ui' && sourceKind !== 'mcp' && sourceKind !== 'autopilot' && sourceKind !== 'draft') {
       throw new Error('Invalid send intent source kind');
     }
-    if (actionKind !== 'text' && actionKind !== 'voice' && actionKind !== 'template') {
+    if (actionKind !== 'text' && actionKind !== 'voice' && actionKind !== 'template' && actionKind !== 'sticker') {
       throw new Error('Invalid send intent action kind');
     }
     const data: unknown = JSON.parse(readText(row, 'payload_json'));
     if (!isRecord(data)) throw new Error('Invalid send intent payload');
-    const { text, replyToMessageId, simulatedDelayMs, recipientBinding, template, templateEligibility } = data;
+    const { text, stickerBase64, replyToMessageId, simulatedDelayMs, recipientBinding, template, templateEligibility } = data;
     if (typeof text !== 'string' ||
+        (stickerBase64 !== undefined && typeof stickerBase64 !== 'string') ||
+        (actionKind === 'sticker' ? (sourceKind !== 'ui' || !decodeStickerBase64(stickerBase64)) : stickerBase64 !== undefined) ||
         (replyToMessageId !== undefined && typeof replyToMessageId !== 'string') ||
         (simulatedDelayMs !== undefined && typeof simulatedDelayMs !== 'number') ||
         (recipientBinding !== undefined && !isRecipientBinding(recipientBinding)) ||
@@ -321,7 +326,7 @@ export class SendLedger {
       batchOrdinal: row.batch_ordinal === null ? undefined : readNumber(row, 'batch_ordinal'),
       actionKind,
       chatId: readText(row, 'chat_id'),
-      text, replyToMessageId, simulatedDelayMs, recipientBinding, template, templateEligibility,
+      text, stickerBase64, replyToMessageId, simulatedDelayMs, recipientBinding, template, templateEligibility,
       policyRevision: readNumber(row, 'policy_revision'),
       expiresAt: row.expires_at === null ? undefined : readNumber(row, 'expires_at'),
       payloadHash: readText(row, 'payload_hash'),
@@ -357,7 +362,10 @@ export class SendLedger {
     if (!input.sourceId.trim() || (input.actionKind !== 'template' && !input.text.trim()) || !validJid) {
       throw new Error('Invalid send intent identity, recipient, or text');
     }
-    if (!['text', 'voice', 'template'].includes(input.actionKind)) throw new Error('Unsupported send action');
+    if (!['text', 'voice', 'template', 'sticker'].includes(input.actionKind)) throw new Error('Unsupported send action');
+    if (input.actionKind === 'sticker' ? (input.sourceKind !== 'ui' || !decodeStickerBase64(input.stickerBase64)) : input.stickerBase64 !== undefined) {
+      throw new Error('Invalid sticker intent payload');
+    }
     if (input.recipientBinding && (input.recipientBinding.jid !== input.chatId ||
         !input.recipientBinding.brandId || !input.recipientBinding.contactId ||
         !input.recipientBinding.aliasId || !Number.isSafeInteger(input.recipientBinding.identityVersion) ||
@@ -381,7 +389,7 @@ export class SendLedger {
       id, input.sourceKind, input.sourceId, input.sourceRevision, input.parentIntentId ?? null, input.actionKind,
       input.chatId, payloadHash(input),
       JSON.stringify({
-        text: input.text, replyToMessageId: input.replyToMessageId,
+        text: input.text, stickerBase64: input.stickerBase64, replyToMessageId: input.replyToMessageId,
         simulatedDelayMs: input.simulatedDelayMs,
         recipientBinding: input.recipientBinding,
         template: input.template,
