@@ -2,12 +2,12 @@ import { randomUUID } from 'node:crypto';
 import type { DualMemoryManager } from '../domain/learning-memory';
 import type { RsiGenerationRecord, RsiLedger } from '../domain/rsi-ledger';
 import type { AutonomyAction, ChatMessage, ContactDossier } from '../domain/types';
-import {
+import type {
   JepaWorldModel,
-  type LatentWorldState,
-  type OpfDiagnostics,
-  type WorldPrediction,
-  type WorldTransitionRecord
+  LatentWorldState,
+  OpfDiagnostics,
+  WorldPrediction,
+  WorldTransitionRecord
 } from './jepa-world-model';
 
 export type RsiMutationKind =
@@ -103,7 +103,7 @@ export class RsiCycleOrchestrator {
         const netScore = prediction.predictedUtility - prediction.uncertainty * 0.15;
         return { action, prediction, netScore };
       })
-      .sort((a, b) => b.netScore - a.netScore);
+      .toSorted((a, b) => b.netScore - a.netScore);
   }
 
   /**
@@ -150,8 +150,11 @@ export class RsiCycleOrchestrator {
     });
 
     // 3. SELECT: Pick highest net-score candidate
-    scored.sort((a, b) => b.score - a.score);
-    const selected = scored[0];
+    const sortedScored = scored.toSorted((a, b) => b.score - a.score);
+    const selected = sortedScored[0];
+    if (!selected) {
+      throw new Error('No candidate mutation available for RSI cycle');
+    }
 
     // 4. EVALUATE: Deterministic regression gate before retention
     const currentWb = this.memoryManager.getWorkbook();
@@ -305,7 +308,9 @@ export class RsiCycleOrchestrator {
     }
     if (candidate.kind === 'update_rule' && candidate.payload.length >= 2) {
       const [oldRule, newRule] = candidate.payload;
-      return current.map((r) => (r === oldRule.trim() ? newRule.trim() : r)).filter(Boolean);
+      if (oldRule !== undefined && newRule !== undefined) {
+        return current.map((r) => (r === oldRule.trim() ? newRule.trim() : r)).filter(Boolean);
+      }
     }
     if (candidate.kind === 'delete_rule') {
       const toDelete = new Set(candidate.payload.map((r) => r.trim()));
@@ -328,7 +333,9 @@ export class RsiCycleOrchestrator {
     }
     if (candidate.kind === 'update_best_practice' && candidate.payload.length >= 2) {
       const [oldBp, newBp] = candidate.payload;
-      return current.map((p) => (p === oldBp.trim() ? newBp.trim() : p)).filter(Boolean);
+      if (oldBp !== undefined && newBp !== undefined) {
+        return current.map((p) => (p === oldBp.trim() ? newBp.trim() : p)).filter(Boolean);
+      }
     }
     if (candidate.kind === 'delete_best_practice') {
       const toDelete = new Set(candidate.payload.map((p) => p.trim()));
@@ -343,7 +350,10 @@ export class RsiCycleOrchestrator {
         this.memoryManager.addEnforcedRule(rule);
       }
     } else if (candidate.kind === 'update_rule' && candidate.payload.length >= 2) {
-      this.memoryManager.updateEnforcedRule(candidate.payload[0], candidate.payload[1]);
+      const [oldRule, newRule] = candidate.payload;
+      if (oldRule !== undefined && newRule !== undefined) {
+        this.memoryManager.updateEnforcedRule(oldRule, newRule);
+      }
     } else if (candidate.kind === 'delete_rule') {
       for (const rule of candidate.payload) {
         this.memoryManager.removeEnforcedRule(rule);
@@ -353,7 +363,10 @@ export class RsiCycleOrchestrator {
         this.memoryManager.addBestPractice(bp);
       }
     } else if (candidate.kind === 'update_best_practice' && candidate.payload.length >= 2) {
-      this.memoryManager.updateBestPractice(candidate.payload[0], candidate.payload[1]);
+      const [oldBp, newBp] = candidate.payload;
+      if (oldBp !== undefined && newBp !== undefined) {
+        this.memoryManager.updateBestPractice(oldBp, newBp);
+      }
     } else if (candidate.kind === 'delete_best_practice') {
       for (const bp of candidate.payload) {
         this.memoryManager.removeBestPractice(bp);

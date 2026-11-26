@@ -13,6 +13,7 @@ import {CustomerContextStore} from './customer-context';
 import {FollowUpStore} from './follow-ups';
 import {QualityLoop} from './quality-loop';
 import {DocumentExtractionService} from './media-service';
+import {clockTruth} from '../ai/temporal-guard';
 
 const validBrand=(id:string)=>/^[A-Za-z0-9_-]{1,64}$/.test(id);
 const digest=(s:string)=>createHash('sha256').update(s).digest();
@@ -49,7 +50,7 @@ export function createCapabilities(dataDir:string,model?:Pick<GeminiClient,'gene
   registry.register(brandId,{name:'inventory.lookup',kind:'read',scope:'inventory:read',
    description:'Look up available inventory by exact product SKU',
    parameters:{type:'OBJECT',properties:{sku:{type:'STRING'}},required:['sku']},
-   validate:(v):v is {sku:string}=>typeof v==='object' && v!==null && 'sku' in v && typeof (v as {sku:unknown}).sku==='string' && ((v as {sku:string}).sku).length<129,
+   validate:(v):v is {sku:string}=>typeof v==='object' && v!==null && 'sku' in v && typeof v.sku==='string' && v.sku.length<129,
    execute:async({sku})=>provider.lookup(sku)
   });
  };
@@ -66,11 +67,12 @@ export function registerCapabilityRoutes(app:Hono, capabilities:CapabilityEngine
   const provided=c.req.header('x-agent-owner-token')??'';
   if(!provided || !timingSafeEqual(digest(provided),digest(token)))return c.json({error:'Unauthorized'},401);
   await next();
+  return undefined;
  };
  app.use('/api/brands/*',auth);
  app.use('/api/agent/*',auth);
 
- app.get('/api/agent/status',(c)=>c.json({available:true,configuredTools:capabilities.registry.list('default').length}));
+ app.get('/api/agent/status',(c)=>c.json({available:true,configuredTools:capabilities.registry.list('default').length,clock:clockTruth()}));
 
  // Owner-authenticated planner runtime. Callers are trusted owners, never inbound WhatsApp contacts.
  app.post('/api/agent/plan',async(c)=>{
@@ -149,10 +151,10 @@ export function registerCapabilityRoutes(app:Hono, capabilities:CapabilityEngine
   const body=await c.req.json().catch(()=>({}));
   if(typeof body.sheetId!=='string' || (body.gid!==undefined && typeof body.gid!=='string'))return c.json({error:'Invalid sheet'},400);
   try{
-   new GoogleSheetsInventory({sheetId:body.sheetId,gid:body.gid});
+   const sheet=new GoogleSheetsInventory({sheetId:body.sheetId,gid:body.gid});
    capabilities.connectors.setSheet(brandId,body.sheetId,body.gid);
    capabilities.registerSheet(brandId,body.sheetId,body.gid);
-   return c.json({connected:true,brandId,tool:'inventory.lookup'});
+   return c.json({connected:Boolean(sheet),brandId,tool:'inventory.lookup'});
   }catch{return c.json({error:'Invalid sheet configuration'},400);}
  });
 

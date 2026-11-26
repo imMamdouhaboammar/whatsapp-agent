@@ -30,7 +30,7 @@ export interface Evidence {
 }
 interface RawChunkRow {
   source_id: string;
-  authority: SourceAuthority;
+  authority: string;
   version_id: string;
   last_checked: number;
   content: string;
@@ -41,11 +41,25 @@ interface RawSourceRow {
   source_id: string;
   type: string;
   locator: string;
-  authority: SourceAuthority;
+  authority: string;
   version_id: string;
   last_checked: number;
 }
 export type EmbeddingProvider = (text: string) => Promise<number[]>;
+
+function checkedAuthority(value: string): SourceAuthority {
+  if (value === 'official' || value === 'working' || value === 'external') return value;
+  throw new Error('Invalid persisted source authority');
+}
+
+function decodeEmbedding(json: string | null | undefined): number[] | undefined {
+  if (!json) return undefined;
+  const value: unknown = JSON.parse(json);
+  if (!Array.isArray(value) || !value.every((entry): entry is number => typeof entry === 'number' && Number.isFinite(entry))) {
+    return undefined;
+  }
+  return value;
+}
 
 function sha(text: string) {
   return createHash('sha256').update(text).digest('hex');
@@ -59,7 +73,7 @@ function terms(text: string) {
 }
 function cosine(a: number[] | undefined, b: number[] | undefined) {
   if (!a?.length || !b?.length || a.length !== b.length) return 0;
-  const dot = a.reduce((v,x,i)=>v+x*b[i],0);
+  const dot = a.reduce((v,x,i)=>v+x*(b[i]??0),0);
   const lenA = Math.sqrt(a.reduce((v,x)=>v+x*x,0));
   const lenB = Math.sqrt(b.reduce((v,x)=>v+x*x,0));
   return lenA && lenB ? dot/(lenA*lenB) : 0;
@@ -90,7 +104,7 @@ export class BrandKnowledgeStore {
     if (!bytes || bytes > 1024*1024) throw new Error('Source size is invalid');
     const sourceId = sha(JSON.stringify([input.brandId,input.type,input.locator]));
     const hash = sha(input.content);
-    const current = this.db.query('SELECT v.version_id, v.hash, s.retired FROM brand_source_versions v JOIN brand_sources s ON s.source_id=v.source_id WHERE v.source_id=? AND v.current=1').get(sourceId) as {version_id:string;hash:string;retired:number}|null;
+    const current = this.db.query<{version_id:string;hash:string;retired:number}, [string]>('SELECT v.version_id, v.hash, s.retired FROM brand_source_versions v JOIN brand_sources s ON s.source_id=v.source_id WHERE v.source_id=? AND v.current=1').get(sourceId);
     if (current && current.hash === hash && !current.retired) return {sourceId,versionId:current.version_id,changed:false};
     const lines = input.type==='csv' ? input.content.split(/\r?\n/).filter(Boolean).slice(0,5000) : input.content.match(/[\s\S]{1,1000}/g) ?? [];
     const chunks: Array<{ text: string; location: string; embedding: string | null }> = [];
@@ -131,45 +145,49 @@ export class BrandKnowledgeStore {
     const select='SELECT s.source_id,s.authority,v.version_id,v.last_checked,c.content,c.location,c.embedding_json FROM brand_sources s JOIN brand_source_versions v ON v.source_id=s.source_id AND v.current=1 JOIN knowledge_chunks c ON c.version_id=v.version_id';
     const lexicalQuery=qterms.map(term=>'"'+term.replaceAll('"', '""')+'"').join(' OR ');
     const rows: RawChunkRow[] = this.embed || !lexicalQuery
-      ? (this.db.query(select+' WHERE s.brand_id=? AND s.retired=0 LIMIT 500').all(input.brandId) as RawChunkRow[])
-      : (this.db.query(select+" JOIN knowledge_fts ON knowledge_fts.rowid=c.id WHERE s.brand_id=? AND s.retired=0 AND knowledge_fts.normalized_content MATCH ? ORDER BY bm25(knowledge_fts) LIMIT 500").all(input.brandId,lexicalQuery) as RawChunkRow[]);
+      ? this.db.query<RawChunkRow, [string]>(select+' WHERE s.brand_id=? AND s.retired=0 LIMIT 500').all(input.brandId)
+      : this.db.query<RawChunkRow, [string, string]>(select+" JOIN knowledge_fts ON knowledge_fts.rowid=c.id WHERE s.brand_id=? AND s.retired=0 AND knowledge_fts.normalized_content MATCH ? ORDER BY bm25(knowledge_fts) LIMIT 500").all(input.brandId,lexicalQuery);
     const hits=rows.map(row=>{
       const text=normalized(row.content);
       const matches=qterms.filter(t=>text.includes(t)).length;
       const phrase=qnormalized.length>=3 && text.includes(qnormalized) ? 1 : 0;
       const wordScore= qterms.length ? matches/qterms.length : 0;
-      const semantic=cosine(qembedding,row.embedding_json ? JSON.parse(row.embedding_json):undefined);
+      const semantic=cosine(qembedding,decodeEmbedding(row.embedding_json));
       const score=wordScore*0.65+Math.max(semantic,0)*0.3+phrase*0.2+(row.authority==='official'?0.05:0);
-      return {sourceId:row.source_id,versionId:row.version_id,text:row.content,location:row.location,authority:row.authority,lastChecked:row.last_checked,score,matched:matches>0 || semantic>=0.65};
-    }).filter(hit=>hit.matched).sort((a,b)=>b.score-a.score);
-    const evidence=hits.slice(0,Math.max(1,Math.min(input.limit ?? 5,30))).map(({matched:_matched,...hit})=>hit as Evidence);
+      return {sourceId:row.source_id,versionId:row.version_id,text:row.content,location:row.location,authority:checkedAuthority(row.authority),lastChecked:row.last_checked,score,matched:matches>0 || semantic>=0.65};
+    }).filter(hit=>hit.matched).toSorted((a,b)=>b.score-a.score);
+    const evidence=hits.slice(0,Math.max(1,Math.min(input.limit ?? 5,30))).map(({matched:_matched,...hit}):Evidence=>hit);
     return {evidence,answerability:evidence.length ? 'supported':'insufficient',semanticEnabled:!!this.embed,lexicalIndex:'fts5'};
   }
 
   /** Active-source policy conflicts, never an instruction to silently override an approved policy. */
   listConflicts(brandId:string):SourceConflict[] {
-    const rows=this.db.query("SELECT s.source_id,v.version_id,c.content FROM brand_sources s JOIN brand_source_versions v ON v.source_id=s.source_id AND v.current=1 JOIN knowledge_chunks c ON c.version_id=v.version_id WHERE s.brand_id=? AND s.retired=0").all(brandId) as Array<{source_id:string;version_id:string;content:string}>;
+    const rows=this.db.query<{source_id:string;version_id:string;content:string}, [string]>("SELECT s.source_id,v.version_id,c.content FROM brand_sources s JOIN brand_source_versions v ON v.source_id=s.source_id AND v.current=1 JOIN knowledge_chunks c ON c.version_id=v.version_id WHERE s.brand_id=? AND s.retired=0").all(brandId);
     const policies=new Map<number,Array<{sourceId:string;versionId:string}>>();
     for(const row of rows){
       const text=normalized(row.content);
       const match=text.match(/(?:الارجاع|استرجاع|returns?|refund).{0,90}?(\d{1,3})\s*(?:ايام|يوم|days?)/iu);
       if(!match)continue;
       const days=Number(match[1]);
-      if(!policies.has(days))policies.set(days,[]);
-      if(!policies.get(days)!.some(x=>x.sourceId===row.source_id))policies.get(days)!.push({sourceId:row.source_id,versionId:row.version_id});
+      let entries=policies.get(days);
+      if(!entries){
+        entries=[];
+        policies.set(days,entries);
+      }
+      if(!entries.some(x=>x.sourceId===row.source_id))entries.push({sourceId:row.source_id,versionId:row.version_id});
     }
     if(policies.size<2)return [];
     return [{
       field:'returns_days',
-      values:[...policies.keys()].sort((a,b)=>a-b),
+      values:[...policies.keys()].toSorted((a,b)=>a-b),
       sourceIds:[...new Set([...policies.values()].flat().map(x=>x.sourceId))],
       versionIds:[...new Set([...policies.values()].flat().map(x=>x.versionId))]
     }];
   }
 
   listSources(brandId:string): Array<{sourceId:string;type:string;locator:string;authority:SourceAuthority;versionId:string;lastChecked:number}> {
-    const rows = this.db.query('SELECT s.source_id,s.type,s.locator,s.authority,v.version_id,v.last_checked FROM brand_sources s JOIN brand_source_versions v ON v.source_id=s.source_id AND v.current=1 WHERE s.brand_id=? AND s.retired=0 ORDER BY v.last_checked DESC').all(brandId) as RawSourceRow[];
-    return rows.map(row=>({sourceId:row.source_id,type:row.type,locator:row.locator,authority:row.authority,versionId:row.version_id,lastChecked:row.last_checked}));
+    const rows = this.db.query<RawSourceRow, [string]>('SELECT s.source_id,s.type,s.locator,s.authority,v.version_id,v.last_checked FROM brand_sources s JOIN brand_source_versions v ON v.source_id=s.source_id AND v.current=1 WHERE s.brand_id=? AND s.retired=0 ORDER BY v.last_checked DESC').all(brandId);
+    return rows.map(row=>({sourceId:row.source_id,type:row.type,locator:row.locator,authority:checkedAuthority(row.authority),versionId:row.version_id,lastChecked:row.last_checked}));
   }
   retireSource(brandId:string,sourceId:string) {
     this.db.query('UPDATE brand_sources SET retired=1 WHERE brand_id=? AND source_id=?').run(brandId,sourceId);

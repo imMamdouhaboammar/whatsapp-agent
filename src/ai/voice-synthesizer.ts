@@ -1,3 +1,5 @@
+import { isRecord } from './response-validation';
+
 export interface VoiceSynthesizerOptions {
   languageCode?: string;
   voiceName?: string;
@@ -5,7 +7,7 @@ export interface VoiceSynthesizerOptions {
   speakingRate?: number;
   /** Server-side test seam; production keeps Google Cloud credentials and global fetch. */
   authProvider?: () => Promise<{ token: string; project: string }>;
-  fetcher?: typeof fetch;
+  fetcher?: (input: string, init?: RequestInit) => Promise<Response>;
 }
 
 export class VoiceSynthesizer {
@@ -17,7 +19,7 @@ export class VoiceSynthesizer {
   private tokenExpiresAt = 0;
   private project?: string;
   private readonly authProvider?: () => Promise<{ token: string; project: string }>;
-  private readonly fetcher: typeof fetch;
+  private readonly fetcher: (input: string, init?: RequestInit) => Promise<Response>;
 
   constructor(options: VoiceSynthesizerOptions = {}) {
     this.languageCode = options.languageCode ?? 'ar-XA';
@@ -46,7 +48,7 @@ export class VoiceSynthesizer {
           this.project = envProject.trim();
         } else {
           const proc = Bun.spawn(['gcloud', 'config', 'get-value', 'project'], { stdout: 'pipe' });
-          this.project = (await new Response(proc.stdout as unknown as BodyInit).text()).trim();
+          this.project = (await new Response(proc.stdout).text()).trim();
         }
         if (!this.project) {
           throw new Error('Google Cloud Project ID is not configured (set GOOGLE_CLOUD_PROJECT environment variable or configure gcloud)');
@@ -54,13 +56,14 @@ export class VoiceSynthesizer {
       }
 
       const tokenProc = Bun.spawn(['gcloud', 'auth', 'print-access-token'], { stdout: 'pipe' });
-      const token = (await new Response(tokenProc.stdout as unknown as BodyInit).text()).trim();
+      const token = (await new Response(tokenProc.stdout).text()).trim();
       this.accessToken = token;
       this.tokenExpiresAt = Date.now() + 50 * 60 * 1000;
 
       return { token, project: this.project };
-    } catch (err: any) {
-      throw new Error(`Failed to retrieve gcloud credentials: ${err.message}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Failed to retrieve gcloud credentials: ${msg}`, { cause: err });
     }
   }
 
@@ -78,15 +81,16 @@ export class VoiceSynthesizer {
         }
       );
 
-      const arrayBuf = await new Response(ffmpeg.stdout as unknown as BodyInit).arrayBuffer();
+      const arrayBuf = await new Response(ffmpeg.stdout).arrayBuffer();
       const exitCode = await ffmpeg.exited;
 
       if (exitCode === 0 && arrayBuf.byteLength > 0) {
         return Buffer.from(arrayBuf);
       }
       throw new Error(`ffmpeg transcoding failed with exit code ${exitCode}`);
-    } catch (err: any) {
-      console.warn('⚠️ [VoiceSynthesizer] ffmpeg transcoding failed:', err.message);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn('⚠️ [VoiceSynthesizer] ffmpeg transcoding failed:', msg);
       throw err;
     }
   }
@@ -132,13 +136,18 @@ export class VoiceSynthesizer {
       throw new Error(`gemini-3.8-flash-tts failed (${res.status}): ${errText}`);
     }
 
-    const data: any = await res.json();
-    const audioPart = data.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData?.data);
-    if (!audioPart?.inlineData?.data) {
+    const data: unknown = await res.json();
+    const candidate: unknown = isRecord(data) && Array.isArray(data.candidates) ? data.candidates[0] : undefined;
+    const content = isRecord(candidate) ? candidate.content : undefined;
+    const parts: unknown[] = isRecord(content) && Array.isArray(content.parts) ? content.parts : [];
+    const audio = parts
+      .map((part) => isRecord(part) && isRecord(part.inlineData) ? part.inlineData.data : undefined)
+      .find((value) => typeof value === 'string' && value.length > 0);
+    if (typeof audio !== 'string') {
       throw new Error('gemini-3.8-flash-tts returned no audio inlineData');
     }
 
-    const wavBuffer = Buffer.from(audioPart.inlineData.data, 'base64');
+    const wavBuffer = Buffer.from(audio, 'base64');
     return this.transcodeWavToOpus(wavBuffer);
   }
 
@@ -165,13 +174,14 @@ export class VoiceSynthesizer {
     try {
       console.log(`🎙️ [VoiceSynthesizer] Synthesizing via gemini-3.8-flash-tts (voice: ${requestedVoice})...`);
       return await this.synthesizeWithGeminiTts(cleanedText, requestedVoice, token, project);
-    } catch (err: any) {
-      console.warn(`⚠️ [VoiceSynthesizer] gemini-3.8-flash-tts attempt failed (${err.message}). Falling back to Chirp3-HD...`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`⚠️ [VoiceSynthesizer] gemini-3.8-flash-tts attempt failed (${msg}). Falling back to Chirp3-HD...`);
     }
 
     // 2. Fallback: Google Cloud Chirp 3 HD
     const chirpVoice = requestedVoice.startsWith('ar-XA') ? requestedVoice : `ar-XA-Chirp3-HD-Fenrir`;
-    const requestBody: any = {
+    const requestBody: Record<string, unknown> = {
       input: { text: cleanedText },
       voice: {
         languageCode: this.languageCode,
@@ -199,8 +209,8 @@ export class VoiceSynthesizer {
       throw new Error(`Google Cloud Text-to-Speech fallback failed (${response.status}): ${errText}`);
     }
 
-    const data = (await response.json()) as { audioContent: string };
-    if (!data.audioContent) {
+    const data: unknown = await response.json();
+    if (!isRecord(data) || typeof data.audioContent !== 'string' || !data.audioContent) {
       throw new Error('Google Cloud Text-to-Speech returned empty audioContent');
     }
 

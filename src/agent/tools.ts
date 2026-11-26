@@ -1,10 +1,12 @@
+import { isRecord } from '../mcp/records';
 import { Database } from 'bun:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 export type ToolResult = {status:'confirmed'|'uncertain';output?:unknown;reason?:string;receiptId?:string};
-export type ToolDefinition<T=any> = {
+type ToolContext = {brandId:string;workflowId:string;idempotencyKey:string};
+export type ToolDefinition<T = unknown> = {
   name:string;
   kind:'read'|'write';
   scope:string;
@@ -13,19 +15,23 @@ export type ToolDefinition<T=any> = {
   /** Optional provider response contract, checked before declaring success. */
   resultSchema?:ToolObjectSchema;
   validate:(value:unknown)=>value is T;
-  execute:(input:T,ctx:{brandId:string;workflowId:string;idempotencyKey:string})=>Promise<unknown>;
-  reconcile?:(input:T,ctx:{brandId:string;workflowId:string;idempotencyKey:string})=>Promise<unknown|null>;
+  execute:(input:T,ctx:ToolContext)=>Promise<unknown>;
+  reconcile?:(input:T,ctx:ToolContext)=>Promise<unknown>;
 };
 export interface ToolInvocation {
   brandId:string; toolName:string;workflowId:string;idempotencyKey:string;input:unknown;
 }
 type RunRecord={brand_id:string;key:string;workflow_id:string;tool_name:string;input_hash:string;status:string;output_json:string|null;created_at:number};
 type ToolObjectSchema={type:'OBJECT';properties:Record<string,unknown>;required?:string[]};
-type SchemaNode={type?:string;properties?:Record<string,unknown>;required?:string[];items?:unknown;enum?:unknown[]};
+type RegisteredTool = Pick<ToolDefinition, 'name'|'kind'|'scope'|'description'|'parameters'|'resultSchema'> & {
+  prepare: (value: unknown, context: ToolContext) => {
+    execute: () => Promise<unknown>;
+    reconcile?: () => Promise<unknown>;
+  };
+};
 /** Provider manifests are contracts, never permissions conveyed by model text. */
-function conforms(value:unknown,definition:unknown,depth=0):boolean {
-  if(depth>8 || !definition || typeof definition!=='object' || Array.isArray(definition))return false;
-  const schema=definition as SchemaNode;
+function conforms(value:unknown,schema:unknown,depth=0):boolean {
+  if(depth>8 || !isRecord(schema))return false;
   if(schema.enum && (!Array.isArray(schema.enum)||!schema.enum.some(item=>Object.is(item,value))))return false;
   switch(schema.type) {
     case 'STRING': return typeof value==='string';
@@ -35,13 +41,14 @@ function conforms(value:unknown,definition:unknown,depth=0):boolean {
     case 'ARRAY': return Array.isArray(value) && schema.items!==undefined && value.length<=100 &&
       value.every(item=>conforms(item,schema.items,depth+1));
     case 'OBJECT': {
-      if(!value||typeof value!=='object'||Array.isArray(value))return false;
-      if(!schema.properties || typeof schema.properties!=='object' || Array.isArray(schema.properties))return false;
-      const record=value as Record<string,unknown>;
-      const keys=Object.keys(record);
-      if(keys.length>100 || keys.some(key=>!Object.hasOwn(schema.properties!,key)))return false;
-      if(!Array.isArray(schema.required??[])||(schema.required??[]).some(key=>!Object.hasOwn(record,key)))return false;
-      return keys.every(key=>conforms(record[key],schema.properties![key],depth+1));
+      if(!isRecord(value))return false;
+      const props = schema.properties;
+      if(!isRecord(props))return false;
+      const keys=Object.keys(value);
+      if(keys.length>100 || keys.some(key=>!Object.hasOwn(props,key)))return false;
+      const required=schema.required??[];
+      if(!Array.isArray(required)||required.some(key=>typeof key!=='string'||!Object.hasOwn(value,key)))return false;
+      return keys.every(key=>conforms(value[key],props[key],depth+1));
     }
     default: return false;
   }
@@ -62,7 +69,7 @@ export class ActionJournal {
     if(!brandId?.trim()||!contactId?.trim()||!goal?.trim()||!workflowId?.trim())throw new Error('Invalid workflow identity');
     const run=this.db.transaction(()=>{
       this.db.query('INSERT OR IGNORE INTO agent_workflows(workflow_id,brand_id,contact_id,goal,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?)').run(workflowId,brandId,contactId,goal,'received',Date.now(),Date.now());
-      const original=this.db.query('SELECT brand_id,contact_id,goal FROM agent_workflows WHERE workflow_id=? LIMIT 1').get(workflowId) as {brand_id:string;contact_id:string;goal:string}|null;
+      const original=this.db.query<{brand_id:string;contact_id:string;goal:string}, [string]>('SELECT brand_id,contact_id,goal FROM agent_workflows WHERE workflow_id=? LIMIT 1').get(workflowId);
       if(!original||original.brand_id!==brandId||original.contact_id!==contactId||original.goal!==goal)
         throw new Error('Workflow identity conflict');
       return workflowId;
@@ -73,13 +80,14 @@ export class ActionJournal {
     this.db.query('UPDATE agent_workflows SET state=?,updated_at=? WHERE brand_id=? AND workflow_id=?').run(state,Date.now(),brandId,workflowId);
   }
   getRun(brandId:string,key:string):RunRecord|null {
-    return (this.db.query('SELECT brand_id,key,workflow_id,tool_name,input_hash,status,output_json,created_at FROM agent_tool_runs WHERE brand_id=? AND key=? LIMIT 1').get(brandId,key) as RunRecord|null);
+    return this.db.query<RunRecord, [string, string]>('SELECT brand_id,key,workflow_id,tool_name,input_hash,status,output_json,created_at FROM agent_tool_runs WHERE brand_id=? AND key=? LIMIT 1').get(brandId,key);
   }
   begin(input:ToolInvocation):{isNew:boolean;row:RunRecord} {
     const inputHash=hash(JSON.stringify({toolName:input.toolName,input:input.input}));
     const transaction=this.db.transaction(()=>{
       const result=this.db.query('INSERT OR IGNORE INTO agent_tool_runs(brand_id,key,workflow_id,tool_name,input_hash,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)').run(input.brandId,input.idempotencyKey,input.workflowId,input.toolName,inputHash,'attempting',Date.now(),Date.now());
-      const row=this.getRun(input.brandId,input.idempotencyKey)!;
+      const row=this.getRun(input.brandId,input.idempotencyKey);
+      if(!row) throw new Error('Failed to load tool run');
       if(row.workflow_id!==input.workflowId || row.tool_name!==input.toolName || row.input_hash!==inputHash) throw new Error('Idempotency key conflict');
       return {isNew:result.changes===1,row};
     });
@@ -92,13 +100,24 @@ export class ActionJournal {
   close(){this.db.close();}
 }
 export class ToolRegistry {
-  private tools=new Map<string,Map<string,ToolDefinition>>();
+  private tools=new Map<string,Map<string,RegisteredTool>>();
   constructor(private readonly journal:ActionJournal){}
   register<T>(brandId:string,tool:ToolDefinition<T>) {
     if(!brandId || !tool.name || !tool.scope || !['read','write'].includes(tool.kind)) throw new Error('Invalid tool declaration');
     let tools=this.tools.get(brandId);
     if(!tools){tools=new Map();this.tools.set(brandId,tools);}
-    tools.set(tool.name,tool as ToolDefinition);
+    tools.set(tool.name,{
+      name:tool.name,kind:tool.kind,scope:tool.scope,description:tool.description,
+      parameters:tool.parameters,resultSchema:tool.resultSchema,
+      prepare:(input,context)=>{
+        if(!tool.validate(input)) throw new Error('Invalid tool arguments');
+        const reconcile=tool.reconcile?.bind(tool);
+        return {
+          execute:()=>tool.execute(input,context),
+          reconcile:reconcile && (()=>reconcile(input,context))
+        };
+      }
+    });
   }
   list(brandId:string):Array<{name:string;kind:'read'|'write';scope:string}> {
     return [...(this.tools.get(brandId)?.values() ?? [])].map(({name,kind,scope})=>({name,kind,scope}));
@@ -110,20 +129,20 @@ export class ToolRegistry {
     const tool=this.tools.get(invocation.brandId)?.get(invocation.toolName);
     if(!tool) throw new Error('Tool not authorized for brand');
     if(tool.parameters && !conforms(invocation.input,tool.parameters)) throw new Error('Invalid tool manifest arguments');
-    if(!tool.validate(invocation.input)) throw new Error('Invalid tool arguments');
+    const context={brandId:invocation.brandId,workflowId:invocation.workflowId,idempotencyKey:invocation.idempotencyKey};
+    const prepared=tool.prepare(invocation.input,context);
     if(tool.kind==='read') {
-      const output=await tool.execute(invocation.input,{brandId:invocation.brandId,workflowId:invocation.workflowId,idempotencyKey:invocation.idempotencyKey});
+      const output=await prepared.execute();
       if(tool.resultSchema && !conforms(output,tool.resultSchema)) throw new Error('Provider result violates tool manifest');
       return {status:'confirmed',output};
     }
     if(!invocation.idempotencyKey?.trim()) throw new Error('Write requires idempotency key');
-    const context={brandId:invocation.brandId,workflowId:invocation.workflowId,idempotencyKey:invocation.idempotencyKey};
     const claim=this.journal.begin(invocation);
     if(!claim.isNew){
       if(claim.row.status==='confirmed') return {status:'confirmed',output:claim.row.output_json ? JSON.parse(claim.row.output_json):undefined};
-      if(tool.reconcile){
+      if(prepared.reconcile){
         try {
-          const reconciled=await tool.reconcile(invocation.input,context);
+          const reconciled=await prepared.reconcile();
           if(reconciled!==null && reconciled!==undefined) {
             if(tool.resultSchema && !conforms(reconciled,tool.resultSchema)) throw new Error('Provider reconciliation result violates tool manifest');
             this.journal.finish(invocation.brandId,invocation.idempotencyKey,'confirmed',reconciled);
@@ -135,7 +154,7 @@ export class ToolRegistry {
       return {status:'uncertain',reason:'Await provider reconciliation; write was not retried'};
     }
     try{
-      const output=await tool.execute(invocation.input,context);
+      const output=await prepared.execute();
       if(tool.resultSchema && !conforms(output,tool.resultSchema)) throw new Error('Provider result violates tool manifest');
       this.journal.finish(invocation.brandId,invocation.idempotencyKey,'confirmed',output);
       return {status:'confirmed',output};

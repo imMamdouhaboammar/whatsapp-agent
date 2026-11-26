@@ -3,6 +3,7 @@ import type { FunnelRegistry } from './registry';
 import type {
   CircuitBreakerStats,
   FunnelDispatchRequest,
+  FunnelMethodConfig,
   FunnelReceipt,
   FunnelTarget,
   TargetResult
@@ -84,7 +85,7 @@ export class FableFunnelEngine {
 
   private async dispatchScatterGather(
     req: FunnelDispatchRequest,
-    config: any,
+    config: FunnelMethodConfig,
     targets: FunnelTarget[],
     traceId: string,
     startedAt: string,
@@ -98,14 +99,15 @@ export class FableFunnelEngine {
     const settled = await Promise.allSettled(promises);
     const results: TargetResult[] = settled.map((s, idx) => {
       if (s.status === 'fulfilled') return s.value;
+      const target = targets[idx];
       return {
-        targetId: targets[idx].id,
-        targetName: targets[idx].name,
-        url: targets[idx].url,
+        targetId: target?.id ?? 'unknown',
+        targetName: target?.name ?? 'unknown',
+        url: target?.url ?? '',
         statusCode: 500,
         durationMs: 0,
         success: false,
-        error: String((s as PromiseRejectedResult).reason?.message || 'Execution error')
+        error: String(s.reason?.message || 'Execution error')
       };
     });
 
@@ -136,7 +138,7 @@ export class FableFunnelEngine {
 
   private async dispatchHedgedRace(
     req: FunnelDispatchRequest,
-    config: any,
+    config: FunnelMethodConfig,
     targets: FunnelTarget[],
     traceId: string,
     startedAt: string,
@@ -170,7 +172,8 @@ export class FableFunnelEngine {
             parentController.abort(); // Cancel pending sibling requests immediately
           }
           return res;
-        } catch (err: any) {
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
           const errRes: TargetResult = {
             targetId: target.id,
             targetName: target.name,
@@ -178,7 +181,7 @@ export class FableFunnelEngine {
             statusCode: 500,
             durationMs: 0,
             success: false,
-            error: err.message
+            error: msg
           };
           results.push(errRes);
           return errRes;
@@ -309,16 +312,17 @@ export class FableFunnelEngine {
           }
         }
       });
-    } catch (err: any) {
+    } catch (err: unknown) {
       const durationMs = Math.round(performance.now() - start);
+      const isAbort = err instanceof Error && err.name === 'AbortError';
       return {
         targetId: target.id,
         targetName: target.name,
         url: target.url,
-        statusCode: err.name === 'AbortError' ? 504 : 500,
+        statusCode: isAbort ? 504 : 500,
         durationMs,
         success: false,
-        error: err.message
+        error: err instanceof Error ? err.message : String(err)
       };
     }
   }

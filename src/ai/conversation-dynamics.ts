@@ -52,7 +52,6 @@ export interface ConversationPlan {
  */
 export function extractDynamicsInput(text: string, recentBurstCount = 1): DynamicsInput {
   const trimmed = text.trim();
-  const lower = trimmed.toLowerCase();
   const len = trimmed.length;
 
   // Social Ping: "." or "؟؟" or "فينك" or "يا اسطى" or "ازيك" or short greetings/nudges

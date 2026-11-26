@@ -1,3 +1,5 @@
+import { isRecord } from './response-validation';
+
 /**
  * WA-012: shared provider resilience - per-provider circuit state, concurrency budget with
  * interactive/background lanes, deadlines, retry-after honoring and bounded jitter.
@@ -9,10 +11,25 @@
 
 export type ProviderErrorClass = 'transient' | 'terminal' | 'model_not_found';
 
+function parseDelay(v: unknown): number | undefined {
+  if (typeof v !== 'string') return undefined;
+  const m = v.trim().match(/^(\d+(?:\.\d+)?)(ms|s)?$/);
+  if (!m) return undefined;
+  const n = Number(m[1]);
+  return m[2] === 'ms' ? n : n * 1000;
+}
+
+export const readProviderError = (error: unknown): { status: number; message: string } => {
+  const err = isRecord(error) ? error : {};
+  const nested = isRecord(err.error) ? err.error : undefined;
+  const rawStatus = err.status ?? err.code ?? err.statusCode;
+  const status = typeof rawStatus === 'number' || typeof rawStatus === 'string' ? Number(rawStatus) : NaN;
+  const message = [err.message, nested?.message, error].find((value) => typeof value === 'string') ?? '';
+  return { status, message };
+};
+
 export function classifyProviderError(error: unknown): ProviderErrorClass {
-  const err = (error ?? {}) as Record<string, any>;
-  const status = Number(err.status ?? err.code ?? err.statusCode);
-  const msg = String(err.message ?? err.error?.message ?? err ?? '');
+  const { status, message: msg } = readProviderError(error);
 
   if (status === 401 || status === 403 || /PERMISSION_DENIED|UNAUTHENTICATED|API_KEY_INVALID/i.test(msg)) {
     return 'terminal';
@@ -30,21 +47,16 @@ export function classifyProviderError(error: unknown): ProviderErrorClass {
 }
 
 export function parseRetryAfterMs(error: unknown): number | undefined {
-  const err = (error ?? {}) as Record<string, any>;
+  const err = isRecord(error) ? error : {};
   if (typeof err.retryAfterMs === 'number' && Number.isFinite(err.retryAfterMs)) return Math.max(0, err.retryAfterMs);
   if (typeof err.retryAfter === 'number' && Number.isFinite(err.retryAfter)) return Math.max(0, err.retryAfter * 1000);
-  const parseDelay = (v: unknown): number | undefined => {
-    if (typeof v !== 'string') return undefined;
-    const m = v.trim().match(/^(\d+(?:\.\d+)?)(ms|s)?$/);
-    if (!m) return undefined;
-    const n = Number(m[1]);
-    return m[2] === 'ms' ? n : n * 1000;
-  };
   const direct = parseDelay(err.retryDelay);
   if (direct !== undefined) return direct;
-  const details = Array.isArray(err.details) ? err.details : Array.isArray(err.error?.details) ? err.error.details : [];
+  const nestedError = isRecord(err.error) ? err.error : undefined;
+  const details = Array.isArray(err.details) ? err.details : Array.isArray(nestedError?.details) ? nestedError.details : [];
   for (const d of details) {
-    const parsed = parseDelay(d?.retryDelay);
+    if (!isRecord(d)) continue;
+    const parsed = parseDelay(d.retryDelay);
     if (parsed !== undefined) return parsed;
   }
   return undefined;
@@ -101,7 +113,7 @@ export interface ProviderResilience {
 
 export function createProviderResilience(options: ProviderResilienceOptions = {}): ProviderResilience {
   const now = options.now ?? (() => Date.now());
-  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const random = options.random ?? (() => Math.random());
   let failureThreshold = options.failureThreshold ?? 3;
   const cooldownMs = options.cooldownMs ?? 10_000;

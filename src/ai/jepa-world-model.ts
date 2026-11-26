@@ -359,18 +359,20 @@ export class JepaWorldModel {
 
     const means: OpfFactorVector = [0, 0, 0, 0];
     for (const t of transitions) {
-      for (let i = 0; i < 4; i++) means[i] += t.observedState[i];
+      for (let i = 0; i < 4; i++) {
+        means[i] = (means[i] ?? 0) + (t.observedState[i] ?? 0);
+      }
     }
-    for (let i = 0; i < 4; i++) means[i] /= n;
+    for (let i = 0; i < 4; i++) means[i] = (means[i] ?? 0) / n;
 
     const variances: OpfFactorVector = [0, 0, 0, 0];
     for (const t of transitions) {
       for (let i = 0; i < 4; i++) {
-        const diff = t.observedState[i] - means[i];
-        variances[i] += diff * diff;
+        const diff = (t.observedState[i] ?? 0) - (means[i] ?? 0);
+        variances[i] = (variances[i] ?? 0) + diff * diff;
       }
     }
-    for (let i = 0; i < 4; i++) variances[i] /= n;
+    for (let i = 0; i < 4; i++) variances[i] = (variances[i] ?? 0) / n;
 
     const hasCollapsedCoordinate = n >= 5 && variances.some((v) => v < 1e-6);
 
@@ -378,11 +380,11 @@ export class JepaWorldModel {
     if (n >= 3) {
       for (let i = 0; i < 4; i++) {
         for (let j = i + 1; j < 4; j++) {
-          const denom = Math.sqrt(variances[i] * variances[j]);
+          const denom = Math.sqrt((variances[i] ?? 0) * (variances[j] ?? 0));
           if (denom <= 1e-9) continue;
           let cov = 0;
           for (const t of transitions) {
-            cov += (t.observedState[i] - means[i]) * (t.observedState[j] - means[j]);
+            cov += ((t.observedState[i] ?? 0) - (means[i] ?? 0)) * ((t.observedState[j] ?? 0) - (means[j] ?? 0));
           }
           cov /= n;
           const corr = Math.abs(cov / denom);

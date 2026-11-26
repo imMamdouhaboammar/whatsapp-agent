@@ -25,7 +25,6 @@ export interface ThreadActivityRecord {
 
 export class ReflectionWorker {
   private memoryStore: MemoryStore;
-  private memoryManager: DualMemoryManager;
   private reflectionEngine: ReflectionEngine;
   private persistenceStore?: PostgresLearningStore | LearningPersistenceStore;
   private brandId: string;
@@ -41,7 +40,6 @@ export class ReflectionWorker {
 
   constructor(options: ReflectionWorkerOptions) {
     this.memoryStore = options.memoryStore;
-    this.memoryManager = options.memoryManager;
     this.reflectionEngine = options.reflectionEngine;
     this.persistenceStore = options.persistenceStore;
     this.brandId = options.brandId ?? 'default';
@@ -65,8 +63,8 @@ export class ReflectionWorker {
     this.activityMap.set(chatId, existing);
 
     // Mirror to Postgres/Supabase store if available
-    const pg = this.persistenceStore as PostgresLearningStore | undefined;
-    if (pg && typeof pg.updateThreadActivity === 'function') {
+    const pg = this.persistenceStore;
+    if (pg && 'updateThreadActivity' in pg && typeof pg.updateThreadActivity === 'function') {
       void pg.updateThreadActivity(this.brandId, chatId, timestamp).catch((err) => {
         console.warn('⚠️ [ReflectionWorker] Postgres thread activity update failed:', describeError(err));
       });
@@ -103,8 +101,8 @@ export class ReflectionWorker {
     this.recordActivity(feedback.chatId, Date.now());
 
     // Mirror to Postgres/Supabase store if available
-    const pg = this.persistenceStore as PostgresLearningStore | undefined;
-    if (pg && typeof pg.recordModerationFeedback === 'function') {
+    const pg = this.persistenceStore;
+    if (pg && 'recordModerationFeedback' in pg && typeof pg.recordModerationFeedback === 'function') {
       void pg.recordModerationFeedback({ ...feedback, brandId: this.brandId }).catch((err) => {
         console.warn('⚠️ [ReflectionWorker] Postgres moderation feedback save failed:', describeError(err));
       });
@@ -134,8 +132,8 @@ export class ReflectionWorker {
     const candidates: string[] = [];
 
     // Check Postgres/Supabase store for cold threads first if available
-    const pg = this.persistenceStore as PostgresLearningStore | undefined;
-    if (pg && typeof pg.getColdThreads === 'function') {
+    const pg = this.persistenceStore;
+    if (pg && 'getColdThreads' in pg && typeof pg.getColdThreads === 'function') {
       try {
         const pgCandidates = await pg.getColdThreads(this.brandId, this.idleThresholdMs, this.maxBatchPerSweep);
         for (const c of pgCandidates) {
@@ -143,7 +141,7 @@ export class ReflectionWorker {
             candidates.push(c);
           }
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         console.warn('⚠️ [ReflectionWorker] Failed to query cold threads from Postgres:', describeError(err));
       }
     }
@@ -228,8 +226,8 @@ export class ReflectionWorker {
       const localSnapshot = [...(this.pendingFeedback.get(chatId) || [])];
       let feedback = [...localSnapshot];
 
-      const pg = this.persistenceStore as PostgresLearningStore | undefined;
-      if (pg && typeof pg.getUnreflectedFeedback === 'function') {
+      const pg = this.persistenceStore;
+      if (pg && 'getUnreflectedFeedback' in pg && typeof pg.getUnreflectedFeedback === 'function') {
         try {
           const pgFeedback = await pg.getUnreflectedFeedback(chatId, this.brandId);
           if (pgFeedback.length > 0) {
@@ -264,27 +262,29 @@ export class ReflectionWorker {
       }
 
       // 4. Record reflection in Postgres/Supabase store if available
-      if (pg && typeof pg.saveReflectionRun === 'function') {
-        await pg.saveReflectionRun({
-          brandId: this.brandId,
-          chatId,
-          triggerReason: reason,
-          inputMessageCount: messages.length,
-          selfCorrectionsCount: result.selfCorrectionsDetected,
-          rulesAdded: result.rulesAdded,
-          factsAdded: result.factsAdded,
-          summary: result.summary,
-          createdAt: Date.now()
-        }).catch((err) => {
+      if (pg && 'saveReflectionRun' in pg && typeof pg.saveReflectionRun === 'function') {
+        try {
+          await pg.saveReflectionRun({
+            brandId: this.brandId,
+            chatId,
+            triggerReason: reason,
+            inputMessageCount: messages.length,
+            selfCorrectionsCount: result.selfCorrectionsDetected,
+            rulesAdded: result.rulesAdded,
+            factsAdded: result.factsAdded,
+            summary: result.summary,
+            createdAt: Date.now()
+          });
+        } catch (err) {
           console.warn('⚠️ [ReflectionWorker] Postgres saveReflectionRun failed:', describeError(err));
-        });
+        }
 
-        if (typeof pg.markFeedbackReflected === 'function') {
+        if ('markFeedbackReflected' in pg && typeof pg.markFeedbackReflected === 'function') {
           await pg.markFeedbackReflected(chatId, this.brandId).catch((err) => {
             console.warn('⚠️ [ReflectionWorker] markFeedbackReflected failed:', describeError(err));
           });
         }
-        if (typeof pg.markThreadReflected === 'function') {
+        if ('markThreadReflected' in pg && typeof pg.markThreadReflected === 'function') {
           await pg.markThreadReflected(this.brandId, chatId, record.lastReflectedAt).catch((err) => {
             console.warn('⚠️ [ReflectionWorker] markThreadReflected failed:', describeError(err));
           });
@@ -292,8 +292,8 @@ export class ReflectionWorker {
       }
 
       return result;
-    } catch (err: any) {
-      logEvent('warn', 'reflection_failed', { chat: hashChatId(chatId), reason: String(reason), error: describeError(err) });
+    } catch (err: unknown) {
+      logEvent('warn', 'reflection_failed', { chat: hashChatId(chatId), reason, error: describeError(err) });
       return null;
     } finally {
       record.isProcessing = false;

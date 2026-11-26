@@ -37,11 +37,14 @@ export class CustomerContextStore {
   if(result.changes!==1)throw new Error('Open case not found');
  }
  getContext({brandId,contactId,now=Date.now()}:{brandId:string;contactId:string;now?:number}):{facts:CustomerFact[];cases:CustomerCase[]} {
-  const rows=this.db.query('SELECT key,value,source_message_id,confidence,verified_at,expires_at FROM customer_facts WHERE brand_id=? AND contact_id=? AND (expires_at IS NULL OR expires_at > ?) ORDER BY verified_at DESC LIMIT 500').all(brandId,contactId,now) as any[];
-  const cases=this.db.query('SELECT case_id,intent,source_message_id,status,provider_receipt_id FROM customer_cases WHERE brand_id=? AND contact_id=? ORDER BY updated_at DESC LIMIT 500').all(brandId,contactId) as any[];
+  const rows=this.db.query<{key:string;value:string;source_message_id:string;confidence:number;verified_at:number;expires_at:number|null}, [string, string, number]>('SELECT key,value,source_message_id,confidence,verified_at,expires_at FROM customer_facts WHERE brand_id=? AND contact_id=? AND (expires_at IS NULL OR expires_at > ?) ORDER BY verified_at DESC LIMIT 500').all(brandId,contactId,now);
+  const cases=this.db.query<{case_id:string;intent:string;source_message_id:string;status:string;provider_receipt_id:string|null}, [string, string]>('SELECT case_id,intent,source_message_id,status,provider_receipt_id FROM customer_cases WHERE brand_id=? AND contact_id=? ORDER BY updated_at DESC LIMIT 500').all(brandId,contactId);
   return {
    facts:rows.map(row=>({key:row.key,value:row.value,sourceMessageId:row.source_message_id,confidence:row.confidence,verifiedAt:row.verified_at,expiresAt:row.expires_at??undefined})),
-   cases:cases.map(row=>({caseId:row.case_id,intent:row.intent,sourceMessageId:row.source_message_id,status:row.status,providerReceiptId:row.provider_receipt_id??undefined}))
+   cases:cases.map(row=>{
+    if (row.status !== 'open' && row.status !== 'closed') throw new Error('Invalid persisted customer case status');
+    return {caseId:row.case_id,intent:row.intent,sourceMessageId:row.source_message_id,status:row.status,providerReceiptId:row.provider_receipt_id??undefined};
+   })
   };
  }
  deleteCustomer(brandId:string,contactId:string) {

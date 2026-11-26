@@ -1,3 +1,4 @@
+import { isRecord, isStringArray } from './response-validation';
 import { evaluatePermission } from '../domain/permission-engine';
 import { HumanRateLimiter } from '../domain/rate-limiter';
 import type { MemoryStore } from '../domain/memory-store';
@@ -7,7 +8,7 @@ import { formatWhatsAppMessage } from '../domain/whatsapp-formatter';
 import { executeWithModelFallback } from './model-fallback';
 import { orchestrateModel, toRoutingTrace } from './model-orchestrator';
 import { formatMemoriesForPrompt } from '../domain/user-memory';
-import { detectConversationStyle, getStylePromptDirective, isExplicitStyleRequest, type ConversationStyle } from './adaptive-style';
+import { detectConversationStyle, getStylePromptDirective, isExplicitStyleRequest } from './adaptive-style';
 import type { DualMemoryManager } from '../domain/learning-memory';
 import { ContextFoldEngine } from '../domain/context-fold-engine';
 import { buildFoldContext } from '../domain/context-fold-prompt';
@@ -21,6 +22,13 @@ import { compileHumanRealismLayer } from './human-realism';
 import { evaluateSpontaneousReaction } from '../domain/whatsapp-rhythm';
 import type { McpClientManager } from '../mcp/client-manager';
 import { executeGeminiToolLoop } from '../mcp/gemini-tool-adapter';
+import {
+  auditTemporalAnswer,
+  buildTemporalEnvelope,
+  clockTruth,
+  formatEnvelopeForAgent,
+  formatRelativeAge
+} from './temporal-guard';
 
 export const DEFAULT_MODERATOR_PERSONA: ModeratorPersona = {
   name: 'ممدوح (الموديرتور الذكي)',
@@ -76,9 +84,11 @@ export class ModeratorAgent {
   private dignityGuardian: DignityGuardian;
   private mcpClientManager?: McpClientManager;
   private brandId?: string;
+  private now: () => number;
+  private timezone: string;
 
   constructor(
-    private gemini: GeminiClient,
+    private gemini: Pick<GeminiClient, 'generateContent'>,
     private memoryStore: MemoryStore,
     options: {
       persona?: Partial<ModeratorPersona>;
@@ -91,6 +101,8 @@ export class ModeratorAgent {
       dignityGuardian?: DignityGuardian;
       mcpClientManager?: McpClientManager;
       brandId?: string;
+      now?: () => number;
+      timezone?: string;
     } = {}
   ) {
     this.persona = { ...DEFAULT_MODERATOR_PERSONA, ...options.persona };
@@ -105,6 +117,8 @@ export class ModeratorAgent {
     this.dignityGuardian = options.dignityGuardian ?? new DignityGuardian();
     this.mcpClientManager = options.mcpClientManager;
     this.brandId = options.brandId;
+    this.now = options.now ?? Date.now;
+    this.timezone = options.timezone ?? process.env.AGENT_TIMEZONE ?? 'system';
     this.contextFoldEngine = options.contextFoldEngine ?? (
       process.env.CONTEXT_FOLD_ENABLED === 'false' ? undefined :
         new ContextFoldEngine({
@@ -189,7 +203,14 @@ export class ModeratorAgent {
       };
     }
 
-    // 1. Fetch conversation history for context with dynamic context window sizing
+    // 1. Build authoritative temporal envelope + fetch conversation history
+    const turnNowMs = this.now();
+    const temporalEnvelope = buildTemporalEnvelope(inboundText, {
+      now: turnNowMs,
+      timezone: this.timezone
+    });
+    const temporalBlock = formatEnvelopeForAgent(temporalEnvelope);
+
     const referencedId = message.quotedMessage?.id || message.replyToId;
     const budgetStatus = this.contextFoldEngine?.getContextBudgetStatus(message.chatId, this.persona.model);
     const dynamicRecentCount = budgetStatus ? budgetStatus.preservedRecentCount : 10;
@@ -202,9 +223,11 @@ export class ModeratorAgent {
     const historyText = history
       .map((m) => {
         const crushed = crushMessageForPrompt(m);
-        const sender = m.isFromMe ? 'أنا (صاحب الحساب/الموديرتور)' : `${m.senderName || 'الطرف الآخر'}`;
+        const sender = m.isFromMe ? 'أنا (صاحب الحساب/الموديرتور)' : (m.senderName || 'الطرف الآخر');
         const content = crushed.transcription ? `[رسالة صوتية مفرغة: ${crushed.transcription}]` : (crushed.text || `[${m.type}]`);
-        return `${sender}: ${content}`;
+        const msgClock = clockTruth({ now: m.timestamp, timezone: this.timezone });
+        const ageLabel = formatRelativeAge(m.timestamp, turnNowMs);
+        return `[${msgClock.local}, ${ageLabel}] ${sender}: ${content}`;
       })
       .join('\n');
 
@@ -254,7 +277,9 @@ ${commitmentsList}\n`;
     if (!options.dryRun && isExplicitStyleRequest(inboundText)) {
       this.memoryStore.setChatStyle(message.chatId, detectedStyle);
     }
-    const activeStyle = (this.memoryStore.getChatStyle(message.chatId) as ConversationStyle) || detectedStyle;
+    const storedStyle = this.memoryStore.getChatStyle(message.chatId);
+    const activeStyle = storedStyle === 'professional' || storedStyle === 'casual' || storedStyle === 'playful' ||
+      storedStyle === 'assertive' || storedStyle === 'empathetic' ? storedStyle : detectedStyle;
     const styleDirective = getStylePromptDirective(activeStyle);
 
     let notebookPrompt = '';
@@ -279,7 +304,9 @@ ${commitmentsList}\n`;
       isGroup
     });
 
-    const prompt = `${foldContext ? `${foldContext}\n\n` : ''}سياق المحادثة السابقة بين الطرفين:\n${historyText}
+    const prompt = `${temporalBlock}
+
+${foldContext ? `${foldContext}\n\n` : ''}سياق المحادثة السابقة بين الطرفين:\n${historyText}
 ${quotedContextPrompt}
 ${dossierPrompt}
 ${memoryPrompt}
@@ -287,6 +314,7 @@ ${notebookPrompt}
 ${dynamicsPrompt}
 
 الرسالة الجديدة الواردة الآن:
+الوقت الحالي للرسالة: ${temporalEnvelope.localTime} (${temporalEnvelope.dayOfWeek})
 من: ${message.senderName || message.sender}
 نص الرسالة: ${message.text || message.transcription || `[${message.type}]`}
 
@@ -428,15 +456,19 @@ ${dynamicsPrompt}
         }
 
         // Completed with or without read-only/autopilot tool calls.
-        let parsedJson: Record<string, any> | null = null;
+        let parsedJson: Record<string, unknown> | null = null;
         try {
-          parsedJson = JSON.parse(loopResult.text);
+          const value: unknown = JSON.parse(loopResult.text);
+          if (isRecord(value)) parsedJson = value;
         } catch {
           parsedJson = null;
         }
 
-        const rawReply = parsedJson?.replyText ?? loopResult.text;
-        const formattedReply = rawReply ? formatWhatsAppMessage(String(rawReply)) : '';
+        if (parsedJson?.replyText !== undefined && parsedJson.replyText !== null && typeof parsedJson.replyText !== 'string') {
+          throw new Error('Tool loop replyText must be a string');
+        }
+        const rawReply = typeof parsedJson?.replyText === 'string' ? parsedJson.replyText : loopResult.text;
+        const formattedReply = rawReply ? formatWhatsAppMessage(rawReply) : '';
         const simulatedDelay = this.persona.simulateTypingDelay
           ? this.rateLimiter.calculateTypingDelay(formattedReply)
           : 500;
@@ -444,18 +476,21 @@ ${dynamicsPrompt}
           ? ` Tools: ${loopResult.toolTrace.map((t) => `${t.namespacedName}(${t.decision})`).join(', ')}.`
           : '';
 
+        const action = parsedJson?.action;
+        const stage = parsedJson?.contactStage;
         parsedDecision = {
-          action: parsedJson?.action || 'reply',
-          intent: parsedJson?.intent || 'general_faq',
+          action: action === 'draft' || action === 'ignore' || action === 'human' || action === 'act' ? action : 'reply',
+          intent: typeof parsedJson?.intent === 'string' && parsedJson.intent ? parsedJson.intent : 'general_faq',
           replyText: formattedReply,
           sendAsVoiceNote: Boolean(parsedJson?.sendAsVoiceNote),
-          reasoning: `${routingTrace}${toolSummary} ${parsedJson?.reasoning || 'Synthesized reply via external MCP tool loop.'}`.trim(),
-          confidence: Number(parsedJson?.confidence ?? 0.9),
+          reasoning: `${routingTrace}${toolSummary} ${(typeof parsedJson?.reasoning === 'string' && parsedJson.reasoning) || 'Synthesized reply via external MCP tool loop.'}`.trim(),
+          confidence: typeof parsedJson?.confidence === 'number' && Number.isFinite(parsedJson.confidence) ? parsedJson.confidence : 0.9,
           simulatedDelayMs: simulatedDelay,
-          suggestedReaction: parsedJson?.suggestedReaction,
-          extractedFacts: Array.isArray(parsedJson?.extractedFacts) ? parsedJson.extractedFacts : undefined,
-          extractedCommitments: Array.isArray(parsedJson?.extractedCommitments) ? parsedJson.extractedCommitments : undefined,
-          contactStage: parsedJson?.contactStage,
+          suggestedReaction: typeof parsedJson?.suggestedReaction === 'string' ? parsedJson.suggestedReaction : undefined,
+          extractedFacts: isStringArray(parsedJson?.extractedFacts) ? parsedJson.extractedFacts : undefined,
+          extractedCommitments: isStringArray(parsedJson?.extractedCommitments) ? parsedJson.extractedCommitments : undefined,
+          contactStage: stage === 'lead' || stage === 'qualified' || stage === 'negotiation' ||
+            stage === 'customer' || stage === 'vip' || stage === 'archived' ? stage : undefined,
           modelRouting: routing,
           externalToolCalls: loopResult.toolTrace
         };
@@ -478,7 +513,36 @@ ${dynamicsPrompt}
       );
 
       const response = fallbackRes.result;
-      const json = JSON.parse(response.text);
+      let json = JSON.parse(response.text);
+
+      // Temporal answer audit gate with at most 1 bounded remediation retry on block
+      if (json.replyText && json.action !== 'ignore') {
+        const initialAudit = auditTemporalAnswer(String(json.replyText), temporalEnvelope);
+        if (initialAudit.severity === 'block' && initialAudit.remediation) {
+          const retryPrompt = `${prompt}\n\n[NOWGUARD AUDIT REMEDIATION]\n${initialAudit.remediation}`;
+          try {
+            const retryRes = await executeWithModelFallback(
+              fallbackModels,
+              async (model) => {
+                return await this.gemini.generateContent(
+                  [{ role: 'user', parts: [{ text: retryPrompt }] }],
+                  {
+                    model,
+                    temperature: this.persona.temperature,
+                    systemInstruction,
+                    responseMimeType: 'application/json',
+                    ...(thinkingConfig ? { thinkingConfig } : {})
+                  }
+                );
+              },
+              { preferredModel, provider: 'gemini', lane: 'interactive' }
+            );
+            json = JSON.parse(retryRes.result.text);
+          } catch {
+            // Keep original JSON if remediation retry fails; final audit below will fail-safe to draft.
+          }
+        }
+      }
 
       // Apply WhatsApp native markdown formatting to reply
       if (json.replyText) {
@@ -528,15 +592,46 @@ ${dynamicsPrompt}
         });
       }
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
       parsedDecision = {
         action: 'human',
         intent: 'error_fallback',
-        reasoning: `Model generation failed: ${err.message}`,
+        reasoning: `Model generation failed: ${msg}`,
         confidence: 0,
         simulatedDelayMs: 0,
         modelRouting: routing
       };
+    }
+
+    // 2.5 Temporal freshness & clock audit gate (fail-safe to draft on unverified LIVE/stale-year blocks)
+    const hasVerifiedEvidence = Boolean(
+      parsedDecision.externalToolCalls?.some((t) => t.decision === 'execute' && t.ok === true)
+    );
+    parsedDecision.temporalEnvelope = {
+      observedAt: temporalEnvelope.observedAt,
+      timezone: temporalEnvelope.timezone,
+      localTime: temporalEnvelope.localTime,
+      freshnessClass: temporalEnvelope.freshnessClass,
+      evidenceRequired: temporalEnvelope.evidenceRequired,
+      detectedDomains: temporalEnvelope.detectedDomains,
+      isHighRisk: temporalEnvelope.isHighRisk
+    };
+    if (parsedDecision.replyText && parsedDecision.action !== 'ignore') {
+      const finalAudit = auditTemporalAnswer(parsedDecision.replyText, temporalEnvelope, {
+        hasVerifiedEvidence
+      });
+      parsedDecision.temporalAudit = {
+        pass: finalAudit.pass,
+        severity: finalAudit.severity,
+        reasons: finalAudit.reasons,
+        staleYearDetected: finalAudit.staleYearDetected,
+        spoofedEvidence: finalAudit.spoofedEvidence
+      };
+      if (finalAudit.severity === 'block' && parsedDecision.action === 'reply') {
+        parsedDecision.action = 'draft';
+        parsedDecision.reasoning = `${parsedDecision.reasoning} [NowGuard: ${finalAudit.reasons.join('; ')}]`.trim();
+      }
     }
 
     // 3. Evaluate through Deterministic Permission Policy

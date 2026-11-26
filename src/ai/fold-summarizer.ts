@@ -1,3 +1,5 @@
+import { isRecord } from './response-validation';
+
 import type { GeminiClient } from './gemini-client';
 import type { FoldSummarizer } from '../domain/context-fold-engine';
 
@@ -5,7 +7,7 @@ import type { FoldSummarizer } from '../domain/context-fold-engine';
  * Transient history distillation. The caller chooses its own configured model.
  * Source messages are untrusted quoted data and are never persisted as synthetic chat rows.
  */
-export function createGeminiFoldSummarizer(client: GeminiClient, model: () => string): FoldSummarizer {
+export function createGeminiFoldSummarizer(client: Pick<GeminiClient, 'generateContent'>, model: () => string): FoldSummarizer {
   return async request => {
     const input = request.tier === 1
       ? (request.messages ?? []).map(message => ({
@@ -35,8 +37,8 @@ export function createGeminiFoldSummarizer(client: GeminiClient, model: () => st
       }
     );
     const data: unknown = JSON.parse(response.text);
-    if (!data || typeof data !== 'object') throw new Error('Invalid fold model payload');
-    const fields = data as Record<string, unknown>;
+    if (!isRecord(data)) throw new Error('Invalid fold model payload');
+    const fields = data;
     if (typeof fields.topic !== 'string' || typeof fields.summary !== 'string') {
       throw new Error('Invalid fold summary');
     }

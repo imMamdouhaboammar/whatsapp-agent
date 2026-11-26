@@ -104,7 +104,7 @@ const STYLE_DEFINITIONS: StyleDefinition[] = [
 ];
 
 export function isExplicitStyleRequest(text: string): boolean {
-  const clean = String(text || "").trim();
+  const clean = (text || "").trim();
   if (!clean) return false;
 
   for (const def of STYLE_DEFINITIONS) {
@@ -119,7 +119,7 @@ export function detectConversationStyle(
   text: string,
   defaultStyle: ConversationStyle = "casual"
 ): ConversationStyle {
-  const clean = String(text || "").trim();
+  const clean = (text || "").trim();
   if (!clean) return defaultStyle;
 
   // 1. Check for explicit style requests first (checking that they are not negated)

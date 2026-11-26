@@ -21,7 +21,7 @@ function resolvePythonBinary(configured?: string): string {
     const s = statSync(VENV_PYTHON);
     if (s.isFile()) return VENV_PYTHON;
   } catch (err: unknown) {
-    if (typeof err === 'object' && err !== null && 'code' in err && (err as { code?: string }).code !== 'ENOENT') {
+    if (typeof err === 'object' && err !== null && 'code' in err && err.code !== 'ENOENT') {
       // ignore non-critical resolution failure and fallback to python3
     }
   }
