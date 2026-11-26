@@ -1,3 +1,5 @@
+import { isRecord } from './response-validation';
+
 export interface GeminiGenerateOptions {
   googleSearch?: boolean;
   functionDeclarations?: Array<{name:string;description:string;parameters?:unknown}>;
@@ -6,7 +8,7 @@ export interface GeminiGenerateOptions {
   temperature?: number;
   maxOutputTokens?: number;
   responseMimeType?: string;
-  responseSchema?: any;
+  responseSchema?: Record<string, unknown>;
   /** WA-012: end-to-end deadline (ms) shared with the provider resilience layer and
    * caller cancellation. Per-request timeout is min(60s, remaining deadline). */
   deadlineMs?: number;
@@ -32,18 +34,93 @@ export interface ChatContent {
   parts: ContentPart[];
 }
 
+interface GeminiApiCandidatePart {
+  text?: string;
+  functionCall?: { name: string; args?: Record<string, unknown> };
+}
+
+interface GeminiApiResponse {
+  error?: { message?: string };
+  candidates?: Array<{
+    content?: { parts?: GeminiApiCandidatePart[] };
+    groundingMetadata?: {
+      groundingChunks?: Array<{ web?: { uri?: string; title?: string } }>;
+    };
+  }>;
+  usageMetadata?: {
+    promptTokenCount?: number;
+    candidatesTokenCount?: number;
+  };
+}
+
+function isCandidatePart(value: unknown): value is GeminiApiCandidatePart {
+  if (!isRecord(value) || (value.text !== undefined && typeof value.text !== 'string')) return false;
+  const call = value.functionCall;
+  return call === undefined || (isRecord(call) && typeof call.name === 'string' &&
+    (call.args === undefined || isRecord(call.args)));
+}
+
+function isGeminiResponse(value: unknown): value is GeminiApiResponse {
+  if (!isRecord(value)) return false;
+  const { error, candidates, usageMetadata: usage } = value;
+  return (error === undefined || (isRecord(error) && (error.message === undefined || typeof error.message === 'string'))) &&
+    (usage === undefined || (isRecord(usage) &&
+      (usage.promptTokenCount === undefined || typeof usage.promptTokenCount === 'number') &&
+      (usage.candidatesTokenCount === undefined || typeof usage.candidatesTokenCount === 'number'))) &&
+    (candidates === undefined || (Array.isArray(candidates) && candidates.every((candidate: unknown) => {
+      if (!isRecord(candidate)) return false;
+      const { content, groundingMetadata } = candidate;
+      if (content !== undefined && (!isRecord(content) ||
+          (content.parts !== undefined && (!Array.isArray(content.parts) || !content.parts.every(isCandidatePart))))) {
+        return false;
+      }
+      if (groundingMetadata === undefined) return true;
+      if (!isRecord(groundingMetadata)) return false;
+      const chunks = groundingMetadata.groundingChunks;
+      return chunks === undefined || (Array.isArray(chunks) && chunks.every((chunk: unknown) => {
+        if (!isRecord(chunk)) return false;
+        const web = chunk.web;
+        return web === undefined || (isRecord(web) &&
+          (web.uri === undefined || typeof web.uri === 'string') &&
+          (web.title === undefined || typeof web.title === 'string'));
+      }));
+    })));
+}
+
+interface ErrorWithStatus extends Error {
+  status?: number;
+  statusCode?: number;
+}
+
+async function readGeminiResponse(response: Response): Promise<{
+  ok: boolean;
+  status: number;
+  statusText: string;
+  data: GeminiApiResponse | null;
+  text: string;
+}> {
+  const text = await response.text();
+  let parsed: GeminiApiResponse | null = null;
+  try {
+    const value: unknown = JSON.parse(text);
+    if (isGeminiResponse(value)) parsed = value;
+  } catch {
+    parsed = null;
+  }
+  return { ok: response.ok, status: response.status, statusText: response.statusText, data: parsed, text };
+}
+
 export class GeminiClient {
   private apiKey?: string;
   private project?: string;
   private location = 'global';
   private accessToken?: string;
   private tokenExpiresAt = 0;
-  private preferVertex = true;
 
   constructor(options: { apiKey?: string; project?: string; location?: string } = {}) {
     this.apiKey = options.apiKey || process.env.GEMINI_API_KEY;
     this.project = options.project || process.env.GOOGLE_CLOUD_PROJECT;
-    if (options.location) this.location = options.location;
+    this.location = options.location || process.env.GOOGLE_CLOUD_LOCATION || 'global';
   }
 
   /**
@@ -63,7 +140,7 @@ export class GeminiClient {
           timeout: 15_000,
           killSignal: 'SIGKILL'
         });
-        this.project = (await new Response(proc.stdout as unknown as BodyInit).text()).trim() || undefined;
+        this.project = (await new Response(proc.stdout).text()).trim() || undefined;
       }
 
       // Fetch access token via gcloud CLI (active session)
@@ -73,12 +150,11 @@ export class GeminiClient {
         timeout: 15_000,
         killSignal: 'SIGKILL'
       });
-      const token = (await new Response(tokenProc.stdout as unknown as BodyInit).text()).trim();
+      const token = (await new Response(tokenProc.stdout).text()).trim();
 
       if (token && token.length > 20) {
         this.accessToken = token;
         this.tokenExpiresAt = now + 50 * 60 * 1000; // 50 minutes
-        this.preferVertex = true;
         return { type: 'vertex', tokenOrKey: this.accessToken, project: this.project };
       }
     } catch {
@@ -109,7 +185,7 @@ export class GeminiClient {
       'x-goog-api-client': 'vertex-agent-studio-getcode/1'
     };
 
-    const body: any = {
+    const body: Record<string, unknown> = {
       contents: contents.map((c) => ({
         role: c.role === 'model' ? 'model' : 'user',
         parts: c.parts
@@ -128,7 +204,7 @@ export class GeminiClient {
       };
     }
 
-    const generationConfig: any = {};
+    const generationConfig: Record<string, unknown> = {};
     if (options.temperature !== undefined) generationConfig.temperature = options.temperature;
     if (options.maxOutputTokens !== undefined) generationConfig.maxOutputTokens = options.maxOutputTokens;
     if (options.responseMimeType) generationConfig.responseMimeType = options.responseMimeType;
@@ -169,39 +245,29 @@ export class GeminiClient {
       });
     };
 
-    const readResponse = async (response: Response) => {
-      const text = await response.text();
-      let parsed: any = null;
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        parsed = null;
-      }
-      return { ok: response.ok, status: response.status, statusText: response.statusText, data: parsed, text };
-    };
+    let apiResult = await readGeminiResponse(await callApi(model));
 
-    let apiResult = await readResponse(await callApi(model));
-
-    // Fallback gracefully if model not yet enabled on Vertex AI endpoint
-    if (!apiResult.ok && apiResult.status === 404 && auth.type === 'vertex') {
+    // Fallback gracefully if model not yet enabled or rate limited on Vertex AI endpoint
+    if (!apiResult.ok && (apiResult.status === 404 || apiResult.status === 429) && auth.type === 'vertex') {
       let fallbackModel = 'gemini-3.8-flash';
       if (model.includes('carbon')) {
         fallbackModel = 'gemini-4-argon';
       } else if (model.includes('argon') || model.includes('pro')) {
-        fallbackModel = 'gemini-3.1-pro';
+        fallbackModel = 'gemini-3.8-flash';
       } else if (model.includes('hydrogen') || model.includes('neon') || model.includes('flash')) {
         fallbackModel = 'gemini-3.8-flash';
       }
-      console.warn(`⚠️ [GeminiClient] Model "${model}" is not enabled in this region, gracefully falling back to "${fallbackModel}"`);
-      apiResult = await readResponse(await callApi(fallbackModel));
-      if (!apiResult.ok && apiResult.status === 404 && fallbackModel !== 'gemini-3.8-flash') {
-        console.warn(`⚠️ [GeminiClient] Intermediate fallback "${fallbackModel}" also returned 404, falling back to "gemini-3.8-flash"`);
-        apiResult = await readResponse(await callApi('gemini-3.8-flash'));
+      if (fallbackModel === model) fallbackModel = 'gemini-2.5-flash';
+      console.warn(`⚠️ [GeminiClient] Model "${model}" encountered HTTP ${apiResult.status} on Vertex, gracefully falling back to "${fallbackModel}"`);
+      apiResult = await readGeminiResponse(await callApi(fallbackModel));
+      if (!apiResult.ok && (apiResult.status === 404 || apiResult.status === 429) && fallbackModel !== 'gemini-2.5-flash') {
+        console.warn(`⚠️ [GeminiClient] Intermediate fallback "${fallbackModel}" also returned ${apiResult.status}, falling back to "gemini-2.5-flash"`);
+        apiResult = await readGeminiResponse(await callApi('gemini-2.5-flash'));
       }
     }
     if (!apiResult.ok) {
       const msg = apiResult.data?.error?.message || (apiResult.text ? apiResult.text.slice(0, 300) : `HTTP ${apiResult.status}: ${apiResult.statusText}`);
-      const err: any = new Error(`Gemini API Error (${apiResult.status}): ${msg}`);
+      const err: ErrorWithStatus = new Error(`Gemini API Error (${apiResult.status}): ${msg}`);
       err.status = apiResult.status;
       err.statusCode = apiResult.status;
       throw err;
@@ -209,15 +275,18 @@ export class GeminiClient {
 
     const data = apiResult.data;
     if (!data) {
-      const err: any = new Error(`Gemini API returned non-JSON response (${apiResult.status})`);
+      const err: ErrorWithStatus = new Error(`Gemini API returned non-JSON response (${apiResult.status})`);
       err.status = apiResult.status;
       err.statusCode = apiResult.status;
       throw err;
     }
 
     const candidate = data.candidates?.[0];
-    const textPart = (candidate?.content?.parts ?? []).map((part:any) => part.text ?? '').join('');
-    const functionCalls = (candidate?.content?.parts ?? []).filter((part:any) => part.functionCall).map((part:any) => ({name:part.functionCall.name,args:part.functionCall.args ?? {}}));
+    const parts = candidate?.content?.parts ?? [];
+    const textPart = parts.map((part) => part.text ?? '').join('');
+    const functionCalls = parts
+      .filter((part): part is GeminiApiCandidatePart & { functionCall: { name: string; args?: Record<string, unknown> } } => Boolean(part.functionCall))
+      .map((part) => ({ name: part.functionCall.name, args: part.functionCall.args ?? {} }));
     const usage = data.usageMetadata
       ? {
           promptTokens: data.usageMetadata.promptTokenCount,

@@ -48,10 +48,10 @@ describe("S08 diagnostics core", () => {
     const core = new DiagnosticsCore();
     const traceId = core.startTrace();
     expect(() => core.recordStage({ traceId: crypto.randomUUID(), stage: "received" })).toThrow();
-    expect(() => core.recordStage({ traceId, stage: "raw-chat-text" as "received" })).toThrow();
-    expect(() => core.recordStage({ traceId, stage: "received", outcome: "private failure string" as "ok" })).toThrow();
+    expect(() => Reflect.apply(core.recordStage.bind(core), undefined, [{ traceId, stage: "raw-chat-text" }])).toThrow("Unsupported stage");
+    expect(() => Reflect.apply(core.recordStage.bind(core), undefined, [{ traceId, stage: "received", outcome: "private failure string" }])).toThrow("Unsupported outcome");
     expect(() => core.startTrace({ traceId: "customer-phone-number" })).toThrow();
-    expect(() => core.setWorker({ kind: "arbitrary caller name" as "media", enabled: true, state: "healthy" })).toThrow();
+    expect(() => Reflect.apply(core.setWorker.bind(core), undefined, [{ kind: "arbitrary caller name", enabled: true, state: "healthy" }])).toThrow("Unsupported worker");
   });
 
   test("calculates documented latencies from stage timestamps without storing user content", () => {
@@ -307,10 +307,9 @@ describe("S08 diagnostics core", () => {
   });
 
   test("does not allow downstream JavaScript callers to mutate the stage vocabulary", () => {
-    const stages = DIAGNOSTIC_STAGES as unknown as string[];
-    expect(() => stages.push("raw-private-message")).toThrow();
+    expect(Reflect.set(DIAGNOSTIC_STAGES, DIAGNOSTIC_STAGES.length, "raw-private-message")).toBe(false);
     const core = new DiagnosticsCore();
     const traceId = core.startTrace();
-    expect(() => core.recordStage({ traceId, stage: "raw-private-message" as "received" })).toThrow();
+    expect(() => Reflect.apply(core.recordStage.bind(core), undefined, [{ traceId, stage: "raw-private-message" }])).toThrow("Unsupported stage");
   });
 });

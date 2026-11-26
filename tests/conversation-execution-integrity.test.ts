@@ -1,3 +1,4 @@
+import { rejects } from 'node:assert/strict';
 import { describe, expect, it } from 'bun:test';
 import { ConversationCoordinator } from '../src/agent/conversation-coordinator';
 import { AgentTurnCoordinator } from '../src/agent/turn-coordinator';
@@ -8,7 +9,7 @@ type DecisionResult = Awaited<ReturnType<AgentTurnCoordinator['processInboundMes
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  const promise = new Promise<T>((_resolve, _reject) => { resolve = _resolve; reject = _reject; });
   return { promise, resolve, reject };
 }
 
@@ -61,7 +62,7 @@ describe('ExecutionQueue per-chat admission bound', () => {
     // First waiter chains behind the owner (slot 2 of 2).
     const waiter = queue.acquire('chat1');
     // Third unsettled slot exceeds the bound: rejected immediately.
-    await expect(queue.acquire('chat1')).rejects.toMatchObject({ reason: 'admission_full' });
+    await rejects(queue.acquire('chat1'), { reason: 'admission_full' });
     releaseOwner();
     await waiter.then((release) => release());
     // Slots drained: the key admits again.
@@ -90,7 +91,7 @@ describe('WA-002 ConversationCoordinator queue integrity', () => {
     });
 
     // B's wait expires while A is still active: B must be rejected, not run.
-    await expect(runB).rejects.toThrow(/timeout|expired/i);
+    await rejects(runB, /timeout|expired/i);
     expect(bRan).toBe(false);
 
     // C arrives after B's expiry. A defective queue would have dropped B's
@@ -108,8 +109,8 @@ describe('WA-002 ConversationCoordinator queue integrity', () => {
     expect(cRan).toBe(false);
 
     a.resolve('done');
-    await expect(runA).resolves.toBe('a');
-    await expect(runC).resolves.toBe('c');
+    expect(await runA).toBe('a');
+    expect(await runC).toBe('c');
     expect(events).toEqual(['a:start', 'a:end', 'c']);
     // Expired work must never execute later, even after the queue recovers.
     expect(bRan).toBe(false);
@@ -127,8 +128,8 @@ describe('WA-002 ConversationCoordinator queue integrity', () => {
     const runB = coordinator.run('brand', 'contact', async () => 'b');
 
     gate.resolve();
-    await expect(runA).rejects.toThrow('boom');
-    await expect(runB).resolves.toBe('b');
+    await rejects(runA, /boom/);
+    expect(await runB).toBe('b');
     expect(coordinator.activeConversations).toBe(0);
   });
 
@@ -147,10 +148,10 @@ describe('WA-002 ConversationCoordinator queue integrity', () => {
       return 'b';
     });
 
-    await expect(runB).resolves.toBe('b');
+    expect(await runB).toBe('b');
     expect(started).toEqual(['a', 'b']);
     gateA.resolve();
-    await expect(runA).resolves.toBe('a');
+    expect(await runA).toBe('a');
     expect(coordinator.activeConversations).toBe(0);
   });
 
@@ -159,16 +160,14 @@ describe('WA-002 ConversationCoordinator queue integrity', () => {
     const blocker = deferred<void>();
 
     const runA = coordinator.run('brand', 'contact', () => blocker.promise);
-    await expect(
-      coordinator.run('brand', 'contact', async () => 'lost-1')
-    ).rejects.toThrow(/timeout|expired/i);
-    await expect(
-      coordinator.run('brand', 'contact', async () => 'lost-2')
-    ).rejects.toThrow(/timeout|expired/i);
+    await rejects(
+      coordinator.run('brand', 'contact', async () => 'lost-1'), /timeout|expired/i);
+    await rejects(
+      coordinator.run('brand', 'contact', async () => 'lost-2'), /timeout|expired/i);
 
     blocker.resolve();
     await runA;
-    await expect(coordinator.run('brand', 'contact', async () => 'after')).resolves.toBe('after');
+    expect(await coordinator.run('brand', 'contact', async () => 'after')).toBe('after');
     expect(coordinator.activeConversations).toBe(0);
   });
 });
@@ -229,14 +228,20 @@ describe('WA-001 AgentTurnCoordinator turn ownership', () => {
 
     // m2 is queued behind m1; the independent chat2 turn starts immediately.
     await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(active.sort()).toEqual(['m1', 'x1']);
+    expect(active.toSorted()).toEqual(['m1', 'x1']);
 
-    gates.get('x1')!.resolve(replyResult);
+    const x1Gate = gates.get('x1');
+    if (!x1Gate) throw new Error('Expected x1 gate');
+    x1Gate.resolve(replyResult);
     await other;
-    gates.get('m1')!.resolve(replyResult);
+    const m1Gate = gates.get('m1');
+    if (!m1Gate) throw new Error('Expected m1 gate');
+    m1Gate.resolve(replyResult);
     await p1;
     await new Promise((resolve) => setTimeout(resolve, 20));
-    gates.get('m2')!.resolve(replyResult);
+    const m2Gate = gates.get('m2');
+    if (!m2Gate) throw new Error('Expected m2 gate');
+    m2Gate.resolve(replyResult);
     await p2;
     expect(maxConcurrentChat1).toBe(1);
   });

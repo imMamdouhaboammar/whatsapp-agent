@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -8,7 +9,9 @@ import type { GeminiClient } from '../src/ai/gemini-client';
 
 type Model = Pick<GeminiClient, 'generateContent'>;
 const asModel = (callback: () => Promise<{ text?: string; functionCalls?: Array<{ name: string; args: Record<string, unknown> }> }>): Model =>
-  ({ generateContent: callback }) as unknown as Model;
+  ({
+    generateContent: async () => ({ text: '', ...await callback() })
+  });
 
 test('A05 refuses to reuse a workflow UUID across brands, contacts, or goals', () => {
   const journal = new ActionJournal({ dbPath: ':memory:' });
@@ -33,7 +36,7 @@ test('A05 write idempotency key cannot be borrowed by another workflow', async (
   try {
     const request = { brandId: 'alpha', toolName: 'ticket.create', workflowId: 'first', idempotencyKey: 'same-key', input: { orderId: '441' } };
     expect((await registry.run(request)).status).toBe('confirmed');
-    await expect(registry.run({ ...request, workflowId: 'second' })).rejects.toThrow();
+    await assert.rejects(registry.run({ ...request, workflowId: 'second' }));
     expect(writes).toBe(1);
   } finally { journal.close(); }
 });
@@ -108,8 +111,8 @@ test('A05 enforces declared tool arguments even when a permissive custom validat
   });
   try {
     const request = { brandId: 'brand', workflowId: 'w1', toolName: 'order.lookup', idempotencyKey: 'read-key', input: { orderId: '441', adminOverride: true } };
-    await expect(registry.run(request)).rejects.toThrow();
-    await expect(registry.run({ ...request, input: { orderId: 441 } })).rejects.toThrow();
+    await assert.rejects(registry.run(request));
+    await assert.rejects(registry.run({ ...request, input: { orderId: 441 } }));
     expect((await registry.run({ ...request, input: { orderId: '441' } })).status).toBe('confirmed');
     expect(calls).toBe(1);
   } finally { journal.close(); }
@@ -126,7 +129,7 @@ test('A05 rejects invalid provider result shape before citing it as confirmed ev
     execute: async () => ({ orderId: 441 })
   });
   try {
-    await expect(registry.run({ brandId: 'brand', workflowId: 'w1', toolName: 'order.lookup', idempotencyKey: 'read', input: { orderId: '441' } })).rejects.toThrow();
+    await assert.rejects(registry.run({ brandId: 'brand', workflowId: 'w1', toolName: 'order.lookup', idempotencyKey: 'read', input: { orderId: '441' } }));
   } finally { journal.close(); }
 });
 

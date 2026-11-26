@@ -51,7 +51,7 @@ function render(language, component) {
   return renderToStaticMarkup(React.createElement(LocaleProvider, { initial: language }, component));
 }
 
-test('Full app switches layout direction and active language state', () => {
+await test('Full app switches layout direction and active language state', () => {
   const ar = render('ar', React.createElement(App));
   const en = render('en', React.createElement(App));
 
@@ -65,7 +65,7 @@ test('Full app switches layout direction and active language state', () => {
   assert.match(en, /Chats/);
 });
 
-test('Arabic inbox stays RTL-ready and filters pending drafts by actual chat', () => {
+await test('Arabic inbox stays RTL-ready and filters pending drafts by actual chat', () => {
   const html = render('ar', React.createElement(ChatList, {
     chats: [chat],
     selectedChatId: chat.id,
@@ -79,7 +79,7 @@ test('Arabic inbox stays RTL-ready and filters pending drafts by actual chat', (
   assert.doesNotMatch(html, /Search chats/);
 });
 
-test('English inbox translates all controls while retaining contact message', () => {
+await test('English inbox translates all controls while retaining contact message', () => {
   const html = render('en', React.createElement(ChatList, {
     chats: [chat],
     selectedChatId: chat.id,
@@ -94,7 +94,7 @@ test('English inbox translates all controls while retaining contact message', ()
   assert.doesNotMatch(html, /ابحث عن محادثة/);
 });
 
-test('Conversation controls render correctly in both interface languages', () => {
+await test('Conversation controls render correctly in both interface languages', () => {
   const props = {
     chat,
     messages: [],
@@ -115,7 +115,39 @@ test('Conversation controls render correctly in both interface languages', () =>
   assert.match(en, /Back to chats/);
 });
 
-test('uncertain delivery is visible and retry requires explicit confirmation in both locales', () => {
+await test('Video attachments retain inline playback and a truthful caption fallback in both locales', () => {
+  const props = {
+    chat,
+    messages: [{
+      id: 'video-preview', chatId: chat.id, sender: chat.id, text: '',
+      timestamp: Date.now(), isFromMe: false, type: 'video', mediaUrl: '/media/example.mp4'
+    }],
+    onSendMessage: noop,
+    onRetrySendIntent: noop,
+    onSendReaction: noop,
+    onChangeMode: noop,
+    onBack: () => {},
+    onOpenInspector: () => {}
+  };
+  for (const [language, label] of [['en', 'Captions unavailable'], ['ar', 'الترجمة النصية غير متوفرة']]) {
+    const html = render(language, React.createElement(ChatThread, props));
+    const video = html.match(/<video\b[^>]*>[\s\S]*?<\/video>/)?.[0];
+    assert.ok(video, 'video must be playable within the message');
+    assert.match(video, /src="\/media\/example\.mp4"/);
+    assert.match(video, /controls=""/);
+    assert.match(video, /preload="metadata"/);
+    const track = video.match(/<track\b[^>]*>/)?.[0];
+    assert.ok(track, 'video must contain a caption track');
+    assert.match(track, /kind="captions"/);
+    assert.match(track, new RegExp('label="' + label + '"'));
+    assert.match(track, new RegExp('srcLang="' + language + '"', 'i'));
+    assert.match(track, /src="data:text\/vtt;charset=utf-8,WEBVTT%0A%0A"/);
+    assert.doesNotMatch(track, /\bdefault=/);
+    assert.match(html, /<a[^>]*href="\/media\/example\.mp4"/);
+  }
+});
+
+await test('uncertain delivery is visible and retry requires explicit confirmation in both locales', () => {
   const props = {
     chat,
     messages: [{
@@ -147,7 +179,7 @@ test('uncertain delivery is visible and retry requires explicit confirmation in 
   assert.match(en, /role="alert"/);
 });
 
-test('Assistant approval is available in English without translating user content', () => {
+await test('Assistant approval is available in English without translating user content', () => {
   const html = render('en', React.createElement(ModeratorDrawer, {
     view: 'assistant',
     drafts: [draft],
@@ -165,7 +197,7 @@ test('Assistant approval is available in English without translating user conten
   assert.match(html, /أهلًا يا نور/);
 });
 
-test('Assistant settings provides a bilingual, accessible multi-section layout', () => {
+await test('Assistant settings provides a bilingual, accessible multi-section layout', () => {
   const persona = {
     name: 'Mamdouh assistant', language: 'ar-EG', tone: 'Natural', systemPrompt: 'Help with messages',
     rules: [], model: 'gemini-3.8-flash', temperature: 0.5, minConfidence: 0.75,
@@ -185,10 +217,10 @@ test('Assistant settings provides a bilingual, accessible multi-section layout',
   assert.match(ar, /التعليمات الأساسية/);
   assert.match(ar, /حفظ التغييرات/);
   assert.match(ar, /dir="auto"/);
-  assert.doesNotMatch(en, /role="dialog"/);
+  assert.doesNotMatch(en, /<dialog\b|role="dialog"/);
 });
 
-test('Models & providers is directly accessible with existing controls', () => {
+await test('Models & providers is directly accessible with existing controls', () => {
   const persona = {
     name: 'Mamdouh', language: 'ar-EG', tone: 'Natural', systemPrompt: 'Help',
     rules: [], model: 'gemini-3.1-pro', temperature: 0.5, minConfidence: 0.85,
@@ -212,14 +244,14 @@ test('Models & providers is directly accessible with existing controls', () => {
   }
 });
 
-test('Only one assistant settings entry and collapsible inspector exist in the workspace', () => {
+await test('Only one assistant settings entry and collapsible inspector exist in the workspace', () => {
   const html = render('en', React.createElement(App));
   assert.equal((html.match(/aria-label="Assistant settings"/g) || []).length, 1);
   assert.match(html, /aria-label="AI assistant, collapse panel"/);
   assert.match(html, /aria-controls="wa-agent-panel"/);
 });
 
-test('WhatsApp receipt ticks only reflect explicit outbound statuses', () => {
+await test('WhatsApp receipt ticks only reflect explicit outbound statuses', () => {
   const statuses = ['pending', 'sent', 'delivered', 'read', undefined];
   const messages = statuses.map((status, index) => ({
     id: 'receipt-' + index, chatId: chat.id, text: 'Receipt ' + index,
@@ -235,7 +267,7 @@ test('WhatsApp receipt ticks only reflect explicit outbound statuses', () => {
   assert.equal((html.match(/aria-label="Read"/g) || []).length, 1);
 });
 
-test('Owner access uses a bilingual private login with a password field', () => {
+await test('Owner access uses a bilingual private login with a password field', () => {
   const props = { onLogin: async () => {}, onRetry: () => {} };
   const en = render('en', React.createElement(OwnerAccessLogin, props));
   const ar = render('ar', React.createElement(OwnerAccessLogin, props));
@@ -248,7 +280,7 @@ test('Owner access uses a bilingual private login with a password field', () => 
   assert.match(ar, /dir="rtl"/);
 });
 
-test('Owner can explicitly sign out in Arabic and English when access protection is enabled', () => {
+await test('Owner can explicitly sign out in Arabic and English when access protection is enabled', () => {
   const props = { onSignOut: async () => {}, pending: false };
   const ar = render('ar', React.createElement(OwnerSignOutButton, props));
   const en = render('en', React.createElement(OwnerSignOutButton, props));
@@ -257,7 +289,7 @@ test('Owner can explicitly sign out in Arabic and English when access protection
   assert.match(en, /type="button"/);
 });
 
-test('Assistant preview explains that messages are not sent or saved', () => {
+await test('Assistant preview explains that messages are not sent or saved', () => {
   const props = { isOpen: true, onClose: () => {}, onSimulate: async () => ({}) };
   const en = render('en', React.createElement(SimulatorModal, props));
   const ar = render('ar', React.createElement(SimulatorModal, props));

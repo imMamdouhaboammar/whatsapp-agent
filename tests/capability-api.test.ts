@@ -9,17 +9,14 @@ test('capability APIs protect brand data and resolve an inventory goal without s
   const headers={'content-type':'application/json','x-agent-owner-token':'test-owner-token'};
   const create=await agent.app.request('/api/brands/brand-a/sources',{method:'POST',headers,body:JSON.stringify({type:'faq',locator:'shipping',authority:'official',content:'الشحن خلال يومين'})});
   expect(create.status).toBe(201);
-  const source=await create.json() as any;
-  expect(source.versionId).toBeTruthy();
+  expect(await create.json()).toHaveProperty('versionId', expect.stringMatching(/./));
   const lookup=await agent.app.request('/api/brands/brand-a/retrieve',{method:'POST',headers,body:JSON.stringify({question:'الشحن'})});
   expect(lookup.status).toBe(200);
-  expect(((await lookup.json()) as any).evidence[0].text).toContain('يومين');
+  expect(await lookup.json()).toHaveProperty('evidence.0.text', expect.stringContaining('يومين'));
   const other=await agent.app.request('/api/brands/brand-b/retrieve',{method:'POST',headers,body:JSON.stringify({question:'الشحن'})});
-  expect(((await other.json()) as any).evidence).toHaveLength(0);
+  expect(await other.json()).toHaveProperty('evidence', []);
   const goal=await agent.app.request('/api/agent/resolve',{method:'POST',headers,body:JSON.stringify({brandId:'brand-a',contactId:'customer',text:'الشحن'})});
-  const resolved=await goal.json() as any;
-  expect(resolved.status).toBe('answered');
-  expect(resolved.reply).toContain('يومين');
+  expect(await goal.json()).toMatchObject({status:'answered',reply:expect.stringContaining('يومين')});
   const bad=await agent.app.request('/api/brands/brand-a/sources',{method:'POST',headers,body:JSON.stringify({type:'text',locator:'oversize',authority:'official',content:'x'.repeat(1024*1024+1)})});
   expect(bad.status).toBe(400);
  } finally {
@@ -29,14 +26,14 @@ test('capability APIs protect brand data and resolve an inventory goal without s
 });
 test('A03 external facts via protected API expose grounded public URL and reject unauthorized calls',async()=>{
  const model={generateContent:async()=>({text:'تحديث اليوم',groundingMetadata:{groundingChunks:[{web:{uri:'https://www.spa.gov.sa/latest',title:'SPA'}}]}})};
- const agent=await createFableWhatsAppAgent({dataDir:':memory:',autoConnect:false,capabilityToken:'owner',capabilityModel:model as any});
+ const agent=await createFableWhatsAppAgent({dataDir:':memory:',autoConnect:false,capabilityToken:'owner',capabilityModel:model});
  try {
   expect((await agent.app.request('/api/brands/test/web/search',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({question:'ما آخر الأخبار؟'})})).status).toBe(401);
   const r=await agent.app.request('/api/brands/test/web/search',{method:'POST',headers:{'content-type':'application/json','x-agent-owner-token':'owner'},body:JSON.stringify({question:'ما آخر الأخبار؟'})});
   expect(r.status).toBe(200);
-  const body=await r.json() as any;
-  expect(body.status).toBe('grounded');
-  expect(body.sources[0].url).toBe('https://www.spa.gov.sa/latest');
+  const body: unknown = await r.json();
+  expect(body).toHaveProperty('status','grounded');
+  expect(body).toHaveProperty('sources.0.url','https://www.spa.gov.sa/latest');
  }finally{agent.capabilities.close();agent.memoryStore.close();}
 });
 
@@ -50,11 +47,11 @@ test('A01/A04 owner uploads CSV document; source is versioned, evidenced and bra
   expect(missing.status).toBe(401);
   const first=await agent.app.request(path,{method:'POST',headers,body:JSON.stringify(payload)});
   expect(first.status).toBe(201);
-  const result=await first.json() as any;
-  expect(result.sourceId).toBeTruthy();
-  expect(result.preview.some((s:any)=>s.location==='row:2')).toBe(true);
+  const result: unknown = await first.json();
+  expect(result).toHaveProperty('sourceId',expect.stringMatching(/./));
+  expect(result).toHaveProperty('preview',expect.arrayContaining([expect.objectContaining({location:'row:2'})]));
   const repeated=await agent.app.request(path,{method:'POST',headers,body:JSON.stringify(payload)});
-  expect((await repeated.json() as any).changed).toBe(false);
+  expect(await repeated.json()).toHaveProperty('changed',false);
   expect((await agent.capabilities.knowledge.retrieve({brandId:'other',question:'SKU-42'})).evidence).toHaveLength(0);
  }finally{agent.capabilities.close();agent.memoryStore.close();}
 });
@@ -68,10 +65,9 @@ test('owner can review exact conflicting active policy sources without disclosin
   await k.ingest({brandId:'alpha',type:'faq',locator:'new',authority:'official',content:'الإرجاع 14 يوم'});
   const res=await agent.app.request('/api/brands/alpha/conflicts',{headers});
   expect(res.status).toBe(200);
-  const body=await res.json() as any;
-  expect(body.conflicts[0].values).toEqual([7,14]);
+  expect(await res.json()).toHaveProperty('conflicts.0.values',[7,14]);
   const other=await agent.app.request('/api/brands/beta/conflicts',{headers});
-  expect((await other.json() as any).conflicts).toHaveLength(0);
+  expect(await other.json()).toHaveProperty('conflicts', []);
  }finally{agent.capabilities.close();agent.memoryStore.close();}
 });
 

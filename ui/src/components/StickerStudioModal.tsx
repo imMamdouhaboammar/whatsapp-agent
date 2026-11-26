@@ -43,11 +43,11 @@ export function StickerStudioModal({ isOpen, onClose, selectedChatId, onSendStic
     setGeneratedSticker(null);
 
     const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      const base64Data = result.split(',')[1];
+    reader.addEventListener('load', () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      const base64Data = result.split(',')[1] ?? null;
       setImageBase64(base64Data);
-    };
+    }, { once: true });
     reader.readAsDataURL(file);
   };
 

@@ -69,6 +69,7 @@ export function extractConversationalFeedback(messages: ChatMessage[]): Conversa
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
+    if (!msg) continue;
     if (msg.isFromMe) {
       lastAgentIdx = i;
       continue;

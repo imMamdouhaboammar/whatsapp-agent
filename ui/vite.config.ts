@@ -15,23 +15,22 @@ export default defineConfig({
     }
   },
   build: {
-    rollupOptions: {
+    rolldownOptions: {
       output: {
-        manualChunks(id) {
-          if (id.includes('node_modules/@lobehub') || id.includes('node_modules/antd') || id.includes('node_modules/@ant-design')) {
-            return 'vendor-lobehub';
-          }
-          if (id.includes('node_modules/@astryxdesign') || id.includes('node_modules/@stylexjs')) {
-            return 'vendor-astryx';
-          }
-          if (id.includes('node_modules/react') || id.includes('node_modules/react-dom')) {
-            return 'vendor-react';
-          }
-          if (id.includes('ui/src/marketing')) {
-            return 'public-funnel';
-          }
-        }
-      }
-    }
-  }
+        codeSplitting: {
+          groups: [
+            { name: 'vendor-react', test: /\/node_modules\/(react|react-dom|scheduler)\// },
+            { name: 'vendor-astryx', test: /\/node_modules\/(@astryxdesign|@stylexjs)\// },
+            { name: 'public-funnel', test: /\/ui\/src\/marketing\// },
+            // Keep each icon with its variants. Size-based splits can cycle through shared icon helpers.
+            { name: 'vendor-lobe-icons-a-c', test: /\/node_modules\/@lobehub\/icons\/es\/[A-C][^/]*\// },
+            { name: 'vendor-lobe-icons-d-f', test: /\/node_modules\/@lobehub\/icons\/es\/[D-F][^/]*\// },
+            { name: 'vendor-lobe-icons-g-m', test: /\/node_modules\/@lobehub\/icons\/es\/[G-M][^/]*\// },
+            { name: 'vendor-lobe-icons-n-s', test: /\/node_modules\/@lobehub\/icons\/es\/[N-S][^/]*\// },
+            { name: 'vendor-lobe-icons-t-z', test: /\/node_modules\/@lobehub\/icons\/es\/[T-Z][^/]*\// },
+          ],
+        },
+      },
+    },
+  },
 });

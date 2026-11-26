@@ -23,9 +23,8 @@ ENV PORT=3000
 
 # Install dependencies strictly from the committed lockfile.
 COPY package.json bun.lock patch-baileys.mjs ./
-RUN bun install --production --frozen-lockfile
 # Verify the Baileys compatibility patch explicitly (idempotent, fails loudly).
-RUN bun patch-baileys.mjs
+RUN bun install --production --frozen-lockfile && bun patch-baileys.mjs
 
 # Copy source code and prebuilt UI distribution
 COPY src/ ./src/
@@ -40,7 +39,7 @@ EXPOSE 3000
 
 # Hermetic healthcheck using Bun's native fetch
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD bun -e "fetch('http://127.0.0.1:3000/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+  CMD ["bun", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
 
 USER bun
 

@@ -3,6 +3,7 @@ import { executeWithModelFallback, resolveModelChain } from '../ai/model-fallbac
 import { evaluateMcpToolPermission } from '../domain/permission-engine';
 import type { AgentMode } from '../domain/types';
 import type { DiscoveredMcpTool, McpClientManager, McpToolCallResult } from './client-manager';
+import { isRecord } from './records';
 
 export interface GeminiFunctionDeclaration {
   name: string;
@@ -33,18 +34,16 @@ const UNSUPPORTED_SCHEMA_KEYS = new Set([
 /**
  * Recursively sanitizes a JSON Schema node into a Gemini FunctionDeclaration-compatible schema.
  */
-export function sanitizeSchemaForGemini(node: unknown): Record<string, unknown> {
-  if (!node || typeof node !== 'object' || Array.isArray(node)) {
+export function sanitizeSchemaForGemini(input: unknown): Record<string, unknown> {
+  if (!isRecord(input)) {
     return { type: 'object', properties: {} };
   }
 
-  const input = node as Record<string, unknown>;
-
   // Unwrap simple anyOf / oneOf union types (e.g. nullable fields)
-  if (Array.isArray(input.anyOf) || Array.isArray(input.oneOf)) {
-    const variants = (input.anyOf ?? input.oneOf) as unknown[];
+  const variants: unknown = Array.isArray(input.anyOf) ? input.anyOf : input.oneOf;
+  if (Array.isArray(variants)) {
     const nonNull = variants.find(
-      (v) => v && typeof v === 'object' && (v as Record<string, unknown>).type !== 'null'
+      (v: unknown) => isRecord(v) && v.type !== 'null'
     );
     if (nonNull) {
       const sanitized = sanitizeSchemaForGemini(nonNull);
@@ -67,9 +66,9 @@ export function sanitizeSchemaForGemini(node: unknown): Record<string, unknown> 
       continue;
     }
 
-    if (key === 'properties' && value && typeof value === 'object' && !Array.isArray(value)) {
+    if (key === 'properties' && isRecord(value)) {
       const props: Record<string, unknown> = {};
-      for (const [propName, propSchema] of Object.entries(value as Record<string, unknown>)) {
+      for (const [propName, propSchema] of Object.entries(value)) {
         props[propName] = sanitizeSchemaForGemini(propSchema);
       }
       out.properties = props;

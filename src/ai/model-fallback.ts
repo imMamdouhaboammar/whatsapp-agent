@@ -7,11 +7,13 @@
  * or authorization failures (401, 403).
  */
 
+import type { ProviderResilience } from './provider-resilience';
 import {
   createProviderResilience,
   getProviderResilience,
   classifyProviderError,
   parseRetryAfterMs,
+  readProviderError,
   ProviderAbortedError,
   ProviderDeadlineExceededError
 } from './provider-resilience';
@@ -23,11 +25,12 @@ export const DEFAULT_GEMINI_FALLBACK_CHAIN: readonly string[] = [
 ];
 
 export const GEMINI_4_FALLBACK_CHAIN: readonly string[] = [
-  'gemini-4-carbon',
+  'gemini-3.8-flash',
+  'gemini-2.5-flash',
   'gemini-4-argon',
   'gemini-4-hydrogen',
+  'gemini-4-carbon',
   'gemini-4-neon',
-  'gemini-3.8-flash',
   'gemini-3.1-pro'
 ];
 
@@ -44,7 +47,7 @@ export interface FallbackOptions {
   signal?: AbortSignal;
   /** Aggregate cap on invoker calls across the whole chain. Defaults to chain length. */
   maxAttempts?: number;
-  resilience?: import('./provider-resilience').ProviderResilience;
+  resilience?: ProviderResilience;
 }
 
 export interface FallbackResult<T> {
@@ -56,9 +59,7 @@ export interface FallbackResult<T> {
 export function isFallbackEligibleError(error: unknown): boolean {
   if (!error) return false;
 
-  const err = error as Record<string, any>;
-  const status = Number(err.status ?? err.code ?? err.statusCode);
-  const msg = String(err.message ?? err.error?.message ?? err);
+  const { status, message: msg } = readProviderError(error);
 
   // Strictly NOT eligible for fallback: authentication / permission errors
   if (status === 401 || status === 403 || /PERMISSION_DENIED|UNAUTHENTICATED|API_KEY_INVALID/i.test(msg)) {
@@ -105,7 +106,7 @@ export function resolveModelChain(
   preferredModel?: string,
   ...fallbacks: Array<string | string[] | undefined>
 ): string[] {
-  const primary = preferredModel?.trim() || DEFAULT_GEMINI_FALLBACK_CHAIN[0];
+  const primary = preferredModel?.trim() || DEFAULT_GEMINI_FALLBACK_CHAIN[0] || 'gemini-2.5-flash';
   const defaultChain = primary.startsWith('gemini-4') && primary !== 'gemini-4-argon'
     ? [...GEMINI_4_FALLBACK_CHAIN]
     : [...DEFAULT_GEMINI_FALLBACK_CHAIN];
@@ -144,6 +145,7 @@ export async function executeWithModelFallback<T>(
     if (attemptsUsed >= maxAttempts) break;
 
     const currentModel = chain[i];
+    if (!currentModel) continue;
     // WA-012: fail fast on an open circuit before consuming a budget slot.
     resilience.assertCanExecute(providerName);
     const release = await resilience.acquire(lane, deadlineAt);
@@ -184,7 +186,7 @@ export async function executeWithModelFallback<T>(
       }
 
       const nextModel = chain[i + 1];
-      options?.onFallback?.(currentModel, nextModel, error);
+      if (nextModel) options?.onFallback?.(currentModel, nextModel, error);
     } finally {
       release();
     }

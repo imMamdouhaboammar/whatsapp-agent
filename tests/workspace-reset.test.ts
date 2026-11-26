@@ -1,13 +1,14 @@
-import { describe, expect, it } from 'bun:test';
+import { GeminiClient } from '../src/ai/gemini-client';
+import { describe, expect, it, spyOn } from 'bun:test';
 import { rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createApiServer } from '../src/server/api';
 import { MemoryStore } from '../src/domain/memory-store';
 import { DualMemoryManager } from '../src/domain/learning-memory';
 import type { ChatMessage, ChatSummary } from '../src/domain/types';
-import type { WhatsAppSocketClient } from '../src/transport/whatsapp-socket';
-import type { ModeratorAgent } from '../src/ai/moderator-agent';
-import type { SSEBroadcaster } from '../src/server/sse';
+import { WhatsAppSocketClient } from '../src/transport/whatsapp-socket';
+import { ModeratorAgent } from '../src/ai/moderator-agent';
+import { SSEBroadcaster } from '../src/server/sse';
 
 describe('Workspace Reset & Cleaner Endpoints', () => {
   const testDataDir = './data/test_ws_reset_suite';
@@ -24,25 +25,24 @@ describe('Workspace Reset & Cleaner Endpoints', () => {
     const learningMemory = new DualMemoryManager({ storageDir: testDataDir });
 
     let disconnectCalledWithPurge = false;
-    const mockClient = {
-      getState: () => ({ state: 'connected' as const, connectedUser: { phone: '+201092677269', name: 'Tester' } }),
-      disconnect: async (purgeCredentials?: boolean) => {
-        disconnectCalledWithPurge = Boolean(purgeCredentials);
-      },
-      start: async () => {}
-    } as unknown as WhatsAppSocketClient;
+    const mockClient = new WhatsAppSocketClient();
+    spyOn(mockClient, 'getState').mockReturnValue({
+      state: 'connected',
+      connectedUser: { id: 'tester', phone: '+201092677269', name: 'Tester' },
+      updatedAt: Date.now()
+    });
+    spyOn(mockClient, 'disconnect').mockImplementation(async (purgeCredentials) => {
+      disconnectCalledWithPurge = Boolean(purgeCredentials);
+    });
+    spyOn(mockClient, 'start').mockResolvedValue();
 
-    const mockAgent = {
-      processInboundMessage: async () => ({ decision: 'auto_reply' as const, draftCreated: false, shouldSendImmediately: true })
-    } as unknown as ModeratorAgent;
+    const mockAgent = new ModeratorAgent(new GeminiClient({ apiKey: 'test-key' }), memory);
 
     const broadcastEvents: Array<{ type: string; data?: unknown }> = [];
-    const sse = {
-      broadcast: (event: string, data?: unknown) => {
-        broadcastEvents.push({ type: event, data });
-      },
-      subscribe: () => () => {}
-    } as unknown as SSEBroadcaster;
+    const sse = new SSEBroadcaster();
+    spyOn(sse, 'broadcast').mockImplementation((event, data) => {
+      broadcastEvents.push({ type: event, data });
+    });
 
     const app = createApiServer({
       dataDir: testDataDir,
@@ -103,16 +103,14 @@ describe('Workspace Reset & Cleaner Endpoints', () => {
         method: 'DELETE'
       });
       expect(res.status).toBe(200);
-      const json = (await res.json()) as { success: boolean; chatId: string };
-      expect(json.success).toBe(true);
-      expect(json.chatId).toBe(chatId);
+      expect(await res.json()).toMatchObject({ success: true, chatId });
 
       expect(memory.getChat(chatId)).toBeUndefined();
       expect(memory.getMessages(chatId).length).toBe(0);
 
       const deleteEvent = broadcastEvents.find((e) => e.type === 'chat_deleted');
       expect(deleteEvent).toBeDefined();
-      expect((deleteEvent?.data as { chatId: string })?.chatId).toBe(chatId);
+      expect(deleteEvent?.data).toHaveProperty('chatId', chatId);
     } finally {
       cleanup();
     }
@@ -147,8 +145,7 @@ describe('Workspace Reset & Cleaner Endpoints', () => {
         method: 'DELETE'
       });
       expect(res.status).toBe(200);
-      const json = (await res.json()) as { success: boolean; chatId: string };
-      expect(json.success).toBe(true);
+      expect(await res.json()).toHaveProperty('success', true);
 
       // Chat record still exists
       expect(memory.getChat(chatId)).toBeDefined();
@@ -157,7 +154,7 @@ describe('Workspace Reset & Cleaner Endpoints', () => {
 
       const clearEvent = broadcastEvents.find((e) => e.type === 'messages_cleared');
       expect(clearEvent).toBeDefined();
-      expect((clearEvent?.data as { chatId: string })?.chatId).toBe(chatId);
+      expect(clearEvent?.data).toHaveProperty('chatId', chatId);
     } finally {
       cleanup();
     }
@@ -186,11 +183,17 @@ describe('Workspace Reset & Cleaner Endpoints', () => {
 
       const res = await app.request('/api/workspace/stats');
       expect(res.status).toBe(200);
-      const stats = (await res.json()) as { chatsCount: number; messagesCount: number; dbSizeBytes: number; connectionState: string };
+      const stats: unknown = await res.json();
+      if (!stats || typeof stats !== 'object' ||
+          !('chatsCount' in stats) || typeof stats.chatsCount !== 'number' ||
+          !('messagesCount' in stats) || typeof stats.messagesCount !== 'number' ||
+          !('dbSizeBytes' in stats) || typeof stats.dbSizeBytes !== 'number') {
+        throw new Error('Expected numeric workspace statistics');
+      }
       expect(stats.chatsCount).toBeGreaterThanOrEqual(1);
       expect(stats.messagesCount).toBeGreaterThanOrEqual(1);
       expect(stats.dbSizeBytes).toBeGreaterThanOrEqual(0);
-      expect(stats.connectionState).toBe('connected');
+      expect(stats).toHaveProperty('connectionState', 'connected');
     } finally {
       cleanup();
     }
@@ -206,9 +209,9 @@ describe('Workspace Reset & Cleaner Endpoints', () => {
 
       const res = await app.request('/api/workspace/clean', { method: 'POST' });
       expect(res.status).toBe(200);
-      const json = (await res.json()) as { success: boolean; freedBytes: number; cleanedItems: string[] };
-      expect(json.success).toBe(true);
-      expect(json.cleanedItems.some((item) => item.includes('.temp'))).toBe(true);
+      expect(await res.json()).toMatchObject({
+        success: true, cleanedItems: expect.arrayContaining([expect.stringContaining('.temp')])
+      });
     } finally {
       cleanup();
     }
@@ -310,9 +313,7 @@ describe('Workspace Reset & Cleaner Endpoints', () => {
         body: JSON.stringify({ target: 'all' })
       });
       expect(res.status).toBe(200);
-      const json = (await res.json()) as { success: boolean; target: string };
-      expect(json.success).toBe(true);
-      expect(json.target).toBe('all');
+      expect(await res.json()).toMatchObject({ success: true, target: 'all' });
 
       expect(memory.getChat('all-chat@s.whatsapp.net')).toBeUndefined();
       expect(memory.getPendingDrafts().length).toBe(0);
@@ -334,8 +335,7 @@ describe('Workspace Reset & Cleaner Endpoints', () => {
         body: JSON.stringify({ target: 'invalid-target' })
       });
       expect(res.status).toBe(400);
-      const json = (await res.json()) as { error: string };
-      expect(json.error).toContain('Unknown reset target');
+      expect(await res.json()).toHaveProperty('error', expect.stringContaining('Unknown reset target'));
     } finally {
       cleanup();
     }

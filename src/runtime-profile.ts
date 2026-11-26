@@ -30,7 +30,7 @@ export function resolveRuntimeProfile(input?: string): RuntimeProfileConfig {
   if (raw !== 'FULL' && raw !== 'CORE_MINIMAL') {
     throw new Error(`Unsupported runtime profile "${raw}". Expected FULL or CORE_MINIMAL.`);
   }
-  const name = raw as RuntimeProfileName;
+  const name: RuntimeProfileName = raw;
   return {
     name,
     ...DEFS[name],

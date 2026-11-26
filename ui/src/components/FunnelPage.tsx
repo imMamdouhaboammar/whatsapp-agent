@@ -20,27 +20,46 @@ export function FunnelPage({ onClose }: { onClose: () => void }) {
         api.getFunnelMethods().catch(() => ({ methods: [] as FunnelMethodMeta[] })),
         api.getFunnelStats().catch(() => ({ circuitBreakers: [] as CircuitBreakerStatus[], activeMethodsCount: 0 }))
       ]);
-      setMethods(mRes.methods || []);
+      const nextMethods = mRes.methods || [];
+      const firstMethod = nextMethods[0];
+      setMethods(nextMethods);
       setStats(sRes.circuitBreakers || []);
-      setSelectedMethod((prev) => (mRes.methods?.length > 0 && !prev ? mRes.methods[0].method : prev));
+      setSelectedMethod((prev) => (!prev && firstMethod ? firstMethod.method : prev));
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    void loadData();
-  }, [loadData]);
+    let active = true;
+    const loadInitialData = async () => {
+      const [mRes, sRes] = await Promise.all([
+        api.getFunnelMethods().catch(() => ({ methods: [] as FunnelMethodMeta[] })),
+        api.getFunnelStats().catch(() => ({ circuitBreakers: [] as CircuitBreakerStatus[], activeMethodsCount: 0 }))
+      ]);
+      if (!active) return;
+      const nextMethods = mRes.methods || [];
+      const firstMethod = nextMethods[0];
+      setMethods(nextMethods);
+      setStats(sRes.circuitBreakers || []);
+      setSelectedMethod((prev) => (!prev && firstMethod ? firstMethod.method : prev));
+      setLoading(false);
+    };
+    void loadInitialData();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const handleDispatch = async () => {
     if (!selectedMethod) return;
     setDispatching(true);
     setLastReceipt(null);
     try {
-      let parsedPayload: Record<string, unknown> | undefined = undefined;
+      let parsedPayload: unknown;
       if (dispatchPayload.trim()) {
         try {
-          parsedPayload = JSON.parse(dispatchPayload) as Record<string, unknown>;
+          parsedPayload = JSON.parse(dispatchPayload);
         } catch {
           parsedPayload = { raw: dispatchPayload };
         }

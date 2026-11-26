@@ -10,6 +10,8 @@ import { executeGeminiToolLoop } from '../src/mcp/gemini-tool-adapter';
 import { createWhatsAppMcpServer } from '../src/mcp/server';
 import { MemoryStore } from '../src/domain/memory-store';
 import { ModeratorAgent } from '../src/ai/moderator-agent';
+import { GeminiClient } from '../src/ai/gemini-client';
+import { WhatsAppSocketClient } from '../src/transport/whatsapp-socket';
 import { createApiServer } from '../src/server/api';
 import { SSEBroadcaster } from '../src/server/sse';
 
@@ -33,7 +35,7 @@ async function createRealMcpServerPair(handlers: {
     }))
   }));
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
-    return handlers.onCall(req.params.name, (req.params.arguments ?? {}) as Record<string, unknown>);
+    return handlers.onCall(req.params.name, req.params.arguments ?? {});
   });
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -105,6 +107,30 @@ describe('Adversarial & Behavioral MCP Client Tests', () => {
       expect(manager.getHealthReport()).toEqual([]);
       await manager.shutdown();
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ignores malformed server entries without losing valid siblings or logging credentials', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mcp-invalid-entry-'));
+    const configPath = join(dir, 'mcp-clients.json');
+    const sensitive = ['private', 'fixture', 'value'].join('-');
+    writeFileSync(configPath, JSON.stringify({ servers: [
+      { name: 'invalid', transport: 'typo', url: 'https://example.invalid', headers: { Authorization: sensitive } },
+      { name: 'valid', transport: 'stdio', enabled: false }
+    ] }));
+    const logs: string[] = [];
+    const manager = new McpClientManager({
+      configPath,
+      transportFactory: () => { throw new Error('Invalid server must not connect'); },
+      log: (_level, message) => logs.push(message)
+    });
+    try {
+      await manager.initialize();
+      expect(manager.getHealthReport().map(({ name }) => name)).toEqual(['valid']);
+      expect(logs.join(' ')).not.toContain(sensitive);
+    } finally {
+      await manager.shutdown();
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -195,7 +221,7 @@ describe('Adversarial & Behavioral MCP Client Tests', () => {
             return { text: '', functionCalls: [{ name: 'evil__drop_database', args: {} }] };
           }
           const lastUser = contents[contents.length - 1];
-          const errPayload = JSON.stringify(lastUser.parts[0]?.functionResponse?.response);
+          const errPayload = JSON.stringify(lastUser?.parts[0]?.functionResponse?.response);
           expect(errPayload).toContain('Unknown tool');
           return { text: 'Cannot run unknown tool.' };
         }
@@ -248,7 +274,7 @@ describe('Adversarial & Behavioral MCP Client Tests', () => {
         generateContent: async (_contents, opts) => {
           attemptedModels.push(opts?.model ?? '');
           if (opts?.model === 'model-primary') {
-            const err: any = new Error('Quota exceeded');
+            const err: Error & { status?: number } = new Error('Quota exceeded');
             err.status = 429;
             throw err;
           }
@@ -267,24 +293,24 @@ describe('Adversarial & Behavioral MCP Client Tests', () => {
 
     // 401 fails closed immediately without trying backup
     const authModels: string[] = [];
-    await expect(
-      executeGeminiToolLoop({
-        gemini: {
-          generateContent: async (_contents, opts) => {
-            authModels.push(opts?.model ?? '');
-            const err: any = new Error('UNAUTHENTICATED');
-            err.status = 401;
-            throw err;
-          }
-        },
-        mcpManager: manager,
-        tools: [],
-        contents: [{ role: 'user', parts: [{ text: 'Hi' }] }],
-        agentMode: 'autopilot',
-        preferredModel: 'model-primary',
-        fallbackModels: ['model-primary', 'model-backup']
-      })
-    ).rejects.toThrow('UNAUTHENTICATED');
+    const authFailure: unknown = await executeGeminiToolLoop({
+      gemini: {
+        generateContent: async (_contents, opts) => {
+          authModels.push(opts?.model ?? '');
+          const err: Error & { status?: number } = new Error('UNAUTHENTICATED');
+          err.status = 401;
+          throw err;
+        }
+      },
+      mcpManager: manager,
+      tools: [],
+      contents: [{ role: 'user', parts: [{ text: 'Hi' }] }],
+      agentMode: 'autopilot',
+      preferredModel: 'model-primary',
+      fallbackModels: ['model-primary', 'model-backup']
+    }).then(() => undefined, (error: unknown) => error);
+    expect(authFailure).toBeInstanceOf(Error);
+    expect(authFailure).toMatchObject({ message: expect.stringContaining('UNAUTHENTICATED') });
     expect(authModels).toEqual(['model-primary']);
 
     await manager.shutdown();
@@ -352,13 +378,13 @@ describe('Adversarial & Behavioral MCP Client Tests', () => {
       // Phase 1: Create draft in SQLite store
       const store1 = new MemoryStore({ dataDir: dir });
       store1.setChatMode('201000000009@s.whatsapp.net', 'copilot');
+      const modGemini = new GeminiClient({ apiKey: 'test-key' });
+      modGemini.generateContent = async () => ({
+        text: 'Ready to send invoice #77.',
+        functionCalls: [{ name: 'billing__send_invoice', args: { invoiceId: 'INV-77' } }]
+      });
       const moderator1 = new ModeratorAgent(
-        {
-          generateContent: async () => ({
-            text: 'Ready to send invoice #77.',
-            functionCalls: [{ name: 'billing__send_invoice', args: { invoiceId: 'INV-77' } }]
-          })
-        } as any,
+        modGemini,
         store1,
         {
           mcpClientManager: manager,
@@ -381,7 +407,9 @@ describe('Adversarial & Behavioral MCP Client Tests', () => {
         isFromMe: false,
         type: 'text'
       });
-      const draftId = turn.draftCreated!.id;
+      const draftCreated = turn.draftCreated;
+      if (!draftCreated) throw new Error('Expected draftCreated');
+      const draftId = draftCreated.id;
       store1.close();
 
       // Phase 2: Re-open MemoryStore from disk and verify toolCall survived restart
@@ -396,18 +424,19 @@ describe('Adversarial & Behavioral MCP Client Tests', () => {
       const sse = new SSEBroadcaster();
       sse.subscribe((msg) => sseEvents.push(msg));
 
+      const whatsappClient = new WhatsAppSocketClient();
+      whatsappClient.sendMessage = async (_chatId: string, text: string) => {
+        sentMessages.push(text);
+        return { messageId: 'wa-1' };
+      };
+      whatsappClient.getState = () => ({ state: 'connected', updatedAt: Date.now() });
+
       const app = createApiServer({
         memoryStore: store2,
         moderatorAgent: moderator1,
         sse,
         mcpClientManager: manager,
-        whatsappClient: {
-          sendMessage: async (_chatId: string, text: string) => {
-            sentMessages.push(text);
-            return { messageId: 'wa-1' };
-          },
-          getState: () => ({ state: 'connected', updatedAt: Date.now() })
-        } as any
+        whatsappClient
       });
 
       // Tool failure on approval returns 502, does NOT send WhatsApp message, keeps draft pending
@@ -436,9 +465,11 @@ describe('Adversarial & Behavioral MCP Client Tests', () => {
       // Verify /api/mcp/external reports connected server & tools
       const extRes = await app.request('/api/mcp/external');
       expect(extRes.status).toBe(200);
-      const extJson = (await extRes.json()) as { servers: Array<{ name: string }>; tools: Array<{ namespacedName: string }> };
-      expect(extJson.servers[0]?.name).toBe('billing');
-      expect(extJson.tools[0]?.namespacedName).toBe('billing__send_invoice');
+      const extJson: unknown = await extRes.json();
+      expect(extJson).toMatchObject({
+        servers: [{ name: 'billing' }],
+        tools: [{ namespacedName: 'billing__send_invoice' }]
+      });
 
       // Rejecting a second draft never executes the tool
       store2.saveDraft({
@@ -483,17 +514,18 @@ describe('Adversarial & Behavioral MCP Client Tests', () => {
           risk: 'mutating'
         }
       });
+      const mcpWhatsappClient = new WhatsAppSocketClient();
+      mcpWhatsappClient.sendMessage = async (_chatId: string, text: string) => {
+        sentMessages.push(text);
+        return { messageId: 'wa-2' };
+      };
+      mcpWhatsappClient.getState = () => ({ state: 'connected', updatedAt: Date.now() });
+
       const mcpServer = createWhatsAppMcpServer({
         memoryStore: store2,
         moderatorAgent: moderator1,
         mcpClientManager: manager,
-        whatsappClient: {
-          sendMessage: async (_chatId: string, text: string) => {
-            sentMessages.push(text);
-            return { messageId: 'wa-2' };
-          },
-          getState: () => ({ state: 'connected', updatedAt: Date.now() })
-        } as any
+        whatsappClient: mcpWhatsappClient
       });
       const [mcpClientT, mcpServerT] = InMemoryTransport.createLinkedPair();
       await mcpServer.connect(mcpServerT);

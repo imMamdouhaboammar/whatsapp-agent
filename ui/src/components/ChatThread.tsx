@@ -53,22 +53,24 @@ export const ChatThread = memo(function ChatThread({ chat, messages, onSendMessa
   const retryMutationIds = useRef(new Map<string, string>());
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  useModalDismiss(showManageModal, () => setShowManageModal(false));
-  useModalDismiss(showContextModal, () => setShowContextModal(false));
+  const manageDialogRef = useModalDismiss(showManageModal, () => setShowManageModal(false));
+  const contextDialogRef = useModalDismiss(showContextModal && Boolean(contextStatus), () => setShowContextModal(false));
 
   useEffect(() => {
     if (!chat?.id) {
       setContextStatus(null);
-      return;
+      return undefined;
     }
     let cancelled = false;
-    api.getContextStatus(chat.id).then((res) => {
-      if (!cancelled && res?.status) setContextStatus(res.status);
-    }).catch((err: unknown) => {
-      if (!cancelled) {
-        console.warn('[ChatThread] Failed to fetch context status:', err);
+    const loadContext = async (chatId: string) => {
+      try {
+        const res = await api.getContextStatus(chatId);
+        if (!cancelled && res?.status) setContextStatus(res.status);
+      } catch (err) {
+        if (!cancelled) console.warn('[ChatThread] Failed to fetch context status:', err);
       }
-    });
+    };
+    void loadContext(chat.id);
     return () => { cancelled = true; };
   }, [chat?.id, messages.length]);
 
@@ -99,10 +101,12 @@ export const ChatThread = memo(function ChatThread({ chat, messages, onSendMessa
       setConfirmRetryId(intentId);
       return;
     }
+    const mutationId = retryMutationIds.current.get(intentId);
+    if (!mutationId) return;
     setRetryingId(intentId);
     setError('');
     try {
-      await onRetrySendIntent(intentId, retryMutationIds.current.get(intentId)!);
+      await onRetrySendIntent(intentId, mutationId);
       setConfirmRetryId(null);
     } catch {
       setError(tr('تعذّرت إعادة الإرسال. راجع حالة الرسالة قبل المحاولة مرة تانية', 'Retry failed. Check the message status before trying again'));
@@ -194,7 +198,7 @@ export const ChatThread = memo(function ChatThread({ chat, messages, onSendMessa
 
       <div className="wa-chat-mode-bar">
         <span className="wa-mode-title">{tr('وضع المحادثة', 'Chat mode')}</span>
-        <div className="wa-segmented" role="group" aria-label={tr('وضع المحادثة', 'Chat mode')}>
+        <fieldset className="wa-segmented" style={{ minInlineSize: 0, marginInline: 0 }} aria-label={tr('وضع المحادثة', 'Chat mode')}>
           {modeOptions.map((mode) => (
             <button
               type="button"
@@ -204,7 +208,7 @@ export const ChatThread = memo(function ChatThread({ chat, messages, onSendMessa
               onClick={() => void changeMode(mode.value)}
             >{mode.value === 'autopilot' ? tr('تلقائي', 'Auto-Pilot') : mode.value === 'copilot' ? tr('بالموافقة', 'Co-Pilot') : tr('يدوي', 'Human')}</button>
           ))}
-        </div>
+        </fieldset>
       </div>
 
       <div className="wa-message-canvas">
@@ -219,6 +223,7 @@ export const ChatThread = memo(function ChatThread({ chat, messages, onSendMessa
               senderName: quotedFallback.isFromMe ? tr('أنت', 'You') : (quotedFallback.senderName || tr('جهة الاتصال', 'Contact')),
               text: quotedFallback.text || quotedFallback.transcription || '[' + quotedFallback.type + ']'
             } : undefined);
+            const { sendIntentId } = message;
             const isOutbound = message.isFromMe;
             return (
               <article key={message.id} id={'msg-' + message.id} className={'wa-message ' + (isOutbound ? 'is-outbound' : 'is-inbound')}>
@@ -239,7 +244,14 @@ export const ChatThread = memo(function ChatThread({ chat, messages, onSendMessa
                     </div>
                   )}
                   {message.type === 'image' && message.mediaUrl && <img className="wa-media-image" src={message.mediaUrl} alt={tr('صورة مرفقة', 'Attached image')} loading="lazy" />}
-                  {message.type === 'video' && message.mediaUrl && <video className="wa-media-image" src={message.mediaUrl} controls preload="metadata" />}
+                  {message.type === 'video' && message.mediaUrl && <>
+                    <video className="wa-media-image" src={message.mediaUrl} controls preload="metadata" aria-label={tr('فيديو مرفق', 'Attached video')}>
+                      <track kind="captions" srcLang={language} label={tr('الترجمة النصية غير متوفرة', 'Captions unavailable')} src="data:text/vtt;charset=utf-8,WEBVTT%0A%0A" />
+                    </video>
+                    <a href={message.mediaUrl} target="_blank" rel="noreferrer">
+                      {tr('فتح الفيديو المرفق', 'Open attached video')}
+                    </a>
+                  </>}
                   {message.type === 'document' && <div className="wa-document-note"><FileText size={20} /><span>{tr('مستند مرفق', 'Attached document')}</span></div>}
                   {message.type !== 'audio' && message.text && message.text !== '[رسالة]' && <p className="wa-message-text" dir="auto">{message.text}</p>}
                   {isOutbound && message.deliveryState && (
@@ -249,12 +261,12 @@ export const ChatThread = memo(function ChatThread({ chat, messages, onSendMessa
                         <strong>{message.deliveryState === 'queued' ? tr('بانتظار الإرسال', 'Queued for sending') : message.deliveryState === 'attempting' ? tr('جارٍ الإرسال', 'Sending') : message.deliveryState === 'uncertain' ? tr('الإرسال غير مؤكد، راجع واتساب قبل إعادة المحاولة', 'Send unconfirmed. Check WhatsApp before retrying') : tr('تعذّر الإرسال', 'Send failed')}</strong>
                         {message.lastAttemptAt && <small>{tr('آخر محاولة', 'Last attempt')}: {messageTime(message.lastAttemptAt, language)}</small>}
                         {message.nativeMessageId && <small dir="auto">ID: {message.nativeMessageId}</small>}
-                        {message.deliveryState === 'uncertain' && message.sendIntentId && (
+                        {message.deliveryState === 'uncertain' && sendIntentId && (
                           <div className="wa-delivery-actions">
-                            <button type="button" disabled={retryingId === message.sendIntentId} onClick={() => void retryIntent(message.sendIntentId!)}>
-                              {retryingId === message.sendIntentId ? tr('جارٍ التحقق', 'Processing') : confirmRetryId === message.sendIntentId ? tr('تأكيد إعادة الإرسال', 'Confirm retry') : tr('إعادة الإرسال بعد المراجعة', 'Retry after checking')}
+                            <button type="button" disabled={retryingId === sendIntentId} onClick={() => void retryIntent(sendIntentId)}>
+                              {retryingId === sendIntentId ? tr('جارٍ التحقق', 'Processing') : confirmRetryId === sendIntentId ? tr('تأكيد إعادة الإرسال', 'Confirm retry') : tr('إعادة الإرسال بعد المراجعة', 'Retry after checking')}
                             </button>
-                            {confirmRetryId === message.sendIntentId && <button type="button" onClick={() => setConfirmRetryId(null)}>{tr('إلغاء', 'Cancel')}</button>}
+                            {confirmRetryId === sendIntentId && <button type="button" onClick={() => setConfirmRetryId(null)}>{tr('إلغاء', 'Cancel')}</button>}
                           </div>
                         )}
                       </div>
@@ -274,7 +286,7 @@ export const ChatThread = memo(function ChatThread({ chat, messages, onSendMessa
                   </div>
                   {Boolean(message.reactions?.length) && (
                     <div className="wa-message-reactions">
-                      {message.reactions?.map((emoji, index) => <span key={emoji + index}>{emoji}</span>)}
+                      {Array.from(new Set(message.reactions), (emoji) => <span key={emoji}>{emoji}</span>)}
                     </div>
                   )}
                 </div>
@@ -325,13 +337,14 @@ export const ChatThread = memo(function ChatThread({ chat, messages, onSendMessa
             if (event.target === event.currentTarget) setShowManageModal(false);
           }}
         >
-          {/* react-doctor-disable-next-line react-doctor/prefer-html-dialog */}
-          <section
+          <dialog
             className="wa-modal"
-            role="dialog"
+            ref={manageDialogRef}
+            open
+            tabIndex={-1}
             aria-modal="true"
             aria-labelledby="chat-manage-title"
-            style={{ maxHeight: 'min(90dvh, 720px)', overflowY: 'auto' }}
+            style={{ position: 'relative', margin: 0, maxHeight: 'min(90dvh, 720px)', overflowY: 'auto' }}
           >
             <div className="wa-modal-header">
               <div className="wa-modal-heading">
@@ -411,19 +424,20 @@ export const ChatThread = memo(function ChatThread({ chat, messages, onSendMessa
                 </button>
               </div>
             </div>
-          </section>
+          </dialog>
         </div>
       )}
 
       {showContextModal && contextStatus && (
-        <div className="wa-modal-backdrop" onClick={() => setShowContextModal(false)}>
-          <section
+        <div className="wa-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowContextModal(false); }}>
+          <dialog
             className="wa-modal-card"
-            role="dialog"
+            ref={contextDialogRef}
+            open
+            tabIndex={-1}
             aria-modal="true"
             aria-label={tr('سياق وضغط المحادثة', 'Context & Compression Status')}
-            style={{ maxWidth: '480px', maxHeight: 'min(90dvh, 720px)', overflowY: 'auto' }}
-            onClick={(e) => e.stopPropagation()}
+            style={{ position: 'relative', margin: 0, maxWidth: '480px', maxHeight: 'min(90dvh, 720px)', overflowY: 'auto' }}
           >
             <div className="wa-modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -568,7 +582,7 @@ export const ChatThread = memo(function ChatThread({ chat, messages, onSendMessa
                 )}
               </div>
             </div>
-          </section>
+          </dialog>
         </div>
       )}
     </main>

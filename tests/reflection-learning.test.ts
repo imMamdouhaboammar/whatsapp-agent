@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
+import { describe, expect, it, beforeEach, afterEach, spyOn } from 'bun:test';
 import { rmSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DualMemoryManager } from '../src/domain/learning-memory';
@@ -6,10 +6,10 @@ import { ReflectionEngine } from '../src/ai/reflection-engine';
 import { ReflectionWorker } from '../src/agent/reflection-worker';
 import { MemoryStore } from '../src/domain/memory-store';
 import { ModeratorAgent } from '../src/ai/moderator-agent';
-import { GeminiClient } from '../src/ai/gemini-client';
+import { GeminiClient, type GeminiGenerateOptions } from '../src/ai/gemini-client';
 import { createApiServer } from '../src/server/api';
 import { SSEBroadcaster } from '../src/server/sse';
-import type { WhatsAppSocketClient } from '../src/transport/whatsapp-socket';
+import { WhatsAppSocketClient } from '../src/transport/whatsapp-socket';
 import type { ChatMessage } from '../src/domain/types';
 
 const TEST_DIR = './data/test-learning-' + Date.now();
@@ -29,10 +29,11 @@ describe('Continuous Learning & Self-Correction Engine', () => {
 
   describe('Task 1: The Dual Memory State Schema (notebook.md & workbook.md)', () => {
     it('initializes default markdown files with required structured blocks', () => {
-      const _memoryManager = new DualMemoryManager({
+      const manager = new DualMemoryManager({
         storageDir: TEST_DIR,
         persistSqlite: false
       });
+      expect(manager).toBeDefined();
 
       const workbookPath = join(TEST_DIR, 'workbook.md');
       const notebookPath = join(TEST_DIR, 'notebook.md');
@@ -87,7 +88,7 @@ describe('Continuous Learning & Self-Correction Engine', () => {
 
       const notebook = memoryManager.getNotebook();
       expect(notebook.threadSemantics.length).toBeGreaterThan(0);
-      expect(notebook.customerProfiles['201018880000@s.whatsapp.net'].traits).toContain('Prefers Egyptian dialect');
+      expect(notebook.customerProfiles['201018880000@s.whatsapp.net']?.traits).toContain('Prefers Egyptian dialect');
 
       // Verify files persisted on disk
       const wbDisk = readFileSync(join(TEST_DIR, 'workbook.md'), 'utf-8');
@@ -173,46 +174,45 @@ describe('Continuous Learning & Self-Correction Engine', () => {
         persistSqlite: false
       });
 
-      let capturedOptions: any = null;
-      const mockGeminiClient = {
-        generateContent: async (_contents: any[], options: any) => {
-          capturedOptions = options;
-          return {
-            text: JSON.stringify({
-              selfCorrections: [
-                {
-                  incident: 'Agent offered 20% discount when policy only allows 5%',
-                  rootCause: 'Lack of hard margin policy constraint',
-                  correctiveAction: 'NEVER exceed 5% discount on WhatsApp chats without human operator approval'
-                }
-              ],
-              newEnforcedRules: [
-                'NEVER exceed 5% discount on WhatsApp chats without human operator approval'
-              ],
-              newBestPractices: [
-                'When customer asks for price, answer within 2 lines and ask for delivery city'
-              ],
-              customerInsights: [
-                {
-                  chatId: '201018880000@s.whatsapp.net',
-                  traits: ['High-value merchant from Mansoura', 'Prefers invoice via PDF'],
-                  stage: 'negotiation'
-                }
-              ],
-              threadSemanticSummary: 'Negotiated discounts; customer agreed to 5% with PDF invoice',
-              businessSignals: [
-                'Repeated customer interest in Mansoura regional delivery'
-              ]
-            })
-          };
-        }
-      } as unknown as GeminiClient;
+      let capturedOptions: GeminiGenerateOptions | undefined;
+      const mockGeminiClient = new GeminiClient({ apiKey: 'test-key' });
+      spyOn(mockGeminiClient, 'generateContent').mockImplementation(async (_contents, options) => {
+        capturedOptions = options;
+        return {
+          text: JSON.stringify({
+            selfCorrections: [
+              {
+                incident: 'Agent offered 20% discount when policy only allows 5%',
+                rootCause: 'Lack of hard margin policy constraint',
+                correctiveAction: 'NEVER exceed 5% discount on WhatsApp chats without human operator approval'
+              }
+            ],
+            newEnforcedRules: [
+              'NEVER exceed 5% discount on WhatsApp chats without human operator approval'
+            ],
+            newBestPractices: [
+              'When customer asks for price, answer within 2 lines and ask for delivery city'
+            ],
+            customerInsights: [
+              {
+                chatId: '201018880000@s.whatsapp.net',
+                traits: ['High-value merchant from Mansoura', 'Prefers invoice via PDF'],
+                stage: 'negotiation'
+              }
+            ],
+            threadSemanticSummary: 'Negotiated discounts; customer agreed to 5% with PDF invoice',
+            businessSignals: [
+              'Repeated customer interest in Mansoura regional delivery'
+            ]
+          })
+        };
+      });
 
       const engine = new ReflectionEngine(mockGeminiClient, memoryManager, {
         model: 'gemini-4-argon'
       });
 
-      const sampleChatLogs = [
+      const sampleChatLogs: ChatMessage[] = [
         {
           id: 'm1',
           chatId: '201018880000@s.whatsapp.net',
@@ -231,7 +231,7 @@ describe('Continuous Learning & Self-Correction Engine', () => {
           isFromMe: true,
           type: 'text'
         }
-      ] as ChatMessage[];
+      ];
 
       const moderationFeedback = [
         {
@@ -270,17 +270,17 @@ describe('Continuous Learning & Self-Correction Engine', () => {
       });
 
       let reflectionTriggered = false;
-      const mockEngine = {
-        evaluateThread: async (_params: any) => {
-          reflectionTriggered = true;
-          return {
-            selfCorrectionsDetected: 0,
-            rulesAdded: 1,
-            factsAdded: 1,
-            summary: 'Evaluated cold thread successfully'
-          };
-        }
-      } as unknown as ReflectionEngine;
+      const mockEngine = new ReflectionEngine(new GeminiClient({ apiKey: 'test-key' }), memoryManager);
+      spyOn(mockEngine, 'evaluateThread').mockImplementation(async () => {
+        reflectionTriggered = true;
+        return {
+          selfCorrectionsDetected: 0,
+          rulesAdded: 1,
+          bestPracticesAdded: 0,
+          factsAdded: 1,
+          summary: 'Evaluated cold thread successfully'
+        };
+      });
 
       const worker = new ReflectionWorker({
         memoryStore,
@@ -329,20 +329,19 @@ describe('Continuous Learning & Self-Correction Engine', () => {
       let capturedPrompt = '';
       let capturedSystemInstruction = '';
 
-      const mockGemini = {
-        generateContent: async (contents: any[], options: any) => {
-          capturedPrompt = contents[0]?.parts[0]?.text || '';
-          capturedSystemInstruction = options?.systemInstruction || '';
-          return {
-            text: JSON.stringify({
-              action: 'reply',
-              intent: 'general_faq',
-              replyText: 'أهلاً بك، تم استلام طلبك للإسكندرية',
-              confidence: 0.95
-            })
-          };
-        }
-      } as unknown as GeminiClient;
+      const mockGemini = new GeminiClient({ apiKey: 'test-key' });
+      spyOn(mockGemini, 'generateContent').mockImplementation(async (contents, options) => {
+        capturedPrompt = contents[0]?.parts[0]?.text || '';
+        capturedSystemInstruction = options?.systemInstruction || '';
+        return {
+          text: JSON.stringify({
+            action: 'reply',
+            intent: 'general_faq',
+            replyText: 'أهلاً بك، تم استلام طلبك للإسكندرية',
+            confidence: 0.95
+          })
+        };
+      });
 
       const moderator = new ModeratorAgent(mockGemini, memoryStore, {
         dualMemoryManager: memoryManager
@@ -373,24 +372,22 @@ describe('Continuous Learning & Self-Correction Engine', () => {
         persistSqlite: false
       });
 
-      const mockGemini = {
-        generateContent: async () => ({ text: JSON.stringify({ action: 'reply' }) })
-      } as unknown as GeminiClient;
+      const mockGemini = new GeminiClient({ apiKey: 'test-key' });
+      spyOn(mockGemini, 'generateContent').mockImplementation(async () => ({ text: JSON.stringify({ action: 'reply' }) }));
 
       const moderatorAgent = new ModeratorAgent(mockGemini, memoryStore, {
         dualMemoryManager: memoryManager
       });
 
-      const mockEngine = {
-        evaluateThread: async () => ({
+      const mockEngine = new ReflectionEngine(mockGemini, memoryManager);
+      spyOn(mockEngine, 'evaluateThread').mockImplementation(async () => ({
           selfCorrectionsDetected: 0,
           rulesAdded: 0,
           bestPracticesAdded: 0,
           factsAdded: 0,
           summary: 'OK'
-        }),
-        performCompaction: async () => true
-      } as unknown as ReflectionEngine;
+        }));
+      spyOn(mockEngine, 'performCompaction').mockResolvedValue(true);
 
       const reflectionWorker = new ReflectionWorker({
         memoryStore,
@@ -398,11 +395,10 @@ describe('Continuous Learning & Self-Correction Engine', () => {
         reflectionEngine: mockEngine
       });
 
-      const mockSocket = {
-        getState: () => ({ status: 'connected' }),
-        sendMessage: async () => ({ messageId: 'm-out' }),
-        sendVoiceNote: async () => ({ messageId: 'm-voice' })
-      } as unknown as WhatsAppSocketClient;
+      const mockSocket = new WhatsAppSocketClient();
+      spyOn(mockSocket, 'getState').mockReturnValue({ state: 'connected', updatedAt: Date.now() });
+      spyOn(mockSocket, 'sendMessage').mockResolvedValue({ messageId: 'm-out' });
+      spyOn(mockSocket, 'sendVoiceNote').mockResolvedValue({ messageId: 'm-voice' });
 
       const sse = new SSEBroadcaster();
 
@@ -418,10 +414,10 @@ describe('Continuous Learning & Self-Correction Engine', () => {
 
       const stateRes = await app.request('/api/learning/state');
       expect(stateRes.status).toBe(200);
-      const stateData: any = await stateRes.json();
-      expect(stateData.workbook).toBeDefined();
-      expect(stateData.notebook).toBeDefined();
-      expect(stateData.needsCompaction).toBe(false);
+      const stateData: unknown = await stateRes.json();
+      expect(stateData).toHaveProperty('workbook', expect.anything());
+      expect(stateData).toHaveProperty('notebook', expect.anything());
+      expect(stateData).toHaveProperty('needsCompaction', false);
 
       const putRes = await app.request('/api/learning/rules', {
         method: 'PUT',
@@ -429,15 +425,13 @@ describe('Continuous Learning & Self-Correction Engine', () => {
         body: JSON.stringify({ rule: 'ALWAYS verify customer payment slip' })
       });
       expect(putRes.status).toBe(200);
-      const putData: any = await putRes.json();
-      expect(putData.success).toBe(true);
-      expect(putData.workbook.enforcedRules).toContain('ALWAYS verify customer payment slip');
+      const putData: unknown = await putRes.json();
+      expect(putData).toHaveProperty('success', true);
+      expect(putData).toHaveProperty('workbook.enforcedRules', expect.arrayContaining(['ALWAYS verify customer payment slip']));
 
       const compactRes = await app.request('/api/learning/compact', { method: 'POST' });
       expect(compactRes.status).toBe(200);
-      const compactData: any = await compactRes.json();
-      expect(compactData.success).toBe(true);
-      expect(compactData.compacted).toBe(true);
+      expect(await compactRes.json()).toMatchObject({ success: true, compacted: true });
     });
 
     it('captures operator draft rejection & edits and queues feedback for reflection worker', async () => {
@@ -447,26 +441,25 @@ describe('Continuous Learning & Self-Correction Engine', () => {
         persistSqlite: false
       });
 
-      let recordedFeedback: any = null;
-      const reflectionWorker = {
-        recordModerationFeedback: (fb: any) => {
-          recordedFeedback = fb;
-        },
-        recordActivity: () => {},
-        reflectOnThread: async () => null,
-        sweepColdThreads: async () => ({ evaluatedCount: 0, results: [] })
-      } as unknown as ReflectionWorker;
-
-      const mockGemini = {
-        generateContent: async () => ({ text: '{}' })
-      } as unknown as GeminiClient;
+      type FeedbackArg = Parameters<ReflectionWorker['recordModerationFeedback']>[0];
+      let recordedFeedback: FeedbackArg | undefined;
+      const mockGemini = new GeminiClient({ apiKey: 'test-key' });
+      spyOn(mockGemini, 'generateContent').mockImplementation(async () => ({ text: '{}' }));
 
       const moderatorAgent = new ModeratorAgent(mockGemini, memoryStore);
+      const reflectionWorker = new ReflectionWorker({
+        memoryStore, memoryManager, reflectionEngine: new ReflectionEngine(mockGemini, memoryManager)
+      });
+      spyOn(reflectionWorker, 'recordModerationFeedback').mockImplementation((feedback) => {
+        recordedFeedback = feedback;
+      });
+      spyOn(reflectionWorker, 'recordActivity').mockImplementation(() => {});
+      spyOn(reflectionWorker, 'reflectOnThread').mockResolvedValue(null);
+      spyOn(reflectionWorker, 'sweepColdThreads').mockResolvedValue({ evaluatedCount: 0, results: [] });
 
-      const mockSocket = {
-        getState: () => ({ status: 'connected' }),
-        sendMessage: async () => ({ messageId: 'm-out' })
-      } as unknown as WhatsAppSocketClient;
+      const mockSocket = new WhatsAppSocketClient();
+      spyOn(mockSocket, 'getState').mockReturnValue({ state: 'connected', updatedAt: Date.now() });
+      spyOn(mockSocket, 'sendMessage').mockResolvedValue({ messageId: 'm-out' });
 
       const sse = new SSEBroadcaster();
 
@@ -499,9 +492,9 @@ describe('Continuous Learning & Self-Correction Engine', () => {
 
       expect(approveRes.status).toBe(200);
       expect(recordedFeedback).toBeDefined();
-      expect(recordedFeedback.feedbackType).toBe('edited');
-      expect(recordedFeedback.originalReply).toBe('تمام أقدر أعملك تخفيض 30%');
-      expect(recordedFeedback.revisedReply).toBe('للأسف الحد الأقصى للتخفيض 5% فقط');
+      expect(recordedFeedback?.feedbackType).toBe('edited');
+      expect(recordedFeedback?.originalReply).toBe('تمام أقدر أعملك تخفيض 30%');
+      expect(recordedFeedback?.revisedReply).toBe('للأسف الحد الأقصى للتخفيض 5% فقط');
     });
   });
 });

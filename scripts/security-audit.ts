@@ -1,23 +1,27 @@
 import { spawnSync } from "node:child_process";
 
 interface OsvSeverity {
-  score?: unknown;
+  score: string;
+}
+
+interface OsvSeverityDetail {
+  severity?: string;
 }
 
 interface OsvVulnerability {
-  id?: unknown;
-  database_specific?: { severity?: unknown };
-  ecosystem_specific?: { severity?: unknown };
+  id: string;
+  database_specific?: OsvSeverityDetail;
+  ecosystem_specific?: OsvSeverityDetail;
   severity?: OsvSeverity[];
 }
 
 interface OsvPackage {
-  package?: { name?: unknown; version?: unknown };
-  vulnerabilities?: OsvVulnerability[];
+  package: { name: string; version: string };
+  vulnerabilities: OsvVulnerability[];
 }
 
 interface OsvResult {
-  packages?: OsvPackage[];
+  packages: OsvPackage[];
 }
 
 interface AuditFinding {
@@ -32,54 +36,72 @@ interface AuditFinding {
 const KNOWN_LOWER_SEVERITIES = new Set(["LOW", "MODERATE", "MEDIUM", "NEGLIGIBLE", "INFO", "INFORMATIONAL"]);
 const HIGH_SEVERITIES = new Set(["HIGH", "CRITICAL"]);
 
-function objectRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+const objectRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const nonEmptyString = (value: unknown): value is string =>
+  typeof value === "string" && value.trim().length > 0;
+
+function parseSeverityDetail(value: unknown): OsvSeverityDetail | undefined {
+  if (value === undefined) return undefined;
+  if (!objectRecord(value)) {
+    throw new Error("OSV scanner report contains malformed severity metadata");
+  }
+  if (!("severity" in value)) return {};
+  if (!nonEmptyString(value.severity)) {
+    throw new Error("OSV scanner report contains malformed severity metadata");
+  }
+  return { severity: value.severity };
 }
 
-function nonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
+function parseSeverity(value: unknown): OsvSeverity[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new Error("OSV scanner report contains malformed CVSS severity data");
+  return value.map((entry: unknown) => {
+    if (!objectRecord(entry) || !nonEmptyString(entry.type) || !nonEmptyString(entry.score)) {
+      throw new Error("OSV scanner report contains malformed CVSS severity data");
+    }
+    return { score: entry.score };
+  });
+}
+
+function parseVulnerability(value: unknown): OsvVulnerability {
+  if (!objectRecord(value) || !nonEmptyString(value.id)) {
+    throw new Error("OSV scanner report contains a malformed vulnerability");
+  }
+  return {
+    id: value.id,
+    database_specific: parseSeverityDetail(value.database_specific),
+    ecosystem_specific: parseSeverityDetail(value.ecosystem_specific),
+    severity: parseSeverity(value.severity)
+  };
+}
+
+function parsePackage(value: unknown): OsvPackage {
+  if (!objectRecord(value) || !objectRecord(value.package) ||
+      !nonEmptyString(value.package.name) || !nonEmptyString(value.package.version) ||
+      !Array.isArray(value.vulnerabilities)) {
+    throw new Error("OSV scanner report contains a malformed package");
+  }
+  return {
+    package: { name: value.package.name, version: value.package.version },
+    vulnerabilities: value.vulnerabilities.map(parseVulnerability)
+  };
 }
 
 function parseReport(output: string): OsvResult[] {
   const jsonStart = output.indexOf("{");
-  if (jsonStart < 0) {
-    throw new Error("OSV scanner did not return a JSON report");
-  }
-
+  if (jsonStart < 0) throw new Error("OSV scanner did not return a JSON report");
   const parsed: unknown = JSON.parse(output.slice(jsonStart));
   if (!objectRecord(parsed) || !Array.isArray(parsed.results)) {
     throw new Error("OSV scanner report is missing a valid results array");
   }
-
-  for (const result of parsed.results) {
+  return parsed.results.map((result: unknown) => {
     if (!objectRecord(result) || !Array.isArray(result.packages)) {
       throw new Error("OSV scanner report contains a malformed result");
     }
-    for (const pkg of result.packages) {
-      if (!objectRecord(pkg) || !objectRecord(pkg.package) ||
-          !nonEmptyString(pkg.package.name) || !nonEmptyString(pkg.package.version) ||
-          !Array.isArray(pkg.vulnerabilities)) {
-        throw new Error("OSV scanner report contains a malformed package");
-      }
-      for (const vuln of pkg.vulnerabilities) {
-        if (!objectRecord(vuln) || !nonEmptyString(vuln.id)) {
-          throw new Error("OSV scanner report contains a malformed vulnerability");
-        }
-        for (const detail of [vuln.database_specific, vuln.ecosystem_specific]) {
-          if (detail !== undefined && (!objectRecord(detail) ||
-              ("severity" in detail && !nonEmptyString(detail.severity)))) {
-            throw new Error("OSV scanner report contains malformed severity metadata");
-          }
-        }
-        if (vuln.severity !== undefined && (!Array.isArray(vuln.severity) ||
-            !vuln.severity.every((entry: unknown) => objectRecord(entry) && nonEmptyString(entry.type) && nonEmptyString(entry.score)))) {
-          throw new Error("OSV scanner report contains malformed CVSS severity data");
-        }
-      }
-    }
-  }
-
-  return parsed.results as OsvResult[];
+    return { packages: result.packages.map(parsePackage) };
+  });
 }
 
 function describeVulnerability(vuln: OsvVulnerability, pkg: OsvPackage): AuditFinding {
@@ -89,7 +111,7 @@ function describeVulnerability(vuln: OsvVulnerability, pkg: OsvPackage): AuditFi
 
   const scores = (vuln.severity || []).map((entry) => {
     const raw = entry.score;
-    if (typeof raw !== "string" || !/^(?:10(?:\.0+)?|[0-9](?:\.\d+)?)$/.test(raw.trim())) {
+    if (!/^(?:10(?:\.0+)?|[0-9](?:\.\d+)?)$/.test(raw.trim())) {
       return Number.NaN;
     }
     return Number(raw.trim());
@@ -102,9 +124,9 @@ function describeVulnerability(vuln: OsvVulnerability, pkg: OsvPackage): AuditFi
   const highLabel = labels.find((label) => HIGH_SEVERITIES.has(label));
 
   return {
-    id: vuln.id as string,
-    packageName: pkg.package?.name as string,
-    version: pkg.package?.version as string,
+    id: vuln.id,
+    packageName: pkg.package.name,
+    version: pkg.package.version,
     label: highLabel || labels[0] || (validScores.length > 0 ? "CVSS" : "UNRATED"),
     isHighOrCritical: Boolean(highLabel) || validScores.some((score) => score >= 7),
     severityKnown: (labels.length > 0 || validScores.length > 0) && everyLabelKnown && everyScoreKnown,
@@ -138,8 +160,8 @@ try {
   }
 
   const findings = parseReport(scan.stdout || "").flatMap((result) =>
-    (result.packages || []).flatMap((pkg) =>
-      (pkg.vulnerabilities || []).map((vuln) => describeVulnerability(vuln, pkg)),
+    result.packages.flatMap((pkg) =>
+      pkg.vulnerabilities.map((vuln) => describeVulnerability(vuln, pkg)),
     ),
   );
 

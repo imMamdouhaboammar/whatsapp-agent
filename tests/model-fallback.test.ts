@@ -21,8 +21,8 @@ describe("Model Fallback Engine", () => {
       models,
       async (model) => {
         if (model === "gemini-3.8-flash") {
-          const err = new Error("RESOURCE_EXHAUSTED: quota exceeded for current project");
-          (err as any).status = 429;
+          const err: Error & { status?: number } = new Error("RESOURCE_EXHAUSTED: quota exceeded for current project");
+          err.status = 429;
           throw err;
         }
         return `Healthy response from ${model}`;
@@ -47,8 +47,8 @@ describe("Model Fallback Engine", () => {
     expect(
       executeWithModelFallback(models, async (model) => {
         if (model === "gemini-3.8-flash") {
-          const err = new Error("PERMISSION_DENIED: API key not valid");
-          (err as any).status = 403;
+          const err: Error & { status?: number } = new Error("PERMISSION_DENIED: API key not valid");
+          err.status = 403;
           throw err;
         }
         secondModelCalled = true;
@@ -64,8 +64,8 @@ describe("Model Fallback Engine", () => {
 
     expect(
       executeWithModelFallback(models, async (model) => {
-        const err = new Error(`503 Service Unavailable for ${model}`);
-        (err as any).status = 503;
+        const err: Error & { status?: number } = new Error(`503 Service Unavailable for ${model}`);
+        err.status = 503;
         throw err;
       })
     ).rejects.toThrow("503 Service Unavailable");

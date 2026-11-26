@@ -1,3 +1,5 @@
+import { isRecord } from './response-validation';
+
 /**
  * Jev Intelligent Model Router
  *
@@ -8,16 +10,7 @@
 import { scrubCredentials } from '../domain/learning-memory';
 
 export type RouterTier = 'trivial' | 'standard' | 'complex';
-export type GeminiModelName =
-  | 'gemini-4-carbon'
-  | 'gemini-4-argon'
-  | 'gemini-4-hydrogen'
-  | 'gemini-4-neon'
-  | 'gemini-4-flash'
-  | 'gemini-4-pro'
-  | 'gemini-3.8-flash'
-  | 'gemini-3.1-pro'
-  | string;
+export type GeminiModelName = string;
 
 export const GEMINI_4_MODELS = [
   'gemini-4-carbon',
@@ -155,12 +148,13 @@ function parseChoice<T extends string>(
   choices: readonly T[]
 ): ChoiceResult<T> {
   const value = answers[key];
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+  if (!isRecord(value)) {
     throw new Error(`Invalid TypeSafe response: missing ${key}`);
   }
-  const answer = value as Record<string, unknown>;
+  const answer = value;
+  const choice = choices.find((candidate) => candidate === answer.choice);
   if (answer.type !== 'choice' ||
-      typeof answer.choice !== 'string' || !choices.includes(answer.choice as T) ||
+      choice === undefined ||
       typeof answer.confidence !== 'number' || !Number.isFinite(answer.confidence) ||
       answer.confidence < 0 || answer.confidence > 1) {
     throw new Error(`Invalid TypeSafe response: malformed ${key}`);
@@ -173,29 +167,28 @@ function parseChoice<T extends string>(
   const entries = Object.entries(probabilities);
   if (entries.length !== choices.length ||
       !entries.every(([name, probability]) =>
-        choices.includes(name as T) && typeof probability === 'number' &&
+        choices.some((candidate) => candidate === name) && typeof probability === 'number' &&
         Number.isFinite(probability) && probability >= 0 && probability <= 1)) {
     throw new Error(`Invalid TypeSafe response: malformed ${key} probabilities`);
   }
-  return { choice: answer.choice as T, confidence: answer.confidence };
+  return { choice, confidence: answer.confidence };
 }
 
 /**
  * Parse the documented System One answers contract. Never synthesize confidence.
  */
 export function parseJevResponse(
-  data: Record<string, unknown>,
+  data: unknown,
   latencyMs: number,
   confidenceThreshold: number
 ): RoutingDecision {
-  const answers = data?.answers;
-  if (!answers || typeof answers !== 'object' || Array.isArray(answers)) {
+  const answers = isRecord(data) ? data.answers : undefined;
+  if (!isRecord(answers)) {
     throw new Error('Invalid TypeSafe response: missing answers');
   }
 
-  const parsed = answers as Record<string, unknown>;
-  const reasoning = parseChoice(parsed, 'route', ['trivial', 'standard', 'complex'] as const);
-  const risk = parseChoice(parsed, 'action_risk', ['routine', 'consequential'] as const);
+  const reasoning = parseChoice(answers, 'route', ['trivial', 'standard', 'complex'] as const);
+  const risk = parseChoice(answers, 'action_risk', ['routine', 'consequential'] as const);
 
   if (risk.choice === 'consequential' || risk.confidence < confidenceThreshold) {
     return {
@@ -236,15 +229,15 @@ const MAX_RECURSION_DEPTH = 32;
 /** Maps Arabic-Indic (U+0660-0669) and Extended Arabic-Indic (U+06F0-06F9) digits to ASCII. */
 export function normalizeDigits(value: string, depth = 0): string {
   if (depth > MAX_RECURSION_DEPTH) return value;
-  return value.replace(/[\u0660-\u0669\u06F0-\u06F9]/g, (d) => String((d.codePointAt(0)! & 0xF) ));
+  return value.replace(/[\u0660-\u0669\u06F0-\u06F9]/g, (d) => String(((d.codePointAt(0) ?? 0) & 0xF)));
 }
 
 function scrubRoutingState(message: string): string {
   // Normalize digits first so labeled OTPs written in Arabic-Indic digits match the ASCII credential patterns.
   return scrubCredentials(normalizeDigits(message))
-    .replace(/\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b/gi, '[REDACTED_EMAIL]')
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[REDACTED_EMAIL]')
     .replace(/https?:\/\/\S+/gi, '[REDACTED_URL]')
-    .replace(/(?<!\w)\+?\d[\d\s().\-]{7,}\d(?!\w)/g, '[REDACTED_PHONE]')
+    .replace(/(?<!\w)\+?\d[\d\s().-]{7,}\d(?!\w)/g, '[REDACTED_PHONE]')
     .slice(0, 1000);
 }
 
@@ -378,7 +371,7 @@ export async function routeTurnModel(input: JevRouteRequest): Promise<RoutingDec
       };
     }
 
-    const data = (await res.json()) as Record<string, unknown>;
+    const data: unknown = await res.json();
     return parseJevResponse(data, latencyMs, threshold);
   } catch {
     const latencyMs = Math.round(performance.now() - start);

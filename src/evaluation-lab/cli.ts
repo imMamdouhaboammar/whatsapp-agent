@@ -10,8 +10,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
-import { runEvaluationLab, writeReportExclusive, type EvaluationSuite,
-  type EvaluationSnapshot, type HumanReview } from './runner';
+import { runEvaluationLab, writeReportExclusive } from './runner';
 
 const repoRoot = resolve(import.meta.dir, '../..');
 const defaults = {
@@ -23,19 +22,20 @@ function parseArgs(argv: string[]) {
   const opts = new Map<string, string>();
   for (let i = 0; i < argv.length; i += 2) {
     const key = argv[i];
+    const value = argv[i + 1];
     if (!key || !['--suite', '--approved', '--candidate', '--review', '--out', '--timeout-ms'].includes(key) ||
-        !argv[i + 1] || argv[i + 1]!.startsWith('--')) {
+        !value || value.startsWith('--')) {
       throw new Error(`Unknown or incomplete argument: ${key || '(empty)'}`);
     }
     if (opts.has(key)) throw new Error(`Duplicate argument: ${key}`);
-    opts.set(key, argv[i + 1]!);
+    opts.set(key, value);
   }
   if (!opts.has('--candidate')) throw new Error('Required: --candidate <recorded-snapshot.json>');
   return opts;
 }
 
-async function readJson<T>(path: string): Promise<T> {
-  return JSON.parse(await readFile(resolve(path), 'utf8')) as T;
+async function readJson(path: string): Promise<unknown> {
+  return JSON.parse(await readFile(resolve(path), 'utf8'));
 }
 function safeName(id: string): string {
   return id.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80);
@@ -43,17 +43,19 @@ function safeName(id: string): string {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  const suite = await readJson<EvaluationSuite>(options.get('--suite') || defaults.suite);
-  const approved = await readJson<EvaluationSnapshot>(options.get('--approved') || defaults.approved);
-  const candidate = await readJson<EvaluationSnapshot>(options.get('--candidate')!);
-  const review = options.has('--review')
-    ? await readJson<HumanReview>(options.get('--review')!) : undefined;
+  const candidatePath = options.get('--candidate');
+  if (!candidatePath) throw new Error('Required: --candidate <recorded-snapshot.json>');
+  const suite = await readJson(options.get('--suite') || defaults.suite);
+  const approved = await readJson(options.get('--approved') || defaults.approved);
+  const candidate = await readJson(candidatePath);
+  const reviewPath = options.get('--review');
+  const review = reviewPath ? await readJson(reviewPath) : undefined;
   const timeoutMs = options.has('--timeout-ms')
     ? Number(options.get('--timeout-ms')) : undefined;
 
   const report = await runEvaluationLab({ suite, approved, candidate, review, timeoutMs });
   const defaultOutput = join(repoRoot, 'reports/reply-evaluation',
-    `${safeName(candidate.snapshot_id)}-${randomUUID()}.json`);
+    `${safeName(report.candidate_id)}-${randomUUID()}.json`);
   const output = resolve(options.get('--out') || defaultOutput);
   await writeReportExclusive(output, report);
   console.log(JSON.stringify({

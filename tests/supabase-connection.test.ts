@@ -1,3 +1,4 @@
+import { readSqlRows } from '../src/persistence/postgres/sql-values';
 import { describe, expect, it } from 'bun:test';
 import { testDatabaseConnection, getSupabaseClient, getPostgresClient } from '../src/server/supabase';
 
@@ -28,11 +29,11 @@ describe('Supabase & PostgreSQL Database Connection', () => {
     expect(health.postgresVersion).toContain('PostgreSQL');
 
     const sql = getPostgresClient();
-    const rows = await sql`SELECT 1 + 1 AS addition, current_database() AS db_name`;
+    const rows = readSqlRows(await sql`SELECT 1 + 1 AS addition, current_database() AS db_name`);
     expect(rows).toBeDefined();
     expect(rows.length).toBe(1);
-    const row = rows[0] as Record<string, unknown>;
-    expect(Number(row.addition)).toBe(2);
-    expect(row.db_name).toBe('postgres');
+    const [row] = rows;
+    expect(Number(row?.addition)).toBe(2);
+    expect(row?.db_name).toBe('postgres');
   }, 15000);
 });

@@ -26,7 +26,10 @@ function tempDbPath(): string {
 }
 
 afterEach(() => {
-  while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+  while (dirs.length) {
+    const dir = dirs.pop();
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 describe('WA-005 durable inbound jobs', () => {
@@ -36,25 +39,29 @@ describe('WA-005 durable inbound jobs', () => {
 
     const first = store.saveInboundMessageWithJob(msg, { createJob: true });
     expect(first.created).toBe(true);
-    expect(first.job).toBeDefined();
-    expect(first.job!.state).toBe('pending');
+    const firstJob = first.job;
+    if (!firstJob) throw new Error('Expected first job');
+    expect(firstJob.state).toBe('pending');
     expect(store.getMessage(msg.chatId, msg.id)?.text).toBe(msg.text);
 
     // A replayed delivery of the same message must not create a second job
     // nor reset the existing one.
-    store.inboundJobs.claim(first.job!.id, 'worker-a');
+    store.inboundJobs.claim(firstJob.id, 'worker-a');
     const replay = store.saveInboundMessageWithJob(msg, { createJob: true });
     expect(replay.created).toBe(false);
-    expect(replay.job!.id).toBe(first.job!.id);
-    expect(replay.job!.state).toBe('claimed');
-    expect(replay.job!.attemptCount).toBe(1);
+    const replayJob = replay.job;
+    if (!replayJob) throw new Error('Expected replay job');
+    expect(replayJob.id).toBe(firstJob.id);
+    expect(replayJob.state).toBe('claimed');
+    expect(replayJob.attemptCount).toBe(1);
   });
 
   it('recovers a job left pending by a dead process exactly once', () => {
     const dbPath = tempDbPath();
     const msg = makeMessage('m1');
     const firstProcess = new SqliteStore({ dbPath });
-    const created = firstProcess.saveInboundMessageWithJob(msg, { createJob: true }).job!;
+    const created = firstProcess.saveInboundMessageWithJob(msg, { createJob: true }).job;
+    if (!created) throw new Error('Expected created job');
     firstProcess.closeForTesting();
 
     // Restart against the same file: the message exists but its work was never done.
@@ -69,13 +76,14 @@ describe('WA-005 durable inbound jobs', () => {
     expect(secondProcess.inboundJobs.claim(created.id, 'worker-c')).toBeUndefined();
     secondProcess.inboundJobs.complete(created.id);
     expect(secondProcess.inboundJobs.due(Date.now())).toEqual([]);
-    expect(secondProcess.inboundJobs.getJob(created.id)!.state).toBe('completed');
+    expect(secondProcess.inboundJobs.getJob(created.id)?.state).toBe('completed');
     secondProcess.closeForTesting();
   });
 
   it('a crash after claim is recovered once the lease expires', () => {
     const store = new SqliteStore({ dbPath: tempDbPath() });
-    const job = store.saveInboundMessageWithJob(makeMessage('m1'), { createJob: true }).job!;
+    const job = store.saveInboundMessageWithJob(makeMessage('m1'), { createJob: true }).job;
+    if (!job) throw new Error('Expected job');
     const now = Date.now();
     store.inboundJobs.claim(job.id, 'worker-a', now, 1_000);
 
@@ -87,30 +95,33 @@ describe('WA-005 durable inbound jobs', () => {
     expect(store.inboundJobs.recoverExpiredLeases(now + 1_001)).toBe(1);
     const due = store.inboundJobs.due(now + 1_001);
     expect(due).toHaveLength(1);
-    expect(due[0].state).toBe('pending');
-    expect(due[0].attemptCount).toBe(1);
+    expect(due[0]?.state).toBe('pending');
+    expect(due[0]?.attemptCount).toBe(1);
   });
 
   it('exhausting the attempt limit fails the job terminally', () => {
     const store = new SqliteStore({ dbPath: tempDbPath() });
-    const job = store.saveInboundMessageWithJob(makeMessage('m1'), { createJob: true }).job!;
+    const job = store.saveInboundMessageWithJob(makeMessage('m1'), { createJob: true }).job;
+    if (!job) throw new Error('Expected job');
     const now = Date.now();
 
     store.inboundJobs.claim(job.id, 'worker-a', now);
     store.inboundJobs.failAttempt(job.id, 'boom', now, { maxAttempts: 2, retryDelayMs: 0 });
-    let current = store.inboundJobs.getJob(job.id)!;
+    let current = store.inboundJobs.getJob(job.id);
+    if (!current) throw new Error('Expected current job');
     expect(current.state).toBe('pending');
     expect(current.attemptCount).toBe(1);
     expect(current.lastError).toBe('boom');
 
     store.inboundJobs.claim(job.id, 'worker-a', now);
     store.inboundJobs.failAttempt(job.id, 'boom again', now, { maxAttempts: 2, retryDelayMs: 0 });
-    current = store.inboundJobs.getJob(job.id)!;
+    current = store.inboundJobs.getJob(job.id);
+    if (!current) throw new Error('Expected current job');
     expect(current.state).toBe('failed');
     expect(store.inboundJobs.due(now + 60_000)).toEqual([]);
     // Recovery never resurrects a terminal job.
     expect(store.inboundJobs.recoverExpiredLeases(now + 60_000)).toBe(0);
-    expect(store.inboundJobs.getJob(job.id)!.state).toBe('failed');
+    expect(store.inboundJobs.getJob(job.id)?.state).toBe('failed');
   });
 
   it('persists ineligible messages without creating work', () => {

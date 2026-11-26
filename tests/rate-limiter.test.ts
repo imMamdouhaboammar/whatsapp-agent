@@ -28,7 +28,7 @@ describe('HumanRateLimiter', () => {
 
     await Promise.all([
       limiter.enqueue(chat, async () => {
-        await new Promise((r) => setTimeout(r, 20));
+        await new Promise((resolve) => setTimeout(resolve, 20));
         executed.push(1);
       }),
       limiter.enqueue(chat, async () => {

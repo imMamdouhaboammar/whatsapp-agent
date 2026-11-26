@@ -13,11 +13,13 @@ export type SSEEventType =
   | 'dossier_updated'
   | 'chat_deleted'
   | 'messages_cleared'
-  | 'workspace_reset';
+  | 'workspace_reset'
+  | 'broadcast_updated'
+  | 'broadcast_recipient_updated';
 
 export interface SSEMessage {
   event: SSEEventType;
-  data: any;
+  data: unknown;
 }
 
 export type SSEDisconnectReason = 'overflow' | 'write_error' | 'closed';
@@ -95,7 +97,7 @@ export class SSEBroadcaster {
     return this.streamSubscribers.size;
   }
 
-  broadcast(event: SSEEventType, data: any) {
+  broadcast(event: SSEEventType, data: unknown) {
     const payload: SSEMessage = { event, data };
     for (const sub of this.subscribers) {
       try {
@@ -121,6 +123,7 @@ export class SSEBroadcaster {
     try {
       while (sub.queue.length > 0 && !sub.disconnected) {
         const msg = sub.queue[0];
+        if (!msg) break;
         try {
           await sub.writer(msg);
           sub.queue.shift();
@@ -157,10 +160,10 @@ export class SSEBroadcaster {
   close(): void {
     this.subscribers.clear();
     // disconnectStream mutates the set; drain via the first element.
-    let sub = this.streamSubscribers.values().next().value as StreamSubscriber | undefined;
+    let sub = this.streamSubscribers.values().next().value;
     while (sub) {
       this.disconnectStream(sub, 'closed');
-      sub = this.streamSubscribers.values().next().value as StreamSubscriber | undefined;
+      sub = this.streamSubscribers.values().next().value;
     }
   }
 }

@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'bun:test';
 import { parseJevResponse, routeTurnModel } from '../src/ai/model-router';
 
+function fakeFetch(request: (...args: Parameters<typeof fetch>) => Promise<Response>): typeof fetch {
+  return Object.assign(request, { preconnect: () => { throw new Error('Unexpected preconnect'); } });
+}
+
 const officialChoice = (choice: string, confidence: unknown = 0.96) => ({
   model: 'jev-latest',
   answers: {
@@ -48,22 +52,23 @@ describe('TypeSafe System One OpenAPI contract', () => {
 
   it('posts official state/questions schema to /v1/systemone with no conversation history', async () => {
     let url = '';
-    let body: Record<string, unknown> = {};
+    let body: unknown;
     const decision = await routeTurnModel({
       message: 'ما سعر الاشتراك؟',
       threadContext: ['بيانات عميل سابقة 01011112222'],
       apiKey: 'synthetic-test-key',
       externalRoutingAllowed: true,
-      fetchFn: (async (target: string | URL | Request, init?: RequestInit) => {
-        url = String(target);
-        body = JSON.parse(String(init?.body));
+      fetchFn: fakeFetch(async (target: string | URL | Request, init?: RequestInit) => {
+        url = target instanceof Request ? target.url : String(target);
+        if (typeof init?.body !== 'string') throw new Error('Expected a JSON request body');
+        body = JSON.parse(init.body);
         return new Response(JSON.stringify(officialChoice('complex')), { status: 200 });
-      }) as typeof fetch
+      })
     });
     expect(url).toBe('https://api.typesafe.ai/v1/systemone');
-    expect(body.model).toBe('jev-latest');
-    expect(body.state).toBe('ما سعر الاشتراك؟');
-    expect((body.questions as Record<string, { type: string }>).route.type).toBe('choice');
+    expect(body).toMatchObject({
+      model: 'jev-latest', state: 'ما سعر الاشتراك؟', questions: { route: { type: 'choice' } }
+    });
     expect(JSON.stringify(body)).not.toContain('01011112222');
     expect(body).not.toHaveProperty('input');
     expect(body).not.toHaveProperty('candidates');
@@ -87,7 +92,7 @@ describe('TypeSafe System One OpenAPI contract', () => {
   it('fails open when the API response is incomplete or configuration is invalid', async () => {
     const malformed = await routeTurnModel({
       message: 'مرحبا', apiKey: 'synthetic-test-key', externalRoutingAllowed: true,
-      fetchFn: (async () => new Response(JSON.stringify({ label: 'complex', confidence: 1 }))) as unknown as typeof fetch
+      fetchFn: fakeFetch(async () => new Response(JSON.stringify({ label: 'complex', confidence: 1 })))
     });
     expect(malformed.bypassed).toBe(true);
     expect(malformed.confidence).toBe(0);
@@ -96,7 +101,7 @@ describe('TypeSafe System One OpenAPI contract', () => {
     const invalid = await routeTurnModel({
       message: 'مرحبا', apiKey: 'synthetic-test-key', externalRoutingAllowed: true,
       confidenceThreshold: Number.NaN,
-      fetchFn: (async () => { called = true; throw Error('unexpected'); }) as unknown as typeof fetch
+      fetchFn: fakeFetch(async () => { called = true; throw Error('unexpected'); })
     });
     expect(called).toBe(false);
     expect(invalid.bypassed).toBe(true);
@@ -105,7 +110,7 @@ describe('TypeSafe System One OpenAPI contract', () => {
   it.each([401, 403, 429, 503])('fails open on optional router HTTP %s without exposing content', async status => {
     const decision = await routeTurnModel({
       message: 'رقم طلب خاص', apiKey: 'synthetic-test-key', externalRoutingAllowed: true,
-      fetchFn: (async () => new Response('untrusted gateway error', { status })) as unknown as typeof fetch
+      fetchFn: fakeFetch(async () => new Response('untrusted gateway error', { status }))
     });
     expect(decision.bypassed).toBe(true);
     expect(decision.selectedModel).toBe('gemini-3.8-flash');
@@ -114,21 +119,22 @@ describe('TypeSafe System One OpenAPI contract', () => {
 
 
   it('does not transmit email, phone, URL, history, or sender identity in state', async () => {
-    let outgoing: Record<string, unknown> = {};
+    let outgoing: unknown;
     await routeTurnModel({
       message: 'اتصل على 01012345678 أو test@example.com وشوف https://example.com/client/24',
       threadContext: ['Previous private thread'],
       senderName: 'Private Customer',
       apiKey: 'synthetic-test-key',
       externalRoutingAllowed: true,
-      fetchFn: (async (_url: string | URL | Request, init?: RequestInit) => {
-        outgoing = JSON.parse(String(init?.body));
+      fetchFn: fakeFetch(async (_url: string | URL | Request, init?: RequestInit) => {
+        if (typeof init?.body !== 'string') throw new Error('Expected a JSON request body');
+        outgoing = JSON.parse(init.body);
         return new Response(JSON.stringify(officialChoice('standard')), { status: 200 });
-      }) as unknown as typeof fetch
+      })
     });
-    expect(outgoing.state).toContain('[REDACTED_PHONE]');
-    expect(outgoing.state).toContain('[REDACTED_EMAIL]');
-    expect(outgoing.state).toContain('[REDACTED_URL]');
+    expect(outgoing).toHaveProperty('state', expect.stringContaining('[REDACTED_PHONE]'));
+    expect(outgoing).toHaveProperty('state', expect.stringContaining('[REDACTED_EMAIL]'));
+    expect(outgoing).toHaveProperty('state', expect.stringContaining('[REDACTED_URL]'));
     expect(JSON.stringify(outgoing)).not.toContain('Previous private thread');
     expect(JSON.stringify(outgoing)).not.toContain('Private Customer');
   });
@@ -147,7 +153,7 @@ describe('TypeSafe System One OpenAPI contract', () => {
     const decision = await routeTurnModel({
       message: 'hello', apiKey: 'synthetic-test-key', externalRoutingAllowed: true,
       timeoutMs: -1,
-      fetchFn: (async () => { called = true; throw Error('unexpected'); }) as unknown as typeof fetch
+      fetchFn: fakeFetch(async () => { called = true; throw Error('unexpected'); })
     });
     expect(called).toBe(false);
     expect(decision.bypassed).toBe(true);
@@ -160,7 +166,7 @@ describe('TypeSafe System One OpenAPI contract', () => {
       apiKey: 'synthetic-test-key',
       externalRoutingAllowed: true,
       baseUrl: 'http://api.typesafe.ai/v1',
-      fetchFn: (async () => { requested = true; throw Error('must not fetch'); }) as unknown as typeof fetch
+      fetchFn: fakeFetch(async () => { requested = true; throw Error('must not fetch'); })
     });
     expect(requested).toBe(false);
     expect(decision.bypassed).toBe(true);
@@ -172,7 +178,7 @@ describe('TypeSafe System One OpenAPI contract', () => {
       message: 'my private customer data',
       apiKey: 'synthetic-test-key',
       externalRoutingAllowed: false,
-      fetchFn: (async () => { called = true; throw Error('must not call'); }) as unknown as typeof fetch
+      fetchFn: fakeFetch(async () => { called = true; throw Error('must not call'); })
     });
     expect(called).toBe(false);
     expect(decision.bypassed).toBe(true);

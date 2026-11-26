@@ -1,6 +1,10 @@
+import { Database } from 'bun:sqlite';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { FollowUpStore } from '../src/agent/follow-ups';
-import { ProactiveEngagementScheduler, type ProactiveEligibility, type ProactiveTemplateIntentCommand } from '../src/agent/proactive-scheduler';
+import { ProactiveEngagementScheduler, type ProactiveTemplateIntentCommand } from '../src/agent/proactive-scheduler';
 
 const due = Date.UTC(2026, 10, 8, 12, 0);
 const trigger = (sourceWorkflowId: string, dueAt = due, brandId = 'brand-a', contactId = 'contact-a') => ({
@@ -268,7 +272,11 @@ describe('A08 relevance and address enforcement', () => {
       let submitted = 0;
       const scheduler = new ProactiveEngagementScheduler({
         store,
-        eligibility: async (item) => byId.get(item.triggerId)!.evaluation as unknown as ProactiveEligibility,
+        eligibility: async (item) => {
+          const fixture = byId.get(item.triggerId);
+          if (!fixture) throw new Error('Missing eligibility fixture');
+          return fixture.evaluation;
+        },
         sender: {
           submit: async () => { submitted++; return { intentId: 'forbidden', state: 'accepted', providerMessageId: 'forbidden' }; },
           lookup: async () => undefined
@@ -320,8 +328,9 @@ describe('A08 due-scan fairness and durable decisions', () => {
       const first = await scheduler.runOnce(due, 100);
       expect(first).toHaveLength(100);
       expect(first.every((entry) => entry.status === 'skipped')).toBe(true);
-      expect(store.get(invalid[0]!)?.status).toBe('cancelled');
-      expect(store.get(invalid[0]!)?.decisionReason).toBe('missing_consent');
+      const firstInvalidId = invalid[0];
+      expect(firstInvalidId && store.get(firstInvalidId)?.status).toBe('cancelled');
+      expect(firstInvalidId && store.get(firstInvalidId)?.decisionReason).toBe('missing_consent');
       const second = await scheduler.runOnce(due, 100);
       expect(second).toContainEqual({ triggerId: valid, status: 'sent' });
       expect(accepted).toBe(1);
@@ -346,7 +355,9 @@ describe('A08 due-scan fairness and durable decisions', () => {
         }
       });
       expect((await scheduler.runOnce(due, 100)).every((entry) => entry.status === 'deferred')).toBe(true);
-      expect(store.get(deferred[0]!)?.dueAt).toBeGreaterThan(due);
+      const firstDeferredId = deferred[0];
+      const firstDeferredRecord = firstDeferredId ? store.get(firstDeferredId) : undefined;
+      expect(firstDeferredRecord && firstDeferredRecord.dueAt > due).toBe(true);
       expect(await scheduler.runOnce(due, 100)).toContainEqual({ triggerId: valid, status: 'sent' });
       expect(accepted).toBe(1);
     } finally { store.close(); }
@@ -393,9 +404,10 @@ describe('A08 runner and inbound observability', () => {
         onEvent: (event) => { observed.push(event); }
       });
       scheduler.onCustomerMessage({ brandId: 'brand-a', contactId: 'contact-a', text: 'Hello, I saw your message' });
-      expect(observed.filter((event) => event.type === 'engagement.replied').map((event) => event.triggerId).sort()).toEqual(ids.sort());
+      expect(observed.filter((event) => event.type === 'engagement.replied').map((event) => event.triggerId).toSorted()).toEqual(ids.toSorted());
       expect(await scheduler.runOnce(due)).toEqual([]);
-      expect(store.get(ids[0]!)?.decisionReason).toBe('customer_replied');
+      const firstScheduledId = ids[0];
+      expect(firstScheduledId && store.get(firstScheduledId)?.decisionReason).toBe('customer_replied');
     } finally { store.close(); }
   });
 });
@@ -412,7 +424,11 @@ test('A08 requires real consent timing and approved template identity before dur
     let submitted = 0;
     const scheduler = new ProactiveEngagementScheduler({
       store,
-      eligibility: async (item) => byId.get(item.triggerId)!.evaluation as unknown as ProactiveEligibility,
+      eligibility: async (item) => {
+          const fixture = byId.get(item.triggerId);
+          if (!fixture) throw new Error('Missing eligibility fixture');
+          return fixture.evaluation;
+        },
       sender: {
         submit: async () => { submitted++; return { intentId: 'forbidden', state: 'accepted', providerMessageId: 'forbidden' }; },
         lookup: async () => undefined
@@ -422,4 +438,26 @@ test('A08 requires real consent timing and approved template identity before dur
     for (const [id, entry] of byId) expect(result).toContainEqual({ triggerId: id, status: 'skipped', reason: entry.reason });
     expect(submitted).toBe(0);
   } finally { store.close(); }
+});
+
+test('a persisted binary consent reference cannot authorize a follow-up', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'agent-followups-'));
+  const dbPath = join(directory, 'followups.sqlite');
+  const store = new FollowUpStore({ dbPath });
+  const db = new Database(dbPath);
+  try {
+    const id = store.schedule(trigger('invalid-consent'));
+    db.query("UPDATE engagement_triggers SET consent_ref=x'01' WHERE trigger_id=?").run(id);
+    let sends = 0;
+    const result = await store.dispatch(id, { ...eligible, quietHours: { from: 0, to: 0 } }, async () => {
+      sends++;
+      return 'forbidden';
+    });
+    expect(result.status).toBe('skipped');
+    expect(sends).toBe(0);
+  } finally {
+    db.close();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

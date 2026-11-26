@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
   extractDynamicsInput,
-  planRelationalMove,
-  planReplyShape,
   planConversation,
   compileDynamicsPrompt,
 } from '../src/ai/conversation-dynamics';

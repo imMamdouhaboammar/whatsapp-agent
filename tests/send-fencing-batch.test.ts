@@ -28,11 +28,11 @@ const input = (overrides: Partial<SendIntentInput> = {}): SendIntentInput => ({
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  const promise = new Promise<T>((_resolve, _reject) => { resolve = _resolve; reject = _reject; });
   return { promise, resolve, reject };
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number) => new Promise((_resolve) => setTimeout(_resolve, ms));
 
 describe('WA-004 expired send claims are fenced before network I/O', () => {
   it('a claim whose lease expires during voice preparation never reaches the transport and is requeued', async () => {
@@ -56,9 +56,9 @@ describe('WA-004 expired send claims are fenced before network I/O', () => {
     expect(voiceSent).toBe(0);
     expect(result.intent.state).toBe('queued');
     const attempts = memory.getSendLedger().getAttempts(result.intent.id);
-    expect(attempts[0].outcome).toBe('pre_send_failed');
-    expect(attempts[0].failureCode).toBe('lease_fenced_pre_network');
-    expect(attempts[0].networkStartedAt).toBeUndefined();
+    expect(attempts[0]?.outcome).toBe('pre_send_failed');
+    expect(attempts[0]?.failureCode).toBe('lease_fenced_pre_network');
+    expect(attempts[0]?.networkStartedAt).toBeUndefined();
   });
 
   it('a claim recovered as uncertain during preparation stays uncertain and the old worker never sends', async () => {
@@ -89,16 +89,18 @@ describe('WA-004 expired send claims are fenced before network I/O', () => {
     const ledger = memory.getSendLedger();
     const intent = ledger.createIntent(input());
     const t0 = Date.now();
-    const claimed = ledger.claim(intent.id, 'worker-1', t0, 1)!;
+    const claimed = ledger.claim(intent.id, 'worker-1', t0, 1);
+    if (!claimed) throw new Error('Expected claim');
     // Lease expired before network start: the fence must refuse, then requeue with proof
     // that no network I/O happened (network_started_at stays NULL).
     expect(ledger.tryMarkNetworkStarted(intent.id, claimed.attempt.id, t0 + 2)).toBe(false);
-    const requeued = ledger.requeueFencedPreNetwork(intent.id, claimed.attempt.id, t0 + 1000, 3, t0 + 2)!;
+    const requeued = ledger.requeueFencedPreNetwork(intent.id, claimed.attempt.id, t0 + 1000, 3, t0 + 2);
+    if (!requeued) throw new Error('Expected requeued');
     expect(requeued.state).toBe('queued');
     const attempts = ledger.getAttempts(intent.id);
-    expect(attempts[0].outcome).toBe('pre_send_failed');
-    expect(attempts[0].failureCode).toBe('lease_fenced_pre_network');
-    expect(attempts[0].networkStartedAt).toBeUndefined();
+    expect(attempts[0]?.outcome).toBe('pre_send_failed');
+    expect(attempts[0]?.failureCode).toBe('lease_fenced_pre_network');
+    expect(attempts[0]?.networkStartedAt).toBeUndefined();
   });
 
   it('a valid claim still passes the fence and sends exactly once', async () => {
@@ -112,15 +114,16 @@ describe('WA-004 expired send claims are fenced before network I/O', () => {
     expect(result.intent.state).toBe('accepted');
     expect(sent).toBe(1);
     const attempts = memory.getSendLedger().getAttempts(result.intent.id);
-    expect(attempts[0].networkStartedAt).toBeDefined();
+    expect(attempts[0]?.networkStartedAt).toBeDefined();
   });
 });
 
+const batchInputs = (): SendIntentInput[] => [1, 2, 3].map((i) => input({
+  sourceId: `chat:msg:part-${i}-of-3`,
+  text: `bubble ${i}`
+}));
+
 describe('WA-015 multipart reply batches persist before dispatch', () => {
-  const batchInputs = (): SendIntentInput[] => [1, 2, 3].map((i) => input({
-    sourceId: `chat:msg:part-${i}-of-3`,
-    text: `bubble ${i}`
-  }));
 
   it('commits every part transactionally before the first dispatch', async () => {
     const memory = makeStore();
@@ -134,11 +137,11 @@ describe('WA-015 multipart reply batches persist before dispatch', () => {
     const ledger = memory.getSendLedger();
     const ids = batch.map((b) => b.intent.id);
     for (const [i, item] of batch.entries()) {
-      const stored = ledger.getIntent(item.intent.id)!;
-      expect(stored.batchId).toBeDefined();
-      expect(stored.batchId).toBe(batch[0].intent.batchId!);
-      expect(stored.batchOrdinal).toBe(i);
-      expect(stored.state).toBe('queued');
+      const stored = ledger.getIntent(item.intent.id);
+      expect(stored?.batchId).toBeDefined();
+      expect(stored?.batchId).toBe(batch[0]?.intent.batchId ?? '');
+      expect(stored?.batchOrdinal).toBe(i);
+      expect(stored?.state).toBe('queued');
     }
     expect(new Set(ids).size).toBe(3);
   });
@@ -161,26 +164,32 @@ describe('WA-015 multipart reply batches persist before dispatch', () => {
       memoryStore: memory,
       sendText: async () => {
         calls++;
-        if (calls === 2) { const e: any = new Error('no socket'); e.code = 'WHATSAPP_NOT_CONNECTED'; throw e; }
+        if (calls === 2) {
+          const e = new Error('no socket') as Error & { code?: string };
+          e.code = 'WHATSAPP_NOT_CONNECTED';
+          throw e;
+        }
         return { messageId: `native-${calls}` };
       }
     });
     const batch = await service.createTextBatch(batchInputs());
+    const [p1, p2, p3] = batch;
+    if (!p1 || !p2 || !p3) throw new Error('Expected 3 batch parts');
 
-    const r1 = await service.dispatch(batch[0].intent.id);
+    const r1 = await service.dispatch(p1.intent.id);
     expect(r1.intent.state).toBe('accepted');
     // Part 2 fails pre-network: queued for retry, NOT ambiguous.
-    const r2 = await service.dispatch(batch[1].intent.id);
+    const r2 = await service.dispatch(p2.intent.id);
     expect(r2.intent.state).toBe('queued');
     // Part 3 must refuse to dispatch while part 2 is unfinished.
-    const r3 = await service.dispatch(batch[2].intent.id);
+    const r3 = await service.dispatch(p3.intent.id);
     expect(r3.intent.state).toBe('queued');
     expect(calls).toBe(2);
 
     // After part 2's retry window opens, it recovers and part 3 flows in order.
-    const r2b = await service.dispatch(batch[1].intent.id, Date.now() + 60_000);
+    const r2b = await service.dispatch(p2.intent.id, Date.now() + 60_000);
     expect(r2b.intent.state).toBe('accepted');
-    const r3b = await service.dispatch(batch[2].intent.id);
+    const r3b = await service.dispatch(p3.intent.id);
     expect(r3b.intent.state).toBe('accepted');
     expect(calls).toBe(4);
   });
@@ -193,15 +202,21 @@ describe('WA-015 multipart reply batches persist before dispatch', () => {
       maxAttempts: 1,
       sendText: async () => {
         calls++;
-        if (calls === 2) { const e: any = new Error('no socket'); e.code = 'WHATSAPP_NOT_CONNECTED'; throw e; }
+        if (calls === 2) {
+          const e = new Error('no socket') as Error & { code?: string };
+          e.code = 'WHATSAPP_NOT_CONNECTED';
+          throw e;
+        }
         return { messageId: `native-${calls}` };
       }
     });
     const batch = await service.createTextBatch(batchInputs());
-    await service.dispatch(batch[0].intent.id);
-    const r2 = await service.dispatch(batch[1].intent.id);
+    const [p1, p2, p3] = batch;
+    if (!p1 || !p2 || !p3) throw new Error('Expected 3 batch parts');
+    await service.dispatch(p1.intent.id);
+    const r2 = await service.dispatch(p2.intent.id);
     expect(r2.intent.state).toBe('failed');
-    const r3 = await service.dispatch(batch[2].intent.id);
+    const r3 = await service.dispatch(p3.intent.id);
     expect(r3.intent.state).toBe('failed');
     expect(calls).toBe(2);
   });
@@ -218,11 +233,13 @@ describe('WA-015 multipart reply batches persist before dispatch', () => {
       }
     });
     const batch = await service.createTextBatch(batchInputs());
-    await service.dispatch(batch[0].intent.id);
-    const r2 = await service.dispatch(batch[1].intent.id);
+    const [p1, p2, p3] = batch;
+    if (!p1 || !p2 || !p3) throw new Error('Expected 3 batch parts');
+    await service.dispatch(p1.intent.id);
+    const r2 = await service.dispatch(p2.intent.id);
     expect(r2.intent.state).toBe('uncertain');
     // No automatic resend of the ambiguous part, and part 3 stays queued.
-    const r3 = await service.dispatch(batch[2].intent.id);
+    const r3 = await service.dispatch(p3.intent.id);
     expect(r3.intent.state).toBe('queued');
     expect(calls).toBe(2);
   });

@@ -16,7 +16,7 @@ test('Google Sheets provider reads an approved sheet live and parses quoted CSV'
 test('reject unsafe sheet id, bad provider numbers and overlong files',async()=>{
  expect(()=>new GoogleSheetsInventory({sheetId:'https://evil.com'})).toThrow();
  const bad=new GoogleSheetsInventory({sheetId:'approved-001',fetcher:async()=>new Response('sku,stock,price\nSKU,invalid,-3\n')});
- await expect(bad.lookup('SKU')).rejects.toThrow();
+ expect(bad.lookup('SKU')).rejects.toThrow();
  const oversized=new GoogleSheetsInventory({sheetId:'approved-001',maxBytes:10,fetcher:async()=>new Response('sku,stock,price\nSKU,5,3')});
- await expect(oversized.lookup('SKU')).rejects.toThrow();
+ expect(oversized.lookup('SKU')).rejects.toThrow();
 });

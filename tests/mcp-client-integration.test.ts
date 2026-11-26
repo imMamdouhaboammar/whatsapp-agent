@@ -15,6 +15,8 @@ import {
 import { evaluateMcpToolPermission } from '../src/domain/permission-engine';
 import { MemoryStore } from '../src/domain/memory-store';
 import { ModeratorAgent } from '../src/ai/moderator-agent';
+import { GeminiClient } from '../src/ai/gemini-client';
+import { WhatsAppSocketClient } from '../src/transport/whatsapp-socket';
 import { createApiServer } from '../src/server/api';
 import { SSEBroadcaster } from '../src/server/sse';
 import { runDoctor } from '../src/doctor';
@@ -121,9 +123,10 @@ describe('McpClientManager & Gemini Tool Adapter', () => {
       'composio__unclassified_action'
     ]);
 
-    const findTool = manager.getTool('composio__find_event')!;
-    const sendTool = manager.getTool('composio__send_email')!;
-    const unknownTool = manager.getTool('composio__unclassified_action')!;
+    const findTool = manager.getTool('composio__find_event');
+    const sendTool = manager.getTool('composio__send_email');
+    const unknownTool = manager.getTool('composio__unclassified_action');
+    if (!findTool || !sendTool || !unknownTool) throw new Error('Expected discovered tools');
     expect(findTool.risk).toBe('readOnly');
     expect(sendTool.risk).toBe('mutating');
     expect(sendTool.requiresHumanApproval).toBe(true);
@@ -133,15 +136,21 @@ describe('McpClientManager & Gemini Tool Adapter', () => {
     // Sanitization strips unsupported JSON Schema keywords
     const decls = toGeminiFunctionDeclarations([findTool]);
     expect(decls).toHaveLength(1);
-    const params = decls[0].parameters as Record<string, any>;
-    expect(params.$schema).toBeUndefined();
-    expect(params.additionalProperties).toBeUndefined();
-    expect(params.properties.query.type).toBe('string');
-    expect(params.properties.query.nullable).toBe(true);
-    expect(params.properties.nested.additionalProperties).toBeUndefined();
+    const params = decls[0]?.parameters;
+    expect(params?.$schema).toBeUndefined();
+    expect(params?.additionalProperties).toBeUndefined();
+    expect(params?.properties).toMatchObject({ query: { type: 'string', nullable: true } });
+    const properties = params?.properties;
+    if (typeof properties !== 'object' || properties === null) throw new Error('Expected schema properties');
+    const nestedSchema = 'nested' in properties ? properties.nested : undefined;
+    expect(typeof nestedSchema === 'object' && nestedSchema !== null && 'additionalProperties' in nestedSchema
+      ? nestedSchema.additionalProperties
+      : undefined).toBeUndefined();
 
     // Verify sanitizeSchemaForGemini directly on edge inputs
     expect(sanitizeSchemaForGemini(null)).toEqual({ type: 'object', properties: {} });
+
+    expect(sanitizeSchemaForGemini({ anyOf: {}, oneOf: [{ type: 'null' }, { type: 'number' }] })).toEqual({ type: 'number' });
 
     await manager.shutdown();
   });
@@ -256,19 +265,19 @@ describe('Permission Engine & Copilot Draft Approval Flow', () => {
     expect(readLoop.status).toBe('completed');
     expect(readLoop.text).toBe('Found contact a@b.com in CRM.');
     expect(readLoop.toolTrace).toHaveLength(1);
-    expect(readLoop.toolTrace[0].decision).toBe('execute');
+    expect(readLoop.toolTrace[0]?.decision).toBe('execute');
 
     // 2. Mutating tool in ModeratorAgent pauses BEFORE execution and creates pending draft
     const memoryStore = new MemoryStore({ dataDir: ':memory:' });
     memoryStore.setChatMode('201000000001@s.whatsapp.net', 'copilot');
     const sse = new SSEBroadcaster();
+    const modGemini = new GeminiClient({ apiKey: 'test-key' });
+    modGemini.generateContent = async () => ({
+      text: 'I can update the deal stage to Closed Won once you approve.',
+      functionCalls: [{ name: 'crm__update_deal', args: { dealId: 'd-42', stage: 'won' } }]
+    });
     const moderator = new ModeratorAgent(
-      {
-        generateContent: async () => ({
-          text: 'I can update the deal stage to Closed Won once you approve.',
-          functionCalls: [{ name: 'crm__update_deal', args: { dealId: 'd-42', stage: 'won' } }]
-        })
-      } as any,
+      modGemini,
       memoryStore,
       {
         mcpClientManager: manager,
@@ -299,21 +308,23 @@ describe('Permission Engine & Copilot Draft Approval Flow', () => {
 
     // 3. Approving draft via REST API executes the MCP tool and dispatches reply
     const sentMessages: Array<{ chatId: string; text: string }> = [];
+    const whatsappClient = new WhatsAppSocketClient();
+    whatsappClient.sendMessage = async (chatId: string, text: string) => {
+      sentMessages.push({ chatId, text });
+      return { messageId: 'wa-msg-99' };
+    };
+    whatsappClient.getState = () => ({ state: 'connected', updatedAt: Date.now() });
     const app = createApiServer({
       memoryStore,
       moderatorAgent: moderator,
       sse,
       mcpClientManager: manager,
-      whatsappClient: {
-        sendMessage: async (chatId: string, text: string) => {
-          sentMessages.push({ chatId, text });
-          return { messageId: 'wa-msg-99' };
-        },
-        getState: () => ({ state: 'connected', updatedAt: Date.now() })
-      } as any
+      whatsappClient
     });
 
-    const approveRes = await app.request(`/api/drafts/${turnResult.draftCreated!.id}/approve`, {
+    const draft = turnResult.draftCreated;
+    if (!draft) throw new Error('Expected draftCreated');
+    const approveRes = await app.request(`/api/drafts/${draft.id}/approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ editedText: 'Deal d-42 is now marked as Closed Won!' })
@@ -322,7 +333,7 @@ describe('Permission Engine & Copilot Draft Approval Flow', () => {
     expect(approveRes.status).toBe(200);
     expect(executedMutating).toBe(1);
     expect(sentMessages).toHaveLength(1);
-    expect(sentMessages[0].text).toBe('Deal d-42 is now marked as Closed Won!');
+    expect(sentMessages[0]?.text).toBe('Deal d-42 is now marked as Closed Won!');
 
     memoryStore.close();
     await manager.shutdown();

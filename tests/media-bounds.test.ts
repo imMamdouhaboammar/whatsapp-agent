@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { describe, expect, it } from 'bun:test';
 import { Readable } from 'node:stream';
 import {
@@ -12,7 +13,8 @@ function streamOf(chunks: number[]): Readable {
   let i = 0;
   return new Readable({
     read() {
-      if (i < chunks.length) this.push(Buffer.alloc(chunks[i++], 1));
+      const size = chunks[i++];
+      if (size !== undefined) this.push(Buffer.alloc(size, 1));
       else this.push(null);
     }
   });
@@ -21,8 +23,7 @@ function streamOf(chunks: number[]): Readable {
 describe('WA-017 streaming byte caps', () => {
   it('rejects a stream that exceeds the cap without buffering the whole payload', async () => {
     // 3 x 8MB chunks, cap 16MB -> must throw as soon as the cap is crossed
-    await expect(readStreamWithCap(streamOf([8, 8, 8].map((mb) => mb * 1024 * 1024)), 16 * 1024 * 1024))
-      .rejects.toThrow(MediaTooLargeError);
+    await assert.rejects(readStreamWithCap(streamOf([8, 8, 8].map((mb) => mb * 1024 * 1024)), 16 * 1024 * 1024), MediaTooLargeError);
   });
 
   it('accepts a stream within the cap and returns the bytes', async () => {
@@ -32,8 +33,7 @@ describe('WA-017 streaming byte caps', () => {
 
   it('a false declared size cannot bypass the cap', async () => {
     // declared small, actual stream exceeds cap
-    await expect(readStreamWithCap(streamOf([20 * 1024 * 1024]), 16 * 1024 * 1024))
-      .rejects.toThrow(/too large|exceed/i);
+    await assert.rejects(readStreamWithCap(streamOf([20 * 1024 * 1024]), 16 * 1024 * 1024), /too large|exceed/i);
   });
 });
 
@@ -51,21 +51,26 @@ describe('WA-017 image MIME sniffing', () => {
   });
 });
 
+function createGate<T>() {
+  let r!: (v: T) => void;
+  const p = new Promise<T>((resolve) => { r = resolve; });
+  return { p, r };
+}
+
 describe('WA-017 bounded media concurrency', () => {
   it('caps concurrent media work and rejects when the wait exceeds the deadline', async () => {
     const limiter = createMediaLimiter({ maxConcurrent: 2 });
-    const gate = <T,>() => { let r!: (v: T) => void; const p = new Promise<T>((res) => { r = res; }); return { p, r }; };
-    const g1 = gate<string>(); const g2 = gate<string>();
+    const g1 = createGate<string>(); const g2 = createGate<string>();
     let started = 0;
 
     const t1 = limiter.run(async () => { started++; return g1.p; });
     const t2 = limiter.run(async () => { started++; return g2.p; });
-    await new Promise((r) => setTimeout(r, 10));
+    await new Promise((resolve) => setTimeout(resolve, 10));
     expect(started).toBe(2);
 
     let thirdStarted = false;
     const t3 = limiter.run(async () => { thirdStarted = true; return 'third'; }, { waitMs: 50 });
-    await expect(t3).rejects.toThrow(/busy|timeout|capacity/i);
+    await assert.rejects(t3, /busy|timeout|capacity/i);
     expect(thirdStarted).toBe(false);
 
     g1.r('a'); g2.r('b');

@@ -1,23 +1,32 @@
-import { describe, expect, test } from 'bun:test';
+import { GeminiClient } from '../src/ai/gemini-client';
+import { ModeratorAgent } from '../src/ai/moderator-agent';
+import { MemoryStore } from '../src/domain/memory-store';
+import { SSEBroadcaster } from '../src/server/sse';
+import { WhatsAppSocketClient } from '../src/transport/whatsapp-socket';
+import { afterEach, describe, expect, test } from 'bun:test';
 import { createApiServer } from '../src/server/api';
 import { assertSafeDashboardBind } from '../src/server/dashboard-auth';
 
 const DASHBOARD_TOKEN = 'test-owner-token-with-adequate-entropy-123456';
 
+const stores: MemoryStore[] = [];
+afterEach(() => {
+  for (const store of stores.splice(0)) store.close();
+});
+
 function appWithDashboardAuth() {
   let disconnects = 0;
+  const memoryStore = new MemoryStore({ dataDir: ':memory:' });
+  stores.push(memoryStore);
+  memoryStore.saveChat({ id: 'private-customer', name: 'Private customer', unreadCount: 0, isGroup: false, agentMode: 'human' });
+  const whatsappClient = new WhatsAppSocketClient();
+  whatsappClient.disconnect = async () => { disconnects++; };
   const app = createApiServer({
     dashboardToken: DASHBOARD_TOKEN,
-    memoryStore: {
-      getPendingDrafts: () => [],
-      listChats: () => [{ id: 'private-customer', name: 'Private customer' }]
-    } as any,
-    whatsappClient: {
-      getState: () => ({ state: 'disconnected' }),
-      disconnect: async () => { disconnects++; }
-    } as any,
-    moderatorAgent: {} as any,
-    sse: { broadcast: () => {} } as any
+    memoryStore,
+    whatsappClient,
+    moderatorAgent: new ModeratorAgent(new GeminiClient({ apiKey: 'test-key' }), memoryStore),
+    sse: new SSEBroadcaster()
   });
   return { app, getDisconnects: () => disconnects };
 }
@@ -60,9 +69,10 @@ describe('Self-hosted dashboard access', () => {
     expect(cookieHeader).toContain('Path=/api');
     expect(cookieHeader).not.toContain(DASHBOARD_TOKEN);
 
-    const cookie = cookieHeader.split(';')[0];
+    const cookie = cookieHeader.split(';')[0] ?? '';
     expect((await app.request('/api/chats', { headers: { cookie } })).status).toBe(200);
-    expect((await (await app.request('/api/auth/status', { headers: { cookie } })).json() as any).authenticated).toBe(true);
+    const status = await app.request('/api/auth/status', { headers: { cookie } });
+    expect(await status.json()).toMatchObject({ authenticated: true });
     const logout = await app.request('/api/auth/session', { method: 'DELETE', headers: { cookie } });
     expect(logout.status).toBe(200);
     expect((await app.request('/api/chats', { headers: { cookie } })).status).toBe(401);

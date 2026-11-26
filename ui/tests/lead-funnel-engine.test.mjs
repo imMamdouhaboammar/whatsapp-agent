@@ -36,7 +36,7 @@ const testCtx = {
 const INDUSTRIES = ['medical', 'ecommerce', 'real_estate', 'tourism', 'hospitality', 'education'];
 const OPS_MODES = ['team', 'solo', 'existing_bot'];
 
-test('18 end-to-end traversals (3 ops modes × 6 industries) run to completion', () => {
+await test('18 end-to-end traversals (3 ops modes × 6 industries) run to completion', () => {
   for (const industryId of INDUSTRIES) {
     for (const opsMode of OPS_MODES) {
       let session = createInitialSession();
@@ -87,7 +87,7 @@ test('18 end-to-end traversals (3 ops modes × 6 industries) run to completion',
   }
 });
 
-test('clicking "لأ مش مقتنع" (skeptical tag) routes to objection_handler and records objection', () => {
+await test('clicking "لأ مش مقتنع" (skeptical tag) routes to objection_handler and records objection', () => {
   let session = createInitialSession('medical');
   assert.equal(session.currentNodeId, 'q02_ops_mode');
 
@@ -107,7 +107,7 @@ test('clicking "لأ مش مقتنع" (skeptical tag) routes to objection_handle
   assert.equal(result.nextSession.objectionsRaised[0], 'r04_team_stamina');
 });
 
-test('goBack() restores exact snapshot with zero leaked tags or score drift across branch changes', () => {
+await test('goBack() restores exact snapshot with zero leaked tags or score drift across branch changes', () => {
   let session = createInitialSession();
 
   // Answer 1: industry medical (+5 pain)
@@ -154,8 +154,8 @@ test('goBack() restores exact snapshot with zero leaked tags or score drift acro
   assert.ok(!session.tags.includes('has_team'), 'has_team tag must not leak into solo branch');
 });
 
-test('painScore stays clamped between 0 and 100', () => {
-  let session = createInitialSession('medical');
+await test('painScore stays clamped between 0 and 100', () => {
+  const session = createInitialSession('medical');
 
   // Verify floor clamp at 0
   assert.equal(session.painScore, 0);
@@ -187,11 +187,11 @@ test('painScore stays clamped between 0 and 100', () => {
   assert.equal(resMin.nextSession.painScore, 0, 'painScore must clamp to 0 on negative delta');
 
   // Verify ceiling clamp at 100
-  let highPainSession = { ...session, painScore: 90 };
+  const highPainSession = { ...session, painScore: 90 };
   const fakeOptionMax = {
     id: 'test_max',
     label: 'test',
-    pain_delta: +30,
+    pain_delta: 30,
   };
   const testNodeMax = {
     ...testNode,
@@ -211,7 +211,7 @@ test('painScore stays clamped between 0 and 100', () => {
   assert.equal(resMax.nextSession.painScore, 100, 'painScore must clamp to 100 on ceiling overflow');
 });
 
-test('initialIndustry pre-seeding starts at q02_ops_mode with canGoBack: false', () => {
+await test('initialIndustry pre-seeding starts at q02_ops_mode with canGoBack: false', () => {
   const session = createInitialSession('medical');
   assert.equal(session.industryId, 'medical');
   assert.equal(session.currentNodeId, 'q02_ops_mode');
@@ -223,7 +223,7 @@ test('initialIndustry pre-seeding starts at q02_ops_mode with canGoBack: false',
   assert.equal(rendered.canGoBack, false, 'canGoBack must be false when pre-seeded with empty history');
 });
 
-test('buildFinalBlueprint() generates valid wa.me URI-encoded URL and routes self_hosted_diy correctly', () => {
+await test('buildFinalBlueprint() generates valid wa.me URI-encoded URL and routes self_hosted_diy correctly', () => {
   // Test WhatsApp Pilot route
   const standardSession = {
     ...createInitialSession('medical'),

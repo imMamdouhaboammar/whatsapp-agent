@@ -1,10 +1,70 @@
 {
   "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
-  "categories": { "correctness": "error" },
-  "rules": {
-    "no-useless-escape": "off",
-    "no-misleading-character-class": "off",
-    "no-control-regex": "off"
+  "plugins": [
+    "typescript",
+    "unicorn",
+    "import",
+    "promise",
+    "oxc",
+    "node"
+  ],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "perf": "error"
   },
-  "ignorePatterns": ["ui/dist/**", "node_modules/**", "data/**", "replica/**", "reports/**", "whale/**", "toolchains/**"]
+  "rules": {
+    "eqeqeq": "error",
+    "no-fallthrough": "error",
+    "no-shadow": "error",
+    "no-param-reassign": "error",
+    "prefer-const": "error",
+    "no-eval": "error",
+    "no-implied-eval": "error",
+    "no-new-func": "error",
+    "no-debugger": "error",
+    "typescript/no-explicit-any": "error",
+    "typescript/consistent-type-imports": "error",
+    "typescript/no-non-null-assertion": "error",
+    "import/no-cycle": "error",
+    "promise/no-return-wrap": "error",
+    "promise/param-names": "error",
+    "no-await-in-loop": "off"
+  },
+  "overrides": [
+    {
+      "files": [
+        "ui/src/**/*.ts",
+        "ui/src/**/*.tsx"
+      ],
+      "plugins": [
+        "react",
+        "jsx-a11y"
+      ],
+      "rules": {
+        "react/react-in-jsx-scope": "off",
+        "react/jsx-key": "error",
+        "react/no-array-index-key": "error",
+        "react/rules-of-hooks": "error",
+        "react/exhaustive-deps": "error",
+        "react/set-state-in-effect": "error",
+        "react/only-export-components": [
+          "error",
+          {
+            "allowConstantExport": true
+          }
+        ]
+      }
+    }
+  ],
+  "ignorePatterns": [
+    "ui/dist/**",
+    "node_modules/**",
+    "data/**",
+    "replica/**",
+    "reports/**",
+    "whale/**",
+    "toolchains/**",
+    ".venv/**"
+  ]
 }

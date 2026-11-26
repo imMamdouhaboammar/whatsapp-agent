@@ -1,18 +1,21 @@
+import { GeminiClient } from '../src/ai/gemini-client';
+import { ModeratorAgent } from '../src/ai/moderator-agent';
+import { MemoryStore } from '../src/domain/memory-store';
 import { describe, expect, it } from 'bun:test';
 import crypto from 'node:crypto';
 import { verifyGitHubWebhookSignature } from '../src/server/github-webhook';
 import { createApiServer } from '../src/server/api';
 import { SSEBroadcaster } from '../src/server/sse';
 
+function signPayload(body: string, sec: string): string {
+  const hmac = crypto.createHmac('sha256', sec);
+  hmac.update(Buffer.from(body, 'utf-8'));
+  return `sha256=${hmac.digest('hex')}`;
+}
+
 describe('OpenReview GitHub Webhook & HMAC Verification', () => {
   const secret = 'test-openreview-hmac-secret-12345';
   const payload = JSON.stringify({ action: 'opened', pull_request: { number: 42, title: 'feat: add openreview' } });
-
-  function signPayload(body: string, sec: string): string {
-    const hmac = crypto.createHmac('sha256', sec);
-    hmac.update(Buffer.from(body, 'utf-8'));
-    return `sha256=${hmac.digest('hex')}`;
-  }
 
   it('validates a correct HMAC-SHA256 signature', () => {
     const validSignature = signPayload(payload, secret);
@@ -41,34 +44,23 @@ describe('OpenReview GitHub Webhook & HMAC Verification', () => {
   });
 
   it('serves POST /api/webhooks/github and responds to ping and signed events', async () => {
-    const mockMemoryStore = {
-      getSqliteStore: () => ({}),
-      getContactMemories: () => [],
-      getChatStyle: () => 'casual',
-      setChatStyle: () => {},
-      deleteContactMemory: () => true
-    } as unknown as Parameters<typeof createApiServer>[0]['memoryStore'];
-    const mockWhatsappClient = {} as unknown as Parameters<typeof createApiServer>[0]['whatsappClient'];
-    const mockModeratorAgent = {} as unknown as Parameters<typeof createApiServer>[0]['moderatorAgent'];
-    const sse = new SSEBroadcaster();
-
-    const app = createApiServer({
-      memoryStore: mockMemoryStore,
-      whatsappClient: mockWhatsappClient,
-      moderatorAgent: mockModeratorAgent,
-      sse
-    });
-
-    // 1. Missing secret / header -> 401
-    const resUnauthorized = await app.request('/api/webhooks/github', {
-      method: 'POST',
-      body: payload
-    });
-    expect(resUnauthorized.status).toBe(500); // Because GITHUB_APP_WEBHOOK_SECRET is not set in env
-
-    // Now test with secret in env
+    const memoryStore = new MemoryStore({ dataDir: ':memory:' });
     const prevSecret = process.env.GITHUB_APP_WEBHOOK_SECRET;
     try {
+      delete process.env.GITHUB_APP_WEBHOOK_SECRET;
+      const app = createApiServer({
+        memoryStore,
+        moderatorAgent: new ModeratorAgent(new GeminiClient({ apiKey: 'test-key' }), memoryStore),
+        sse: new SSEBroadcaster()
+      });
+
+      // 1. Missing secret / header -> 401
+      const resUnauthorized = await app.request('/api/webhooks/github', {
+        method: 'POST',
+        body: payload
+      });
+      expect(resUnauthorized.status).toBe(500);
+
       process.env.GITHUB_APP_WEBHOOK_SECRET = secret;
 
       // 2. Invalid signature -> 401
@@ -115,7 +107,9 @@ describe('OpenReview GitHub Webhook & HMAC Verification', () => {
       expect(prJson.event).toBe('pull_request');
       expect(prJson.action).toBe('opened');
     } finally {
-      process.env.GITHUB_APP_WEBHOOK_SECRET = prevSecret;
+      if (prevSecret === undefined) delete process.env.GITHUB_APP_WEBHOOK_SECRET;
+      else process.env.GITHUB_APP_WEBHOOK_SECRET = prevSecret;
+      memoryStore.close();
     }
   });
 });

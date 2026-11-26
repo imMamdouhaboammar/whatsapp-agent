@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Database } from 'bun:sqlite';
+import { readChoice, sqliteTransaction, readSqliteRow, readSqliteText, readSqliteNumber, readNullableSqliteNumber } from '../domain/sqlite-values';
 
 export type AliasKind = 'direct_phone' | 'direct_lid' | 'group';
 export type AliasSource = 'transport_observation' | 'history_import' | 'owner_verified' | 'provider_verified';
@@ -74,36 +75,71 @@ interface AliasRow {
   brand_id: string;
   jid: string;
   contact_id: string;
-  kind: AliasKind;
-  source: AliasSource;
+  kind: string;
+  source: string;
   confidence: number;
   verified_at: number | null;
   version: number;
 }
 
+function readAliasRow(value: unknown): AliasRow {
+  const row = readSqliteRow(value);
+  return {
+    id: readSqliteText(row, 'id'),
+    brand_id: readSqliteText(row, 'brand_id'),
+    jid: readSqliteText(row, 'jid'),
+    contact_id: readSqliteText(row, 'contact_id'),
+    kind: readSqliteText(row, 'kind'),
+    source: readSqliteText(row, 'source'),
+    confidence: readSqliteNumber(row, 'confidence'),
+    verified_at: readNullableSqliteNumber(row, 'verified_at'),
+    version: readSqliteNumber(row, 'version'),
+  };
+}
+
 interface MergeRow {
   id: string;
-  brand_id: string;
   primary_contact_id: string;
   related_contact_id: string;
   primary_jid: string;
   related_jid: string;
-  prior_source: AliasSource;
-  prior_confidence: number;
-  prior_verified_at: number | null;
   verified_at: number;
-  active: number;
 }
 
-const BRAND_ID = /^[A-Za-z0-9][A-Za-z0-9_:.\-]{0,127}$/;
-const EVIDENCE_REF = /^[A-Za-z0-9][A-Za-z0-9_:.\-]{5,127}$/;
+function readMergeRow(value: unknown): MergeRow {
+  const row = readSqliteRow(value);
+  return {
+    id: readSqliteText(row, 'id'),
+    primary_contact_id: readSqliteText(row, 'primary_contact_id'),
+    related_contact_id: readSqliteText(row, 'related_contact_id'),
+    primary_jid: readSqliteText(row, 'primary_jid'),
+    related_jid: readSqliteText(row, 'related_jid'),
+    verified_at: readSqliteNumber(row, 'verified_at'),
+  };
+}
+
+function decodeReview(value: unknown): IdentityReview {
+  const row = readSqliteRow(value);
+  return {
+    id: readSqliteText(row, 'id'),
+    brandId: readSqliteText(row, 'brandId'),
+    firstJid: readSqliteText(row, 'firstJid'),
+    secondJid: readSqliteText(row, 'secondJid'),
+    createdAt: readSqliteNumber(row, 'createdAt'),
+    reason: readChoice(row.reason, [...REVIEW_REASONS], 'identity review reason'),
+    state: readChoice(row.state, ['pending', 'dismissed', 'verified'], 'identity review state'),
+  };
+}
+
+const BRAND_ID = /^[A-Za-z0-9][A-Za-z0-9_:.-]{0,127}$/;
+const EVIDENCE_REF = /^[A-Za-z0-9][A-Za-z0-9_:.-]{5,127}$/;
 const PHONE_JID = /^[0-9]{5,20}@s\.whatsapp\.net$/;
 const LID_JID = /^[0-9]{5,20}@lid$/;
-const GROUP_JID = /^[0-9]{5,25}(?:\-[0-9]{1,20})?@g\.us$/;
+const GROUP_JID = /^[0-9]{5,25}(?:-[0-9]{1,20})?@g\.us$/;
 const MAX_COMPONENT_SIZE = 4096;
-const REVIEW_REASONS: readonly ReviewReason[] = [
+const REVIEW_REASONS = new Set<ReviewReason>([
   'matching_display_name', 'import_overlap', 'transport_candidate',
-];
+]);
 
 function validatedBrand(brandId: string): string {
   if (typeof brandId !== 'string' || !BRAND_ID.test(brandId)) {
@@ -190,13 +226,17 @@ export class ContactIdentityDirectory {
   }
 
   private atomic<T>(run: () => T): T {
-    return this.db.transaction(run).immediate() as unknown as T;
+    return sqliteTransaction(this.db, 'immediate', run);
   }
 
   private alias(brandId: string, jid: string): AliasRow | undefined {
-    return this.db.prepare(
+    const value = this.db.prepare<unknown, [string, string]>(
       'SELECT a.*, c.version FROM identity_aliases a JOIN identity_contacts c ON c.id=a.contact_id AND c.brand_id=a.brand_id WHERE a.brand_id=? AND a.jid=?',
-    ).get(brandId, jid) as AliasRow | undefined;
+    ).get(brandId, jid);
+    if (value === null) return undefined;
+    const row = readAliasRow(value);
+    readChoice(row.kind, ['direct_phone', 'direct_lid', 'group'], 'identity alias kind');
+    return row;
   }
 
   /**
@@ -205,7 +245,7 @@ export class ContactIdentityDirectory {
    * the connected component without rewriting historical alias ownership.
    */
   private membersUnder(brandId: string, id: string): string[] {
-    const rows = this.db.prepare([
+    const rows = this.db.prepare<unknown, [string, string, string]>([
       'WITH RECURSIVE members(id) AS (',
       'SELECT ?',
       'UNION',
@@ -213,17 +253,19 @@ export class ContactIdentityDirectory {
       'THEN m.related_contact_id ELSE m.primary_contact_id END',
       'FROM identity_merges m JOIN members',
       'ON (m.primary_contact_id=members.id OR m.related_contact_id=members.id)',
-      'WHERE m.brand_id=? AND m.active=1',
+      "WHERE m.brand_id=? AND m.active=1 AND m.verification_source IN ('owner_verified','provider_verified')",
+      "AND typeof(m.verified_at)='integer' AND m.verified_at BETWEEN 0 AND 9007199254740991",
       ') SELECT c.id FROM identity_contacts c JOIN members ON members.id=c.id',
       'WHERE c.brand_id=? ORDER BY c.created_at,c.id',
-    ].join(' ')).all(id, brandId, brandId) as Array<{ id: string }>;
-    return rows.map(row => row.id);
+    ].join(' ')).all(id, brandId, brandId);
+    return rows.map(row => readSqliteText(readSqliteRow(row), 'id'));
   }
 
   private root(brandId: string, originalId: string): string {
     const members = this.membersUnder(brandId, originalId);
-    if (!members.length) throw new Error('Missing contact identity');
-    return members[0]!;
+    const first = members[0];
+    if (!first) throw new Error('Missing contact identity');
+    return first;
   }
 
   private bumpVersions(brandId: string, ids: readonly string[]): void {
@@ -234,14 +276,21 @@ export class ContactIdentityDirectory {
   }
 
   private result(row: AliasRow): ContactIdentity {
-    const evidence = this.db.prepare([
+    const value = this.db.prepare<unknown, [string, string, string]>([
       'SELECT verification_source AS source,verified_at AS verifiedAt',
       'FROM identity_merges WHERE brand_id=? AND active=1',
       'AND (primary_jid=? OR related_jid=?)',
       'ORDER BY verified_at DESC,id DESC LIMIT 1',
-    ].join(' ')).get(row.brand_id, row.jid, row.jid) as {
-      source: VerifiedSource; verifiedAt: number;
-    } | undefined;
+    ].join(' ')).get(row.brand_id, row.jid, row.jid);
+    let evidence: { source: VerifiedSource; verifiedAt: number } | undefined;
+    if (value !== null) {
+      const { source, verifiedAt } = readSqliteRow(value);
+      if ((source !== 'owner_verified' && source !== 'provider_verified')
+          || typeof verifiedAt !== 'number' || !Number.isSafeInteger(verifiedAt)
+          || verifiedAt < 0) throw new IdentityEvidenceError();
+      evidence = { source, verifiedAt };
+    }
+    const source = readChoice(row.source, ['transport_observation', 'history_import', 'owner_verified', 'provider_verified'], 'identity alias source');
     return {
       brandId: row.brand_id,
       jid: row.jid,
@@ -249,7 +298,7 @@ export class ContactIdentityDirectory {
       kind: row.kind === 'group' ? 'group' : 'direct',
       rawContactId: row.contact_id,
       contactId: this.root(row.brand_id, row.contact_id),
-      source: evidence?.source ?? row.source,
+      source: evidence?.source ?? source,
       confidence: evidence ? 1 : row.confidence,
       verifiedAt: evidence?.verifiedAt,
       verified: !!evidence,
@@ -283,17 +332,19 @@ export class ContactIdentityDirectory {
         '(id,brand_id,jid,contact_id,kind,source,confidence,verified_at,created_at)',
         'VALUES (?,?,?,?,?,?,0,NULL,?)',
       ].join(' ')).run(randomUUID(), brandId, jid, id, kind, source, at);
-      return this.result(this.alias(brandId, jid)!);
+      const created = this.alias(brandId, jid);
+      if (!created) throw new Error('Failed to persist identity alias');
+      return this.result(created);
     });
   }
 
   resolve(input: { brandId: string; jid: string }): ContactIdentity | undefined {
     const brandId = validatedBrand(input.brandId);
     const { jid } = validatedJid(input.jid);
-    return this.db.transaction(() => {
+    return sqliteTransaction(this.db, 'deferred', () => {
       const row = this.alias(brandId, jid);
       return row ? this.result(row) : undefined;
-    }).deferred() as unknown as ContactIdentity | undefined;
+    });
   }
 
   verifyAliasRelationship(input: IdentityEvidenceClaim): MergeDecision {
@@ -321,12 +372,13 @@ export class ContactIdentityDirectory {
       const digest = createHash('sha256').update(input.evidenceRef).digest('hex');
       // This lookup includes undone evidence: redelivery cannot silently reverse
       // a deliberate owner undo. A fresh event must carry a fresh evidence reference.
-      const previous = this.db.prepare([
+      const existing = this.db.prepare<unknown, [string, string, string, string, string, string]>([
         'SELECT * FROM identity_merges WHERE brand_id=? AND evidence_sha256=?',
         'AND ((primary_jid=? AND related_jid=?) OR (primary_jid=? AND related_jid=?))',
         'ORDER BY verified_at DESC,id DESC LIMIT 1',
-      ].join(' ')).get(brandId, digest, primaryJid, relatedJid, relatedJid, primaryJid) as MergeRow | undefined;
-      if (previous) {
+      ].join(' ')).get(brandId, digest, primaryJid, relatedJid, relatedJid, primaryJid);
+      if (existing !== null) {
+        const previous = readMergeRow(existing);
         return {
           id: previous.id,
           winnerContactId: this.root(brandId, primary.contact_id),
@@ -354,7 +406,7 @@ export class ContactIdentityDirectory {
         input.source, digest, related.source, related.confidence, related.verified_at, at,
       );
       this.bumpVersions(brandId, affected);
-      const [firstJid, secondJid] = [primaryJid, relatedJid].sort();
+      const [firstJid, secondJid] = primaryJid <= relatedJid ? [primaryJid, relatedJid] : [relatedJid, primaryJid];
       this.db.prepare(
         "UPDATE identity_reviews SET state='verified',resolved_at=? WHERE brand_id=? AND first_jid=? AND second_jid=? AND state='pending'",
       ).run(at, brandId, firstJid, secondJid);
@@ -371,10 +423,11 @@ export class ContactIdentityDirectory {
     const brandId = validatedBrand(input.brandId);
     if (typeof input.decisionId !== 'string' || !input.decisionId) return false;
     return this.atomic(() => {
-      const decision = this.db.prepare(
+      const existing = this.db.prepare<unknown, [string, string]>(
         'SELECT * FROM identity_merges WHERE brand_id=? AND id=? AND active=1',
-      ).get(brandId, input.decisionId) as MergeRow | undefined;
-      if (!decision) return false;
+      ).get(brandId, input.decisionId);
+      if (existing === null) return false;
+      const decision = readMergeRow(existing);
       const affected = this.membersUnder(brandId, decision.related_contact_id);
       this.db.prepare(
         'UPDATE identity_merges SET active=0,undone_at=? WHERE brand_id=? AND id=? AND active=1',
@@ -384,7 +437,10 @@ export class ContactIdentityDirectory {
       this.bumpVersions(brandId, affected);
       if (this.root(brandId, decision.primary_contact_id)
           !== this.root(brandId, decision.related_contact_id)) {
-        const [firstJid, secondJid] = [decision.primary_jid, decision.related_jid].sort();
+        const [firstJid, secondJid] =
+          decision.primary_jid <= decision.related_jid
+            ? [decision.primary_jid, decision.related_jid]
+            : [decision.related_jid, decision.primary_jid];
         this.db.prepare(
           "UPDATE identity_reviews SET state='pending',resolved_at=NULL WHERE brand_id=? AND first_jid=? AND second_jid=? AND state='verified'",
         ).run(brandId, firstJid, secondJid);
@@ -442,7 +498,7 @@ export class ContactIdentityDirectory {
     const brandId = validatedBrand(input.brandId);
     const { jid: a, kind: aKind } = validatedJid(input.firstJid);
     const { jid: b, kind: bKind } = validatedJid(input.secondJid);
-    if (!REVIEW_REASONS.includes(input.reason)
+    if (!REVIEW_REASONS.has(input.reason)
         || aKind === 'group' || bKind === 'group' || a === b) {
       throw new IdentityEvidenceError();
     }
@@ -452,14 +508,14 @@ export class ContactIdentityDirectory {
       if (!first || !second || this.root(brandId, first.contact_id) === this.root(brandId, second.contact_id)) {
         throw new IdentityEvidenceError();
       }
-      const [firstJid, secondJid] = [a, b].sort();
-      const previous = this.db.prepare([
+      const [firstJid, secondJid] = a <= b ? [a, b] : [b, a];
+      const previous = this.db.prepare<unknown, [string, string, string, string]>([
         'SELECT id,brand_id AS brandId,first_jid AS firstJid,second_jid AS secondJid,',
         'reason,state,created_at AS createdAt FROM identity_reviews',
         'WHERE brand_id=? AND first_jid=? AND second_jid=? AND state=?',
         'LIMIT 1',
-      ].join(' ')).get(brandId, firstJid, secondJid, 'pending') as IdentityReview | undefined;
-      if (previous) return previous;
+      ].join(' ')).get(brandId, firstJid, secondJid, 'pending');
+      if (previous) return decodeReview(previous);
       const id = randomUUID();
       const at = timestamp(this.now);
       this.db.prepare([
@@ -472,11 +528,11 @@ export class ContactIdentityDirectory {
 
   listPendingReviews(brandId: string): IdentityReview[] {
     const brand = validatedBrand(brandId);
-    return this.db.prepare([
+    return this.db.prepare<unknown, [string, string]>([
       'SELECT id,brand_id AS brandId,first_jid AS firstJid,second_jid AS secondJid,',
       'reason,state,created_at AS createdAt FROM identity_reviews',
       'WHERE brand_id=? AND state=? ORDER BY created_at ASC,id ASC',
-    ].join(' ')).all(brand, 'pending') as IdentityReview[];
+    ].join(' ')).all(brand, 'pending').map(decodeReview);
   }
 
   dismissReview(input: { brandId: string; reviewId: string }): boolean {

@@ -61,8 +61,9 @@ export class GoogleSheetsInventory {
       }
       text+=decoder.decode();
       const rows=parseCsv(text.replace(/^\uFEFF/,''));
-      if(!rows.length)throw new Error('Empty sheet');
-      const headers=rows[0].map(c=>c.trim().toLowerCase());
+      const headerRow = rows[0];
+      if (!headerRow) throw new Error('Empty sheet');
+      const headers=headerRow.map(c=>c.trim().toLowerCase());
       for(const required of ['sku','stock','price'])if(!headers.includes(required))throw new Error('Missing inventory column: '+required);
       const read=(row:string[],col:string)=>row[headers.indexOf(col)]?.trim()??'';
       for(const row of rows.slice(1)) {

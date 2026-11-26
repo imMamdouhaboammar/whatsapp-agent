@@ -1,3 +1,4 @@
+import { rejects } from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { describe, expect, test } from 'bun:test';
 import { MetaCloudApi, type MetaCloudApiConfig, type MetaCloudWebhookEvent } from '../src/transport/meta-cloud-api';
@@ -24,11 +25,11 @@ function fakeFetch(
 ) {
   const calls: Array<{ url: string; init: RequestInit }> = [];
   const fetcher = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const call = { url: String(url), init: init ?? {} };
+    const call = { url: url instanceof Request ? url.url : String(url), init: init ?? {} };
     calls.push(call);
     return reply(call.url, call.init);
   };
-  return { fetcher: fetcher as typeof fetch, calls };
+  return { fetcher: Object.assign(fetcher, { preconnect: () => { throw new Error('Unexpected preconnect'); } }), calls };
 }
 
 function client(options: {
@@ -82,8 +83,10 @@ describe('Meta Cloud API outbound transport', () => {
     expect(sent).toEqual({ messageId: nativeId });
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe(`https://graph.facebook.com/v24.0/${phoneNumberId}/messages`);
-    expect((calls[0]!.init.headers as Record<string, string>).Authorization).toBe(`Bearer ${config.accessToken}`);
-    const json = JSON.parse(String(calls[0]?.init.body));
+    expect(new Headers(calls[0]?.init.headers).get('authorization')).toBe(`Bearer ${config.accessToken}`);
+    const requestBody = calls[0]?.init.body;
+    if (typeof requestBody !== 'string') throw new Error('Expected a JSON request body');
+    const json: unknown = JSON.parse(requestBody);
     expect(json).toEqual({
       messaging_product: 'whatsapp',
       to: recipient,
@@ -95,15 +98,15 @@ describe('Meta Cloud API outbound transport', () => {
   test('rejects text outside the customer service window and rejects group/LID recipients before HTTP', async () => {
     const { fetcher, calls } = fakeFetch();
     const transport = client({ fetcher });
-    await expect(transport.sendText({
+    await rejects(transport.sendText({
       to: chatId, text: 'late reply', lastInboundAtMs: fixedNow - 24 * 60 * 60 * 1000
-    })).rejects.toThrow();
-    await expect(transport.sendText({
+    }));
+    await rejects(transport.sendText({
       to: '5511999@g.us', text: 'group text', lastInboundAtMs: fixedNow - 1_000
-    })).rejects.toThrow();
-    await expect(transport.sendText({
+    }));
+    await rejects(transport.sendText({
       to: '849201@lid', text: 'lid alias', lastInboundAtMs: fixedNow - 1_000
-    })).rejects.toThrow();
+    }));
     expect(calls).toHaveLength(0);
   });
 
@@ -119,7 +122,9 @@ describe('Meta Cloud API outbound transport', () => {
       eligibility: { optedInAtMs: fixedNow - 1_000, approvedTemplate: true }
     });
     expect(accepted).toEqual({ messageId: nativeId });
-    const body = JSON.parse(String(calls[0]?.init.body));
+    const requestBody = calls[0]?.init.body;
+    if (typeof requestBody !== 'string') throw new Error('Expected a JSON request body');
+    const body: unknown = JSON.parse(requestBody);
     expect(body).toEqual({
       messaging_product: 'whatsapp', to: recipient, type: 'template',
       template: {
@@ -133,19 +138,19 @@ describe('Meta Cloud API outbound transport', () => {
     const { fetcher, calls } = fakeFetch();
     const transport = client({ fetcher });
     const base = { to: recipient, template: { name: 'order_update', languageCode: 'en_US' } };
-    await expect(transport.sendTemplate({
+    await rejects(transport.sendTemplate({
       ...base, eligibility: { optedInAtMs: 0, approvedTemplate: true }
-    })).rejects.toThrow();
-    await expect(transport.sendTemplate({
+    }));
+    await rejects(transport.sendTemplate({
       ...base, eligibility: { optedInAtMs: fixedNow + 30_000, approvedTemplate: true }
-    })).rejects.toThrow();
-    await expect(transport.sendTemplate({
+    }));
+    await rejects(transport.sendTemplate({
       ...base, eligibility: { optedInAtMs: fixedNow - 1_000, approvedTemplate: false }
-    })).rejects.toThrow();
-    await expect(transport.sendTemplate({
+    }));
+    await rejects(transport.sendTemplate({
       ...base, template: { name: 'not valid!', languageCode: 'en_US' },
       eligibility: { optedInAtMs: fixedNow - 1_000, approvedTemplate: true }
-    })).rejects.toThrow();
+    }));
     expect(calls).toHaveLength(0);
   });
 });
@@ -388,7 +393,7 @@ describe('Meta Cloud API acceptance ambiguity', () => {
     const rejected = client({ fetcher: fakeFetch(() => Response.json({
       error: { message: 'provider message with sensitive data' }
     }, { status: 403 })).fetcher });
-    const timedOut = client({ fetcher: (async () => { throw new Error('internal credential detail'); }) as unknown as typeof fetch });
+    const timedOut = client({ fetcher: fakeFetch(() => { throw new Error('internal credential detail'); }).fetcher });
     const input = { to: recipient, text: 'Hi', lastInboundAtMs: fixedNow - 1_000 };
     for (const transport of [noId, rejected, timedOut]) {
       try {

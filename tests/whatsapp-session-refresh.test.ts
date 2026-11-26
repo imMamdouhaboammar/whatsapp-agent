@@ -3,9 +3,14 @@ import { mkdtempSync, rmSync, writeFileSync, readdirSync, existsSync } from 'nod
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { WhatsAppSocketClient } from '../src/transport/whatsapp-socket';
-import { createApiServer, type ApiDependencies } from '../src/server/api';
+import { GeminiClient } from '../src/ai/gemini-client';
+import { ModeratorAgent } from '../src/ai/moderator-agent';
+import { MemoryStore } from '../src/domain/memory-store';
+import { SSEBroadcaster } from '../src/server/sse';
+import { createApiServer } from '../src/server/api';
 
 const fixtures: string[] = [];
+const stores: MemoryStore[] = [];
 
 function makeTempSessionDir(): string {
   const dir = mkdtempSync(join(tmpdir(), 'wa-session-test-'));
@@ -14,6 +19,7 @@ function makeTempSessionDir(): string {
 }
 
 afterEach(() => {
+  for (const memory of stores.splice(0)) memory.close();
   for (const dir of fixtures.splice(0)) {
     try {
       rmSync(dir, { recursive: true, force: true });
@@ -59,6 +65,50 @@ describe('WhatsAppSocketClient session refresh and recovery', () => {
     expect(readdirSync(sessionDir).length).toBe(0);
   });
 
+  it('does NOT auto-flush session during start() when me is populated and registered is false (FL-055 post-pairing reconnect)', async () => {
+    const sessionDir = makeTempSessionDir();
+    writeFileSync(
+      join(sessionDir, 'creds.json'),
+      JSON.stringify({
+        registered: false,
+        me: { id: '201501903990:5@s.whatsapp.net', name: 'User' },
+      })
+    );
+    writeFileSync(join(sessionDir, 'pre-key-1.json'), '{"key":"valid"}');
+
+    let socketCreated = false;
+    const client = new WhatsAppSocketClient({
+      sessionDir,
+      versionProvider: async () => ({ version: [2, 3000, 1043857760] }),
+      authStateFactory: async () => ({
+        state: { creds: { registered: false, me: { id: '201501903990:5@s.whatsapp.net' } }, keys: {} },
+        saveCreds: async () => {}
+      }),
+      socketFactory: () => {
+        socketCreated = true;
+        return {
+          ev: {
+            on: () => {},
+            removeAllListeners: () => {}
+          },
+          authState: { creds: { registered: false } },
+          requestPairingCode: async () => { throw new Error('Unexpected pairing request'); },
+          sendPresenceUpdate: async () => { throw new Error('Unexpected presence update'); },
+          sendMessage: async () => { throw new Error('Unexpected message send'); },
+          end: async () => { /* No provider connection was opened by this fake. */ }
+        };
+      }
+    });
+
+    await client.start();
+
+    // Verify session files were NOT purged
+    expect(socketCreated).toBe(true);
+    expect(existsSync(join(sessionDir, 'pre-key-1.json'))).toBe(true);
+    expect(readdirSync(sessionDir).length).toBe(2);
+    await client.disconnect(false);
+  });
+
   it('disconnect(true) explicitly purges session files', async () => {
     const sessionDir = makeTempSessionDir();
     writeFileSync(join(sessionDir, 'creds.json'), '{}');
@@ -71,26 +121,23 @@ describe('WhatsAppSocketClient session refresh and recovery', () => {
   });
 });
 
+function createSessionApi(whatsappClient: WhatsAppSocketClient) {
+  const memoryStore = new MemoryStore({ dataDir: ':memory:' });
+  stores.push(memoryStore);
+  return createApiServer({
+    whatsappClient,
+    memoryStore,
+    moderatorAgent: new ModeratorAgent(new GeminiClient(), memoryStore),
+    sse: new SSEBroadcaster()
+  });
+}
+
 describe('API connect & disconnect endpoints session management', () => {
   it('POST /api/connect forwards refresh flag to whatsappClient.start', async () => {
-    let capturedPhone: string | undefined;
-    let capturedOptions: { refresh?: boolean } | undefined;
-
-    const mockClient = {
-      getState: () => ({ state: 'disconnected' as const }),
-      start: async (phone?: string, options?: { refresh?: boolean }) => {
-        capturedPhone = phone;
-        capturedOptions = options;
-      },
-      disconnect: async () => {}
-    };
-
-    const app = createApiServer({
-      whatsappClient: mockClient as unknown as ApiDependencies['whatsappClient'],
-      memoryStore: { getPendingDrafts: () => [] } as unknown as ApiDependencies['memoryStore'],
-      moderatorAgent: {} as unknown as ApiDependencies['moderatorAgent'],
-      sse: { broadcast: () => {} } as unknown as ApiDependencies['sse']
-    });
+    const calls: Array<Parameters<WhatsAppSocketClient['start']>> = [];
+    const client = new WhatsAppSocketClient({ sessionDir: makeTempSessionDir() });
+    client.start = async (...args) => { calls.push(args); };
+    const app = createSessionApi(client);
 
     const res = await app.request('/api/connect', {
       method: 'POST',
@@ -101,27 +148,14 @@ describe('API connect & disconnect endpoints session management', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ status: 'initiated', phone: '+201012345678', refresh: true });
-    expect(capturedPhone as string | undefined).toBe('+201012345678');
-    expect(capturedOptions as { refresh?: boolean } | undefined).toEqual({ refresh: true });
+    expect(calls).toEqual([['+201012345678', { refresh: true }]]);
   });
 
   it('POST /api/disconnect forwards clearSession flag to whatsappClient.disconnect', async () => {
-    let capturedClearSession: boolean | undefined;
-
-    const mockClient = {
-      getState: () => ({ state: 'disconnected' as const }),
-      start: async () => {},
-      disconnect: async (clearSession?: boolean) => {
-        capturedClearSession = clearSession;
-      }
-    };
-
-    const app = createApiServer({
-      whatsappClient: mockClient as unknown as ApiDependencies['whatsappClient'],
-      memoryStore: { getPendingDrafts: () => [] } as unknown as ApiDependencies['memoryStore'],
-      moderatorAgent: {} as unknown as ApiDependencies['moderatorAgent'],
-      sse: { broadcast: () => {} } as unknown as ApiDependencies['sse']
-    });
+    const calls: Array<Parameters<WhatsAppSocketClient['disconnect']>> = [];
+    const client = new WhatsAppSocketClient({ sessionDir: makeTempSessionDir() });
+    client.disconnect = async (...args) => { calls.push(args); };
+    const app = createSessionApi(client);
 
     const res = await app.request('/api/disconnect', {
       method: 'POST',
@@ -130,6 +164,6 @@ describe('API connect & disconnect endpoints session management', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(capturedClearSession as boolean | undefined).toBe(true);
+    expect(calls).toEqual([[true]]);
   });
 });

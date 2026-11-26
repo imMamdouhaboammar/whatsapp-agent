@@ -4,12 +4,13 @@ import { createDefaultFunnelEngine } from '../src/funnel/default-engine';
 describe('default funnel engine', () => {
   it('registers the two built-in methods', () => {
     const methods = createDefaultFunnelEngine({ port: 3000 }).registry.listMethods();
-    expect(methods.map((m) => m.method).sort()).toEqual(['INVENTORY_DISPATCH', 'WEBHOOK_FANOUT']);
+    expect(methods.map((m) => m.method).toSorted()).toEqual(['INVENTORY_DISPATCH', 'WEBHOOK_FANOUT']);
   });
 
   it('points the internal stock target at the configured port', () => {
-    const inventory = createDefaultFunnelEngine({ port: 4123 }).registry.listMethods().find((m) => m.method === 'INVENTORY_DISPATCH')!;
-    expect(inventory.targets[0].url).toBe('http://127.0.0.1:4123/api/brand/stock');
+    const inventory = createDefaultFunnelEngine({ port: 4123 }).registry.listMethods().find((m) => m.method === 'INVENTORY_DISPATCH');
+    if (!inventory) throw new Error('Expected INVENTORY_DISPATCH method');
+    expect(inventory.targets[0]?.url).toBe('http://127.0.0.1:4123/api/brand/stock');
   });
 
   it('builds independent engines so circuit-breaker state is not shared', () => {

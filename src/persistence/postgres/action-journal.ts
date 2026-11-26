@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { ToolInvocation } from '../../agent/tools';
 import { scrubCredentials } from '../../domain/learning-memory';
 import type { PgClient, PgTransaction } from './migrate';
+import { readPgInteger, readPgText } from './sql-values';
 
 /** First async PostgreSQL S3 slice. No active runtime cutover is implied. */
 export interface PostgresActionRun {
@@ -37,11 +38,11 @@ function requireIdentity(value: string, label: string): void {
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 
 function canonicalJson(value: unknown): string {
-  const normalized = JSON.parse(JSON.stringify(value)) as unknown;
+  const normalized: unknown = JSON.parse(JSON.stringify(value));
   const ordered = (item: unknown): unknown => {
     if (Array.isArray(item)) return item.map(ordered);
     if (item !== null && typeof item === 'object') {
-      return Object.fromEntries(Object.entries(item).sort(([a], [b]) =>
+      return Object.fromEntries(Object.entries(item).toSorted(([a], [b]) =>
         a < b ? -1 : a > b ? 1 : 0
       ).map(([key, entry]) => [key, ordered(entry)]));
     }
@@ -73,21 +74,32 @@ const TERMINAL_WORKFLOW_STATES = new Set([
   'waiting_provider', 'cancelled', 'canceled', 'failed'
 ]);
 
+function readReceipt(value: unknown): string | null {
+  if (value === null) return null;
+  const text = readPgText(value, 'output_json');
+  try {
+    JSON.parse(text);
+  } catch {
+    // Parser errors can contain receipt contents.
+    throw new Error('Invalid PostgreSQL output_json');
+  }
+  return text;
+}
+
 function normalizeRun(row: Record<string, unknown>): PostgresActionRun {
-  const status = String(row.status);
-  if (!['attempting', 'confirmed', 'uncertain'].includes(status)) {
+  const { status } = row;
+  if (status !== 'attempting' && status !== 'confirmed' && status !== 'uncertain') {
     throw new Error('Unsupported stored tool run status');
   }
   return {
-    brand_id: String(row.brand_id),
-    key: String(row.key),
-    workflow_id: String(row.workflow_id),
-    tool_name: String(row.tool_name),
-    input_hash: String(row.input_hash),
-    status: status as PostgresActionRun['status'],
-    output_json: row.output_json === null || row.output_json === undefined
-      ? null : String(row.output_json),
-    created_at: Number(row.created_at)
+    brand_id: readPgText(row.brand_id, 'brand_id'),
+    key: readPgText(row.key, 'key'),
+    workflow_id: readPgText(row.workflow_id, 'workflow_id'),
+    tool_name: readPgText(row.tool_name, 'tool_name'),
+    input_hash: readPgText(row.input_hash, 'input_hash'),
+    status,
+    output_json: readReceipt(row.output_json),
+    created_at: readPgInteger(row.created_at, 'created_at')
   };
 }
 

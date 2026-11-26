@@ -12,6 +12,11 @@ resolveRuntimeDatastore();
 
 const [command, ...args] = process.argv.slice(2);
 
+function runGcloud(gcloudArgs: string[]) {
+  const proc = Bun.spawn(['gcloud', ...gcloudArgs], { stdout: 'pipe', stderr: 'pipe', timeout: 15_000, killSignal: 'SIGKILL' });
+  return Promise.all([Bun.readableStreamToText(proc.stdout), proc.exited]);
+}
+
 async function doctor(flags: string[]) {
   console.log('🔍 [Fable Agentic WhatsApp Doctor] Diagnosing environment...\n');
   const preflightOnly = flags.includes('--preflight');
@@ -43,14 +48,10 @@ async function doctor(flags: string[]) {
     uiBuilt: () => existsSync('./ui/dist/index.html'),
     gcloudAuthenticated: async () => {
       // Same path GeminiClient uses: active gcloud account token plus a project. Bounded so a stuck helper cannot hang the doctor.
-      const run = (args: string[]) => {
-        const proc = Bun.spawn(['gcloud', ...args], { stdout: 'pipe', stderr: 'pipe', timeout: 15_000, killSignal: 'SIGKILL' });
-        return Promise.all([new Response(proc.stdout as unknown as BodyInit).text(), proc.exited]);
-      };
-      const [token, tokenExit] = await run(['auth', 'print-access-token']);
+      const [token, tokenExit] = await runGcloud(['auth', 'print-access-token']);
       if (tokenExit !== 0 || token.trim().length < 20) throw new Error('gcloud could not print an access token (or timed out)');
       if (process.env.GOOGLE_CLOUD_PROJECT) return true;
-      const [project] = await run(['config', 'get-value', 'project']);
+      const [project] = await runGcloud(['config', 'get-value', 'project']);
       if (!project.trim()) throw new Error('no Google Cloud project is set');
       return true;
     },

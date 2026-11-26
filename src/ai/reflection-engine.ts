@@ -1,5 +1,7 @@
+import { isRecord } from './response-validation';
+
 import type { GeminiClient } from './gemini-client';
-import { DualMemoryManager, type FailureLogEntry } from '../domain/learning-memory';
+import type { DualMemoryManager, FailureLogEntry } from '../domain/learning-memory';
 import type { ChatMessage } from '../domain/types';
 import { executeWithModelFallback, resolveModelChain } from './model-fallback';
 import type { RsiCycleOrchestrator } from './rsi-loop';
@@ -62,6 +64,10 @@ YOUR EVALUATION OBJECTIVES:
    - Respond ONLY with valid JSON conforming to the requested schema.
    - Never output credentials, passwords, or tokens.
 `;
+
+function isBoundedString(value: unknown, max: number): value is string {
+  return typeof value === 'string' && value.trim().length > 0 && value.length <= max;
+}
 
 export class ReflectionEngine {
   private gemini: GeminiClient;
@@ -173,7 +179,7 @@ Analyze this data and return your evaluation strictly in the following JSON stru
     
     }, { provider: 'gemini', lane: 'background' });
 
-    let parsed: any;
+    let parsed: unknown;
     try {
       parsed = JSON.parse(response.text);
     } catch {
@@ -181,6 +187,8 @@ Analyze this data and return your evaluation strictly in the following JSON stru
       const cleaned = response.text.replace(/```(?:json)?/gi, '').trim();
       parsed = JSON.parse(cleaned);
     }
+
+    if (!isRecord(parsed)) throw new Error('Reflection response must be a JSON object');
 
     let selfCorrectionsDetected = 0;
     let rulesAdded = 0;
@@ -192,8 +200,7 @@ Analyze this data and return your evaluation strictly in the following JSON stru
     // fully type-validated before any write, customer facts bind to THIS thread's server-supplied
     // chatId, and global operational instructions (rules and best practices alike) require explicit
     // human moderation feedback recorded for THIS chat.
-    const bounded = (value: unknown, max: number): value is string =>
-      typeof value === 'string' && value.trim().length > 0 && value.length <= max;
+    const bounded = isBoundedString;
     const MAX_PER_REFLECTION = 10;
     const KNOWN_STAGES = new Set(['lead', 'qualified', 'negotiation', 'customer', 'vip']);
     // Only feedback recorded for this thread authorizes anything for this thread.
@@ -342,7 +349,9 @@ Analyze this data and return your evaluation strictly in the following JSON stru
       localTacticsAdded,
       factsAdded,
       conversationalSignalsDetected: conversationalSignals.length,
-      summary: parsed.threadSemanticSummary || `Reflected on ${messages.length} messages`,
+      summary: typeof parsed.threadSemanticSummary === 'string' && parsed.threadSemanticSummary
+        ? parsed.threadSemanticSummary
+        : `Reflected on ${messages.length} messages`,
       compacted
     };
   }
@@ -394,8 +403,9 @@ Return JSON:
         this.memoryManager.compactWorkbook(parsed.distilledRules);
         return true;
       }
-    } catch (err: any) {
-      console.warn('⚠️ [ReflectionEngine] Context compaction failed:', err.message);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn('⚠️ [ReflectionEngine] Context compaction failed:', msg);
     }
     return false;
   }

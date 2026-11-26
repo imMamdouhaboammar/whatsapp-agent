@@ -4,6 +4,13 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { SqliteStore } from './db';
 import { ContinualHarnessStore } from './continual-harness';
+import { scrubCredentials } from './credential-scrubber';
+
+function errorCode(error: unknown): unknown {
+  return typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+}
+
+export { scrubCredentials };
 
 export interface FailureLogEntry {
   timestamp: string;
@@ -33,8 +40,20 @@ export interface NotebookState {
 export interface LearningPersistenceStore {
   saveLearningState(brandId: string, stateType: 'workbook' | 'notebook', content: string): Promise<void> | void;
   getLearningState(brandId: string, stateType: 'workbook' | 'notebook'): Promise<{ content: string; version: number; updatedAt: number } | undefined> | { content: string; version: number; updatedAt: number } | undefined;
-  saveReflectionRun?(record: any): Promise<void> | void;
-  getReflectionRuns?(chatId?: string, limit?: number): Promise<any[]> | any[];
+  saveReflectionRun?(record: {
+    id?: string;
+    brandId?: string;
+    chatId: string;
+    triggerReason: string;
+    inputMessageCount: number;
+    selfCorrectionsCount?: number;
+    rulesAdded?: number;
+    factsAdded?: number;
+    summary?: string;
+    rawEvaluationJson?: Record<string, unknown>;
+    createdAt?: number;
+  }): Promise<void> | void;
+  getReflectionRuns?(chatId?: string, limit?: number): Promise<unknown[]> | unknown[];
 }
 
 export interface DualMemoryOptions {
@@ -45,37 +64,6 @@ export interface DualMemoryOptions {
   brandId?: string;
   maxRulesThreshold?: number;
   maxTokensThreshold?: number;
-}
-
-/**
- * Unicode-aware fail-closed regex screening for credentials and secrets.
- * Prevents API keys, passwords, bearer tokens, OTPs, and credit cards from
- * persisting in long-term memory.
- */
-export function scrubCredentials(text: string): string {
-  if (!text) return text;
-  let scrubbed = text;
-
-  // 1. Common API keys (OpenAI sk-, Google AIza, Anthropic sk-ant-, GitHub ghp_, etc.)
-  scrubbed = scrubbed.replace(/\b(?:sk-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z-_]{35}|ghp_[A-Za-z0-9]{36}|xox[baprs]-[A-Za-z0-9-]+)\b/g, '[REDACTED_CREDENTIAL]');
-
-  // 2. Bearer tokens and Authorization headers
-  scrubbed = scrubbed.replace(/(?:Bearer\s+|token\s*[:=]\s*)[A-Za-z0-9_.-]{20,}/gi, '[REDACTED_CREDENTIAL]');
-
-  // 3. Passwords / Secrets in key-value patterns (Latin & Arabic words for password/secret)
-  scrubbed = scrubbed.replace(/(?:password|secret|passwd|الباسورد|باسورد|كلمة[\s_]*المر(?:ور)?|رمز[\s_]*الس(?:ري?)?)(?:\s*[:=]\s*|\s+is\s+|\s+(?:الخاصة\s+بي\s+هي|هي|هو)\s+)(\S+)/gi, (match, val) => {
-    return match.replace(val, '[REDACTED_CREDENTIAL]');
-  });
-
-  // 4. OTP / Verification codes (4-8 digits accompanied by code/otp/رمز)
-  scrubbed = scrubbed.replace(/(?:otp|code|pin|رمز(?:\s+التأكيد)?|كود)(?:\s*[:=]\s*|\s+is\s+|\s+)(\b\d{4,8}\b)/gi, (match, val) => {
-    return match.replace(val, '[REDACTED_CREDENTIAL]');
-  });
-
-  // 5. Credit card numbers (13 to 16 digits with optional spaces or dashes)
-  scrubbed = scrubbed.replace(/\b(?:\d{4}[ -]?){3}\d{1,4}\b/g, '[REDACTED_CREDENTIAL]');
-
-  return scrubbed;
 }
 
 export class DualMemoryManager {
@@ -134,7 +122,7 @@ export class DualMemoryManager {
     try {
       mkdirSync(this.storageDir, { recursive: true });
     } catch (err: unknown) {
-      if ((err as { code?: string })?.code !== 'EEXIST') {
+      if (errorCode(err) !== 'EEXIST') {
         // Ignore directory exists error
       }
     }
@@ -144,7 +132,7 @@ export class DualMemoryManager {
       this.workbookCache = this.parseWorkbook(wbRaw);
       this.localWorkbookTrusted = true;
     } catch (err: unknown) {
-      const isNotFound = err && typeof err === 'object' && 'code' in err && (err as { code: string }).code === 'ENOENT';
+      const isNotFound = errorCode(err) === 'ENOENT';
       if (isNotFound) {
         const defaultWb = this.formatWorkbook({
           bestPractices: [
@@ -169,7 +157,7 @@ export class DualMemoryManager {
       this.notebookCache = this.parseNotebook(nbRaw);
       this.localNotebookTrusted = true;
     } catch (err: unknown) {
-      const isNotFound = err && typeof err === 'object' && 'code' in err && (err as { code: string }).code === 'ENOENT';
+      const isNotFound = errorCode(err) === 'ENOENT';
       if (isNotFound) {
         const defaultNb = this.formatNotebook({
           threadSemantics: [],
@@ -204,7 +192,8 @@ export class DualMemoryManager {
    * the remote's lost update.
    */
   private async hydrateOne(stateType: 'workbook' | 'notebook'): Promise<void> {
-    const remote = await this.persistenceStore!.getLearningState(this.brandId, stateType);
+    if (!this.persistenceStore) return;
+    const remote = await this.persistenceStore.getLearningState(this.brandId, stateType);
     if (!remote?.content?.trim()) return;
     const path = stateType === 'workbook' ? this.workbookPath : this.notebookPath;
     const localTrusted = stateType === 'workbook' ? this.localWorkbookTrusted : this.localNotebookTrusted;
@@ -212,9 +201,8 @@ export class DualMemoryManager {
     try { localMtime = statSync(path).mtimeMs; } catch { /* missing mirror: remote wins */ }
     const remoteWins = !localTrusted || !localMtime || remote.updatedAt >= localMtime;
     if (remoteWins) {
-      const parsedState = stateType === 'workbook' ? this.parseWorkbook(remote.content) : undefined;
       if (stateType === 'workbook') {
-        this.workbookCache = parsedState!;
+        this.workbookCache = this.parseWorkbook(remote.content);
       } else {
         this.notebookCache = this.parseNotebook(remote.content);
       }
@@ -253,7 +241,7 @@ export class DualMemoryManager {
       writeFileSync(this.workbookPath, defaultWb, 'utf-8');
       this.workbookCache = this.parseWorkbook(defaultWb);
     } catch (err: unknown) {
-      if ((err as { code?: string })?.code !== 'ENOENT') {
+      if (errorCode(err) !== 'ENOENT') {
         console.warn('[DualMemory] Failed to reset workbook:', err);
       }
     }
@@ -267,7 +255,7 @@ export class DualMemoryManager {
       writeFileSync(this.notebookPath, defaultNb, 'utf-8');
       this.notebookCache = this.parseNotebook(defaultNb);
     } catch (err: unknown) {
-      if ((err as { code?: string })?.code !== 'ENOENT') {
+      if (errorCode(err) !== 'ENOENT') {
         console.warn('[DualMemory] Failed to reset notebook:', err);
       }
     }
@@ -594,8 +582,8 @@ export class DualMemoryManager {
           // Parse: - [timestamp] Incident: ... | Root Cause: ... | Action: ...
           const parts = trimmed.split('|');
           const timeIncident = parts[0]?.match(/-\s*\[(.*?)\]\s*Incident:\s*(.*)/i);
-          const timestamp = timeIncident ? timeIncident[1] : new Date().toISOString();
-          const incident = timeIncident ? timeIncident[2].trim() : parts[0].trim();
+          const timestamp = timeIncident?.[1] ?? new Date().toISOString();
+          const incident = (timeIncident?.[2] ?? parts[0] ?? '').trim();
           const rootCause = (parts[1] || '').replace(/Root Cause:\s*/i, '').trim();
           const correctiveAction = (parts[2] || '').replace(/Action:\s*/i, '').trim();
 
@@ -682,7 +670,7 @@ export class DualMemoryManager {
         if (headerMatch && headerMatch[1]) {
           const chatId = headerMatch[1].trim();
           const stageMatch = block.match(/- Stage:\s*([^\n]+)/i);
-          const stage = stageMatch ? stageMatch[1].trim() : 'lead';
+          const stage = stageMatch?.[1]?.trim() || 'lead';
           const traits: string[] = [];
           const traitMatches = block.match(/\*\s+([^\n]+)/g);
           if (traitMatches) {
@@ -724,7 +712,7 @@ export class DualMemoryManager {
         this.atomicMirrorWrite(this.notebookPath, remoteNb.content);
       }
       return true;
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.warn('⚠️ [DualMemoryManager] Failed to sync from persistence store:', describeErrorDetail(err));
       return false;
     }
@@ -776,14 +764,16 @@ export class DualMemoryManager {
       return;
     }
     this.persistChains[stateType] = this.persistChains[stateType].then(async () => {
-      if (revision < this.revisions[stateType]) return; // a newer snapshot is already queued
+      if (revision < this.revisions[stateType]) return undefined; // a newer snapshot is already queued
       await this.persistToStores(stateType, content, revision);
+      return undefined;
     });
   }
 
   private async persistToStores(stateType: 'workbook' | 'notebook', content: string, revision: number): Promise<void> {
+    if (!this.persistenceStore) return;
     try {
-      await this.persistenceStore!.saveLearningState(this.brandId, stateType, content);
+      await this.persistenceStore.saveLearningState(this.brandId, stateType, content);
       this.persistedRevisions[stateType] = Math.max(this.persistedRevisions[stateType], revision);
       if (this.persistedRevisions.workbook >= this.revisions.workbook &&
           this.persistedRevisions.notebook >= this.revisions.notebook) {

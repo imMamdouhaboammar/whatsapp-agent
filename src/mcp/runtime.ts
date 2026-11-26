@@ -2,7 +2,6 @@ import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import type { ModeratorAgent } from '../ai/moderator-agent';
 import type { MemoryStore } from '../domain/memory-store';
 import type { PairingState } from '../domain/types';
-import type { WhatsAppSocketClient } from '../transport/whatsapp-socket';
 import { createWhatsAppMcpServer } from './server';
 import { startManagedChannel, type ManagedChannel, type ManagedChannelClient } from './managed-channel';
 
@@ -39,7 +38,7 @@ export async function createMcpRuntime<C extends ManagedChannelClient>(deps: Mcp
   const server = createWhatsAppMcpServer({
     memoryStore: deps.memoryStore,
     moderatorAgent: deps.moderatorAgent,
-    whatsappClient: client as unknown as WhatsAppSocketClient,
+    whatsappClient: client,
     readOnly: mode === 'none'
   });
   return { server, channel, shutdown: async () => { await channel?.stop(); } };

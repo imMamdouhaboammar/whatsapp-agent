@@ -33,18 +33,21 @@ function wrap(value: Record<string, unknown>) {
 
 describe('Meta runtime outbound composition', () => {
   test('UI send reaches the Graph API once, then signed receipts advance the intent and a failure is recorded', async () => {
-    const graphCalls: Array<{ url: string; auth: string | null; body: any }> = [];
+    const graphCalls: Array<{ url: string; auth: string | null; body: unknown }> = [];
     let nextId = 1;
-    const fakeFetch = (async (url: string, init: RequestInit) => {
+    const fakeFetch = Object.assign(async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
       graphCalls.push({
-        url: String(url),
-        auth: new Headers(init.headers).get('authorization'),
-        body: JSON.parse(String(init.body))
+        url: request.url,
+        auth: request.headers.get('authorization'),
+        body: await request.json()
       });
       return new Response(JSON.stringify({ messages: [{ id: `wamid.outbound-${nextId++}` }] }), {
         status: 200, headers: { 'content-type': 'application/json' }
       });
-    }) as unknown as typeof fetch;
+    }, {
+      preconnect: () => { throw new Error('Unexpected preconnect'); }
+    });
 
     const agent = await createFableWhatsAppAgent({
       dataDir: ':memory:',
@@ -85,9 +88,9 @@ describe('Meta runtime outbound composition', () => {
       expect(sent.status).toBe(200);
       expect(sentBody.success).toBe(true);
       expect(graphCalls).toHaveLength(1);
-      expect(graphCalls[0].url).toBe('https://graph.facebook.com/v23.0/12345678901/messages');
-      expect(graphCalls[0].auth).toBe('Bearer ' + CONFIG.accessToken);
-      expect(graphCalls[0].body).toMatchObject({
+      expect(graphCalls[0]?.url).toBe('https://graph.facebook.com/v23.0/12345678901/messages');
+      expect(graphCalls[0]?.auth).toBe('Bearer ' + CONFIG.accessToken);
+      expect(graphCalls[0]?.body).toMatchObject({
         messaging_product: 'whatsapp', to: PHONE, type: 'text',
         text: { body: 'أهلا بك', preview_url: false }
       });

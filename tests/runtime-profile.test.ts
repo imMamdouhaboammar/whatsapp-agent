@@ -54,7 +54,7 @@ describe('WA-023 profiled bootstrap', () => {
       autoConnect: false,
       transport: 'meta-cloud',
       capabilityAutopilotBrandId: 'test-brand',
-      metaCloud: { config: fakeMetaConfig, fetch: (async () => new Response('{}')) as typeof fetch, now: () => 1_700_000_000_000 }
+      metaCloud: { config: fakeMetaConfig, fetch: async () => new Response('{}'), now: () => 1_700_000_000_000 }
     });
     expect(agent.metaClient).toBeDefined();
     expect(agent.whatsappClient).toBeUndefined();
@@ -95,9 +95,9 @@ describe('WA-023 profiled bootstrap', () => {
     });
     const matrix = agent.capabilityMatrix;
     expect(Array.isArray(matrix)).toBe(true);
-    const reflection = matrix.find((r: any) => r.capability === 'reflection');
+    const reflection = matrix.find((r) => r.capability === 'reflection');
     expect(reflection?.enabled).toBe(false);
-    const transport = matrix.find((r: any) => r.capability === 'transport:baileys');
+    const transport = matrix.find((r) => r.capability === 'transport:baileys');
     expect(transport?.enabled).toBe(true);
   }, 15_000);
 });

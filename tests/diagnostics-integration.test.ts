@@ -1,14 +1,14 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { Database } from 'bun:sqlite';
+import { Database, type SQLQueryBindings } from 'bun:sqlite';
 import { MemoryStore } from '../src/domain/memory-store';
-import type { ModeratorAgent } from '../src/ai/moderator-agent';
-import type { WhatsAppSocketClient } from '../src/transport/whatsapp-socket';
+import { ModeratorAgent } from '../src/ai/moderator-agent';
+import { WhatsAppSocketClient } from '../src/transport/whatsapp-socket';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SendIntentService } from '../src/domain/send-intent-service';
-import { SendLedger, type PersistedSendSummary, type SendIntentInput } from '../src/domain/send-ledger';
-import { DiagnosticsCore, type DiagnosticsSnapshot } from '../src/observability/diagnostics-core';
+import { SendLedger, type SendIntentInput } from '../src/domain/send-ledger';
+import { DiagnosticsCore } from '../src/observability/diagnostics-core';
 import { createApiServer } from '../src/server/api';
 import { SSEBroadcaster } from '../src/server/sse';
 
@@ -18,15 +18,6 @@ const chatId = '201123456789@s.whatsapp.net';
 const messageText = 'Sensitive customer message for diagnostics test';
 const sourceId = 'private-client-mutation';
 const nativeId = 'native-remote-message-id';
-
-type DiagnosticsResponse = {
-  persisted: PersistedSendSummary;
-  process: {
-    scope: 'current_process';
-    status: 'available' | 'unavailable';
-    snapshot: DiagnosticsSnapshot | null;
-  };
-};
 
 function memory() {
   const store = new MemoryStore({ dataDir: ':memory:' });
@@ -50,12 +41,16 @@ const intent = (overrides: Partial<SendIntentInput> = {}): SendIntentInput => ({
 });
 
 function api(store: MemoryStore, diagnostics: DiagnosticsCore) {
+  const whatsappClient = new WhatsAppSocketClient();
+  const moderatorAgent = new ModeratorAgent({ generateContent: async () => {
+    throw new Error('Unexpected model call in diagnostics test');
+  } }, store);
   return createApiServer({
     dashboardToken: ownerToken,
     memoryStore: store,
     diagnostics,
-    whatsappClient: { getState: () => ({ state: 'disconnected' }) } as unknown as WhatsAppSocketClient,
-    moderatorAgent: {} as unknown as ModeratorAgent,
+    whatsappClient,
+    moderatorAgent,
     sse: new SSEBroadcaster()
   });
 }
@@ -106,7 +101,8 @@ describe('S08 and S01 durable send diagnostics integration', () => {
     const original = ledger.createIntent(intent());
     const claim = ledger.claim(original.id, 'prior-process-worker', Date.now());
     expect(claim).toBeDefined();
-    ledger.uncertain(original.id, claim!.attempt.id);
+    if (!claim) throw new Error('Expected claim');
+    ledger.uncertain(original.id, claim.attempt.id);
     const retry = ledger.createRetryIntent(intent({
       parentIntentId: original.id,
       sourceId: `retry:${original.id}:owner-retry`
@@ -233,12 +229,11 @@ describe('S08 and S01 durable send diagnostics integration', () => {
     });
     expect(response.status).toBe(200);
     expect(response.headers.get('Cache-Control')).toBe('no-store');
-    const body = await response.json() as DiagnosticsResponse;
-    expect(body.persisted.source).toBe('sqlite_send_ledger');
-    expect(body.persisted.states.uncertain).toBe(1);
-    expect(body.persisted.totalIntents).toBe(1);
-    expect(body.process.scope).toBe('current_process');
-    expect(body.process.snapshot?.metrics.uncertainSends.count).toBe(0);
+    const body: unknown = await response.json();
+    expect(body).toMatchObject({
+      persisted: { source: 'sqlite_send_ledger', states: { uncertain: 1 }, totalIntents: 1 },
+      process: { scope: 'current_process', snapshot: { metrics: { uncertainSends: { count: 0 } } } }
+    });
     const json = JSON.stringify(body);
     for (const sensitive of [chatId, messageText, sourceId, nativeId, 'ambiguous private transport issue']) {
       expect(json).not.toContain(sensitive);
@@ -254,10 +249,11 @@ describe('S08 and S01 durable send diagnostics integration', () => {
       headers: { authorization: 'Bearer ' + ownerToken }
     });
     expect(response.status).toBe(200);
-    const body = await response.json() as DiagnosticsResponse;
-    expect(body.persisted.states.queued).toBe(1);
-    expect(body.process.status).toBe('unavailable');
-    expect(body.process.snapshot).toBeNull();
+    const body: unknown = await response.json();
+    expect(body).toMatchObject({
+      persisted: { states: { queued: 1 } },
+      process: { status: 'unavailable', snapshot: null }
+    });
     expect(JSON.stringify(body)).not.toContain('private instrumentation unavailable');
   });
 
@@ -324,10 +320,12 @@ describe('S08 and S01 durable send diagnostics integration', () => {
       const response = await api(reopened, new DiagnosticsCore()).request('/api/diagnostics', {
         headers: { authorization: 'Bearer ' + ownerToken }
       });
-      const body = await response.json() as DiagnosticsResponse;
+      const body: unknown = await response.json();
       expect(response.status).toBe(200);
-      expect(body.persisted.states.uncertain).toBe(1);
-      expect(body.process.snapshot?.traceCount).toBe(0);
+      expect(body).toMatchObject({
+        persisted: { states: { uncertain: 1 } },
+        process: { snapshot: { traceCount: 0 } }
+      });
     } finally {
       first?.close();
       reopened?.close();
@@ -346,29 +344,27 @@ describe('S08 and S01 durable send diagnostics integration', () => {
       let raced = false;
       let targetId = '';
       const prepare = raw.prepare.bind(raw);
-      const db = {
-        run: raw.run.bind(raw),
-        transaction: raw.transaction.bind(raw),
-        prepare: (sql: string) => {
-          const statement = prepare(sql);
-          if (!sql.includes('SELECT state, COUNT(*) AS count FROM send_intents')) return statement;
-          return {
-            all: () => {
-              const counts = statement.all();
-              if (!raced) {
-                raced = true;
-                writer.prepare("UPDATE send_intents SET state='read' WHERE id=?").run(targetId);
-              }
-              return counts;
+      raw.prepare = <Row, Params extends SQLQueryBindings | SQLQueryBindings[]>(sql: string, params?: Params) => {
+        const statement = prepare<Row, Params>(sql, params);
+        if (sql.includes('SELECT state, COUNT(*) AS count FROM send_intents')) {
+          const all = statement.all.bind(statement);
+          statement.all = (...bindings) => {
+            const counts = all(...bindings);
+            if (!raced) {
+              raced = true;
+              writer.prepare("UPDATE send_intents SET state='read' WHERE id=?").run(targetId);
             }
+            return counts;
           };
         }
-      } as unknown as Database;
-      const ledger = new SendLedger(db);
+        return statement;
+      };
+      const ledger = new SendLedger(raw);
       const entry = ledger.createIntent(intent(), 100);
       targetId = entry.id;
       const claim = ledger.claim(entry.id, 'worker', 500);
-      ledger.uncertain(entry.id, claim!.attempt.id, 'ambiguous', 1_000);
+      if (!claim) throw new Error('Expected claim');
+      ledger.uncertain(entry.id, claim.attempt.id, 'ambiguous', 1_000);
       const summary = ledger.getDiagnosticsSummary(60_000);
       expect(raced).toBe(true);
       expect(summary.states.uncertain).toBe(1);
@@ -387,21 +383,19 @@ describe('S08 and S01 durable send diagnostics integration', () => {
     const queued = ledger.createIntent(intent({ sourceId: 'queued-mutation' }));
     const accepted = ledger.createIntent(intent({ sourceId: 'accepted-mutation' }));
     const claimed = ledger.claim(accepted.id, 'test-worker', Date.now());
-    expect(claimed).toBeDefined();
-    expect(ledger.tryMarkNetworkStarted(accepted.id, claimed!.attempt.id)).toBe(true);
-    ledger.accepted(accepted.id, claimed!.attempt.id, nativeId);
+    if (!claimed) throw new Error('Expected claim');
+    expect(ledger.tryMarkNetworkStarted(accepted.id, claimed.attempt.id)).toBe(true);
+    ledger.accepted(accepted.id, claimed.attempt.id, nativeId);
     ledger.advanceReceipt(chatId, nativeId, 'read');
 
     const diagnostics = new DiagnosticsCore();
-    const body = await (await api(store, diagnostics).request('/api/diagnostics', {
+    const body: unknown = await (await api(store, diagnostics).request('/api/diagnostics', {
       headers: { authorization: 'Bearer ' + ownerToken }
-    })).json() as DiagnosticsResponse;
-    expect(body.persisted.states.queued).toBe(1);
-    expect(body.persisted.states.read).toBe(1);
-    expect(body.persisted.states.accepted).toBe(0);
-    expect(body.persisted.states.uncertain).toBe(0);
-    expect(body.persisted.totalIntents).toBe(2);
-    expect(body.process.snapshot?.traceCount).toBe(0);
+    })).json();
+    expect(body).toMatchObject({
+      persisted: { states: { queued: 1, read: 1, accepted: 0, uncertain: 0 }, totalIntents: 2 },
+      process: { snapshot: { traceCount: 0 } }
+    });
     expect(queued.state).toBe('queued');
   });
 });

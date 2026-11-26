@@ -1,3 +1,4 @@
+import { rejects } from 'node:assert/strict';
 import { describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
@@ -93,29 +94,29 @@ describe('PostgreSQL S3 action-journal runtime contract', () => {
   test('creates brand-owned workflow and rejects foreign ownership', async () => {
     const pg = new FakePg();
     const journal = new PostgresActionJournal(pg, { now: () => 1760000000000 });
-    await expect(journal.createWorkflow({
+    expect(await journal.createWorkflow({
       brandId: 'brand-a', contactId: 'contact-a', goal: 'Restock item', workflowId: 'workflow-1'
-    })).resolves.toBe('workflow-1');
-    await expect(journal.createWorkflow({
+    })).toBe('workflow-1');
+    await rejects(journal.createWorkflow({
       brandId: 'brand-b', contactId: 'contact-b', goal: 'Different order', workflowId: 'workflow-1'
-    })).rejects.toThrow(/owner|brand/i);
-    await expect(journal.createWorkflow({
+    }), /owner|brand/i);
+    await rejects(journal.createWorkflow({
       brandId: 'brand-a', contactId: 'different-contact', goal: 'Restock item', workflowId: 'workflow-1'
-    })).rejects.toThrow(/conflict/i);
-    await expect(journal.createWorkflow({
+    }), /conflict/i);
+    await rejects(journal.createWorkflow({
       brandId: 'brand-a', contactId: 'contact-a', goal: 'Changed goal', workflowId: 'workflow-1'
-    })).rejects.toThrow(/conflict/i);
-    await expect(journal.createWorkflow({
+    }), /conflict/i);
+    expect(await journal.createWorkflow({
       brandId: 'brand-a', contactId: 'contact-a', goal: 'Restock item', workflowId: 'workflow-1'
-    })).resolves.toBe('workflow-1');
-    await expect(journal.updateWorkflow('brand-b', 'workflow-1', 'completed')).rejects.toThrow(/not found/i);
+    })).toBe('workflow-1');
+    await rejects(journal.updateWorkflow('brand-b', 'workflow-1', 'completed'), /not found/i);
     await journal.updateWorkflow('brand-a', 'workflow-1', 'gathering_evidence');
     expect(pg.workflows.get('workflow-1')?.state).toBe('gathering_evidence');
     expect(pg.workflows.get('workflow-1')?.brand_id).toBe('brand-a');
     const longGoal = 'Review customer context '.repeat(20);
-    await expect(journal.createWorkflow({
+    expect(await journal.createWorkflow({
       brandId: 'brand-a', contactId: 'contact-a', goal: longGoal, workflowId: 'long-goal-workflow'
-    })).resolves.toBe('long-goal-workflow');
+    })).toBe('long-goal-workflow');
     expect(pg.workflows.get('long-goal-workflow')?.goal).toBe(longGoal);
   });
 
@@ -129,7 +130,7 @@ describe('PostgreSQL S3 action-journal runtime contract', () => {
       journal.begin(invocation('brand-a')),
       journal.begin(invocation('brand-a'))
     ]);
-    expect([first.isNew, second.isNew].sort()).toEqual([false, true]);
+    expect([first.isNew, second.isNew].toSorted((a, b) => Number(a) - Number(b))).toEqual([false, true]);
     await journal.finish('brand-a', 'same-key', 'confirmed', { receipt: 'provider-123' });
     const repeat = await journal.begin(invocation('brand-a'));
     expect(repeat.isNew).toBe(false);
@@ -148,18 +149,16 @@ describe('PostgreSQL S3 action-journal runtime contract', () => {
       brandId: 'brand-b', contactId: 'contact-b', goal: 'Return parcel', workflowId: 'workflow-2'
     });
     await journal.begin(invocation('brand-a'));
-    await expect(journal.begin(invocation('brand-a', 'same-key', { sku: 'SKU-13' }))).rejects.toThrow(/idempotency/i);
+    await rejects(journal.begin(invocation('brand-a', 'same-key', { sku: 'SKU-13' })), /idempotency/i);
     expect(await journal.getRun('brand-b', 'same-key')).toBeNull();
     const other = await journal.begin({ ...invocation('brand-b'), workflowId: 'workflow-2' });
     expect(other.isNew).toBe(true);
     expect(pg.runs.size).toBe(2);
-    await expect(journal.begin({ ...invocation('brand-b', 'cross-workflow'), workflowId: 'workflow-1' }))
-      .rejects.toThrow(/workflow|brand/i);
+    await rejects(journal.begin({ ...invocation('brand-b', 'cross-workflow'), workflowId: 'workflow-1' }), /workflow|brand/i);
     await journal.createWorkflow({
       brandId: 'brand-a', contactId: 'contact-a', goal: 'Second workflow', workflowId: 'workflow-3'
     });
-    await expect(journal.begin({ ...invocation('brand-a'), workflowId: 'workflow-3' }))
-      .rejects.toThrow(/idempotency|workflow/i);
+    await rejects(journal.begin({ ...invocation('brand-a'), workflowId: 'workflow-3' }), /idempotency|workflow/i);
   });
 
   test('completion is idempotent, and an uncertain receipt can reconcile once', async () => {
@@ -173,10 +172,8 @@ describe('PostgreSQL S3 action-journal runtime contract', () => {
     await journal.finish('brand-a', 'same-key', 'uncertain');
     await journal.finish('brand-a', 'same-key', 'confirmed', { transaction: 'receipt-7' });
     await journal.finish('brand-a', 'same-key', 'confirmed', { transaction: 'receipt-7' });
-    await expect(journal.finish('brand-a', 'same-key', 'uncertain'))
-      .rejects.toThrow(/completion|conflict/i);
-    await expect(journal.finish('brand-a', 'same-key', 'confirmed', { transaction: 'forged' }))
-      .rejects.toThrow(/completion|conflict/i);
+    await rejects(journal.finish('brand-a', 'same-key', 'uncertain'), /completion|conflict/i);
+    await rejects(journal.finish('brand-a', 'same-key', 'confirmed', { transaction: 'forged' }), /completion|conflict/i);
     expect((await journal.getRun('brand-a', 'same-key'))?.status).toBe('confirmed');
     expect(JSON.parse((await journal.getRun('brand-a', 'same-key'))?.output_json ?? 'null'))
       .toEqual({ transaction: 'receipt-7' });
@@ -208,7 +205,7 @@ describe('PostgreSQL S3 action-journal runtime contract', () => {
     await journal.begin(invocation('brand-a'));
     await journal.finish('brand-a', 'same-key', 'confirmed', { receipt: 'done' });
     await journal.updateWorkflow('brand-a', 'workflow-1', 'completed');
-    await expect(journal.begin(invocation('brand-a', 'new-action'))).rejects.toThrow(/terminal|completed/i);
+    await rejects(journal.begin(invocation('brand-a', 'new-action')), /terminal|completed/i);
     const replay = await journal.begin(invocation('brand-a'));
     expect(replay.isNew).toBe(false);
     expect(replay.row.status).toBe('confirmed');
@@ -251,24 +248,24 @@ describe('PostgreSQL S3 action-journal runtime contract', () => {
     const pg = new FakePg();
     const journal = new PostgresActionJournal(pg);
     const credential = ['Bearer', 'x'.repeat(28)].join(' ');
-    await expect(journal.createWorkflow({
+    await rejects(journal.createWorkflow({
       brandId: 'brand-a', contactId: credential, goal: 'Check item', workflowId: 'workflow-1'
-    })).rejects.toThrow(/credential/i);
+    }), /credential/i);
     await journal.createWorkflow({
       brandId: 'brand-a', contactId: 'contact-a', goal: 'Check item', workflowId: 'workflow-1'
     });
-    await expect(journal.updateWorkflow('brand-a', 'workflow-1', credential)).rejects.toThrow(/credential/i);
-    await expect(journal.begin({ ...invocation('brand-a'), toolName: credential })).rejects.toThrow(/credential/i);
-    await expect(journal.begin({ ...invocation('brand-a'), idempotencyKey: credential })).rejects.toThrow(/credential/i);
+    await rejects(journal.updateWorkflow('brand-a', 'workflow-1', credential), /credential/i);
+    await rejects(journal.begin({ ...invocation('brand-a'), toolName: credential }), /credential/i);
+    await rejects(journal.begin({ ...invocation('brand-a'), idempotencyKey: credential }), /credential/i);
     expect(pg.runs.size).toBe(0);
   });
 
   test('invalid identities and missing records fail closed, never create orphan writes', async () => {
     const pg = new FakePg();
     const journal = new PostgresActionJournal(pg);
-    await expect(journal.begin(invocation('brand-a'))).rejects.toThrow(/workflow/i);
-    await expect(journal.createWorkflow({ brandId: '', contactId: 'contact', goal: 'goal' })).rejects.toThrow(/brand/i);
-    await expect(journal.finish('brand-a', 'missing-key', 'confirmed')).rejects.toThrow(/not found/i);
+    await rejects(journal.begin(invocation('brand-a')), /workflow/i);
+    await rejects(journal.createWorkflow({ brandId: '', contactId: 'contact', goal: 'goal' }), /brand/i);
+    await rejects(journal.finish('brand-a', 'missing-key', 'confirmed'), /not found/i);
     expect(pg.runs.size).toBe(0);
     expect(pg.workflows.size).toBe(0);
   });
@@ -329,7 +326,7 @@ describe('PostgreSQL cutover protection', () => {
         const guard = setTimeout(() => child.kill(), 3000);
         try {
           const code = await child.exited;
-          const diagnostic = await new Response(child.stderr as unknown as BodyInit).text();
+          const diagnostic = await new Response(child.stderr).text();
           expect(code).not.toBe(0);
           expect(diagnostic).toContain('PostgreSQL runtime cutover is not yet available');
           expect(existsSync(join(tempRoot, 'data'))).toBe(false);

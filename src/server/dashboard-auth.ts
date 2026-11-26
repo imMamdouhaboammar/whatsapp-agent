@@ -5,10 +5,13 @@ import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 const SESSION_COOKIE = 'wa_owner_session';
 const SESSION_SECONDS = 12 * 60 * 60;
 
+function sha256Digest(value: string): Buffer {
+  return createHash('sha256').update(value).digest();
+}
+
 function matchesToken(provided: string, expected: string): boolean {
   if (!provided || !expected) return false;
-  const hash = (value: string) => createHash('sha256').update(value).digest();
-  return timingSafeEqual(hash(provided), hash(expected));
+  return timingSafeEqual(sha256Digest(provided), sha256Digest(expected));
 }
 
 function isLoopback(host: string, maxDepth = 1): boolean {
@@ -39,7 +42,7 @@ export function registerDashboardAuth(app: Hono, token: string): void {
   function authenticated(headers: { authorization?: string; cookie?: string }, maxDepth = 1): boolean {
     if (maxDepth < 1) return false;
     const bearer = /^Bearer\s+(.+)$/i.exec(headers.authorization ?? '');
-    return (bearer !== null && matchesToken(bearer[1], token)) ||
+    return (bearer?.[1] !== undefined && matchesToken(bearer[1], token)) ||
       sessionAuthenticated(headers.cookie);
   }
 
@@ -65,7 +68,10 @@ export function registerDashboardAuth(app: Hono, token: string): void {
     for (const [id, expires] of sessions) {
       if (expires <= Date.now()) sessions.delete(id);
     }
-    if (sessions.size >= 64) sessions.delete(sessions.keys().next().value!);
+    if (sessions.size >= 64) {
+      const oldestKey = sessions.keys().next().value;
+      if (oldestKey !== undefined) sessions.delete(oldestKey);
+    }
 
     const sessionId = crypto.randomUUID();
     sessions.set(sessionId, Date.now() + SESSION_SECONDS * 1000);

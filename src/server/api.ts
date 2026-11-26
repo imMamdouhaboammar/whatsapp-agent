@@ -1,7 +1,7 @@
 import { unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
 import { streamSSE } from 'hono/streaming';
 import { MEDIA_LIMITS, sniffImageMime, sharedMediaLimiter } from '../agent/media-bounds';
@@ -17,9 +17,11 @@ import type { FableFunnelEngine } from '../funnel';
 import { createDefaultFunnelEngine } from '../funnel/default-engine';
 import { registerDashboardAuth } from './dashboard-auth';
 import { UserMemoryManager } from '../domain/user-memory';
-import type { ConversationStyle } from '../ai/adaptive-style';
 import { handleGitHubWebhook } from './github-webhook';
 import { cleanWorkspaceData } from './workspace-cleaner';
+import { registerBroadcastRoutes } from './broadcast-routes';
+import { BroadcastComposer } from '../agent/broadcast-composer';
+import { BroadcastOrchestrator } from '../agent/broadcast-orchestrator';
 import type { DualMemoryManager } from '../domain/learning-memory';
 import type { ReflectionWorker } from '../agent/reflection-worker';
 import type { ReflectionEngine } from '../ai/reflection-engine';
@@ -60,6 +62,7 @@ export interface ApiDependencies {
   transportMode?: 'baileys' | 'meta-cloud';
   dataDir?: string;
   mcpClientManager?: McpClientManager;
+  broadcastOrchestrator?: BroadcastOrchestrator;
 }
 
 export function createApiServer(deps: ApiDependencies): Hono {
@@ -74,10 +77,16 @@ export function createApiServer(deps: ApiDependencies): Hono {
       return deps.whatsappClient.sendMessage(chatId, text, options);
     },
     prepareVoice: deps.voiceSynthesizer
-      ? (text) => deps.voiceSynthesizer!.synthesizeVoice(text, deps.moderatorAgent.getPersona().voiceName)
+      ? (text) => {
+          if (!deps.voiceSynthesizer) throw new Error('Voice synthesizer unavailable');
+          return deps.voiceSynthesizer.synthesizeVoice(text, deps.moderatorAgent.getPersona().voiceName);
+        }
       : undefined,
     sendVoice: deps.voiceSynthesizer && deps.whatsappClient
-      ? (chatId, audio, options) => deps.whatsappClient!.sendVoiceNote(chatId, audio, { replyToMessageId: options?.replyToMessageId })
+      ? (chatId, audio, options) => {
+          if (!deps.whatsappClient) throw new Error('WhatsApp client unavailable');
+          return deps.whatsappClient.sendVoiceNote(chatId, audio, { replyToMessageId: options?.replyToMessageId });
+        }
       : undefined,
     publish: (event, data) => deps.sse.broadcast(event, data)
   });
@@ -91,6 +100,7 @@ export function createApiServer(deps: ApiDependencies): Hono {
     const origin=c.req.header('origin');
     if(origin && origin !== new URL(c.req.url).origin && !trustedOrigin(origin) && !['GET','HEAD','OPTIONS'].includes(c.req.method))return c.json({error:'Cross-origin request forbidden'},403);
     await next();
+    return undefined;
   });
   app.use('*', cors({origin:(origin)=>trustedOrigin(origin)?origin:''}));
   registerDashboardAuth(app, deps.dashboardToken ?? '');
@@ -115,7 +125,7 @@ export function createApiServer(deps: ApiDependencies): Hono {
   });
 
   // Liveness & Readiness Probes
-  const handleLiveness = (c: any) => {
+  const handleLiveness = (c: Context) => {
     let dbAvailable = false;
     try {
       dbAvailable = Boolean(deps.memoryStore);
@@ -134,7 +144,7 @@ export function createApiServer(deps: ApiDependencies): Hono {
   app.get('/healthz', handleLiveness);
   app.get('/api/healthz', handleLiveness);
 
-  const handleReadiness = (c: any) => {
+  const handleReadiness = (c: Context) => {
     let dbOk = false;
     let chatsCount = 0;
     try {
@@ -269,7 +279,10 @@ export function createApiServer(deps: ApiDependencies): Hono {
     }
     c.header('Cache-Control', 'no-store');
     const rawTier = c.req.query('tier');
-    const tier = rawTier ? (Number(rawTier) as 1 | 2 | 3) : undefined;
+    const tier = rawTier === undefined || rawTier === '' ? undefined : Number(rawTier);
+    if (tier !== undefined && tier !== 1 && tier !== 2 && tier !== 3) {
+      return c.json({ error: 'Invalid tier: expected 1, 2 or 3' }, 400);
+    }
     return c.json({ chatId, folds: deps.memoryStore.getFolds(chatId, tier) });
   });
 
@@ -282,10 +295,11 @@ export function createApiServer(deps: ApiDependencies): Hono {
     const engine = typeof deps.moderatorAgent?.getContextFoldEngine === 'function'
       ? deps.moderatorAgent.getContextFoldEngine()
       : null;
+    const maybePreferredModel = deps.moderatorAgent && 'getPreferredModel' in deps.moderatorAgent ? deps.moderatorAgent.getPreferredModel : undefined;
     const model = typeof deps.moderatorAgent?.getPersona === 'function'
       ? deps.moderatorAgent.getPersona()?.model
-      : (typeof (deps.moderatorAgent as any)?.getPreferredModel === 'function'
-        ? (deps.moderatorAgent as any).getPreferredModel()
+      : (typeof maybePreferredModel === 'function'
+        ? maybePreferredModel.call(deps.moderatorAgent)
         : undefined);
     const status = engine?.getContextBudgetStatus(chatId, model);
     return c.json({ chatId, status: status ?? null });
@@ -296,7 +310,7 @@ export function createApiServer(deps: ApiDependencies): Hono {
     if (deps.whatsappClient?.canonicalizeJid) {
       chatId = await deps.whatsappClient.canonicalizeJid(chatId);
     }
-    const query = String(c.req.query('query') ?? c.req.query('q') ?? '');
+    const query = c.req.query('query') ?? c.req.query('q') ?? '';
     const limit = Math.max(1, Math.min(50, Number(c.req.query('limit') ?? 25)));
     c.header('Cache-Control', 'no-store');
     return c.json({ chatId, query, results: deps.memoryStore.searchMemory(chatId, query, limit) });
@@ -358,7 +372,7 @@ export function createApiServer(deps: ApiDependencies): Hono {
         type: intent.actionKind === 'voice' ? 'audio' : 'text',
         replyToId: intent.replyToMessageId,
         status: 'pending',
-        deliveryState: intent.state as ChatMessage['deliveryState'],
+        deliveryState: intent.state === 'queued' || intent.state === 'attempting' || intent.state === 'uncertain' || intent.state === 'failed' ? intent.state : undefined,
         lastAttemptAt: lastAttemptMap.get(intent.id),
         nativeMessageId: intent.nativeMessageId
       };
@@ -401,8 +415,10 @@ export function createApiServer(deps: ApiDependencies): Hono {
         needsReconciliation: result.intent.state === 'uncertain'
       };
       return success ? c.json(payload) : c.json(payload, 202);
-    } catch (error: any) {
-      return c.json({ error: error.message }, error.name === 'SendIntentConflictError' ? 409 : 500);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      const name = error instanceof Error ? error.name : '';
+      return c.json({ error: msg }, name === 'SendIntentConflictError' ? 409 : 500);
     }
   });
 
@@ -423,8 +439,8 @@ export function createApiServer(deps: ApiDependencies): Hono {
         needsReconciliation: result.intent.state === 'uncertain'
       };
       return success ? c.json(payload) : c.json(payload, 202);
-    } catch (error: any) {
-      return c.json({ error: error.message }, 409);
+    } catch (error: unknown) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 409);
     }
   });
 
@@ -532,8 +548,10 @@ export function createApiServer(deps: ApiDependencies): Hono {
         needsReconciliation: approved.result.intent.state === 'uncertain'
       };
       return success ? c.json(payload) : c.json(payload, 202);
-    } catch (error: any) {
-      return c.json({ error: error.message }, error.name === 'SendIntentConflictError' ? 409 : 500);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      const name = error instanceof Error ? error.name : '';
+      return c.json({ error: msg }, name === 'SendIntentConflictError' ? 409 : 500);
     }
   });
 
@@ -890,21 +908,23 @@ export function createApiServer(deps: ApiDependencies): Hono {
       } finally {
         try {
           unlinkSync(inPath);
-        } catch (err: any) {
-          if (err?.code !== 'ENOENT') {
-            console.warn('[StickerStudio] Failed to remove temp input file:', err?.message || err);
+        } catch (err: unknown) {
+          const code = err && typeof err === 'object' && 'code' in err ? (err as { code?: unknown }).code : undefined;
+          if (code !== 'ENOENT') {
+            console.warn('[StickerStudio] Failed to remove temp input file:', err instanceof Error ? err.message : err);
           }
         }
         try {
           unlinkSync(outPath);
-        } catch (err: any) {
-          if (err?.code !== 'ENOENT') {
-            console.warn('[StickerStudio] Failed to remove temp output file:', err?.message || err);
+        } catch (err: unknown) {
+          const code = err && typeof err === 'object' && 'code' in err ? (err as { code?: unknown }).code : undefined;
+          if (code !== 'ENOENT') {
+            console.warn('[StickerStudio] Failed to remove temp output file:', err instanceof Error ? err.message : err);
           }
         }
       }
-    } catch (err: any) {
-      return c.json({ error: `Sticker processing failed: ${err.message}` }, 500);
+    } catch (err: unknown) {
+      return c.json({ error: `Sticker processing failed: ${err instanceof Error ? err.message : String(err)}` }, 500);
     }
   });
 
@@ -922,15 +942,15 @@ export function createApiServer(deps: ApiDependencies): Hono {
           pingInterval = undefined;
         }
       };
-      let endStream: () => void = () => {};
+      let resolveEndStream: (() => void) | undefined;
       const streamEnded = new Promise<void>((resolve) => {
-        endStream = resolve;
+        resolveEndStream = resolve;
       });
       let unsubscribe: (() => void) | null = null;
       const finish = () => {
         stopPing();
         unsubscribe?.();
-        endStream();
+        resolveEndStream?.();
       };
       // Broadcast writes are serialized and awaited per subscriber behind a
       // bounded queue; a slow client is disconnected so it reconnects and
@@ -950,7 +970,7 @@ export function createApiServer(deps: ApiDependencies): Hono {
       );
       if (!unsubscribe) {
         // Lost a capacity race; ending here lets streamSSE close the stream.
-        endStream();
+        resolveEndStream?.();
         return;
       }
 
@@ -991,14 +1011,20 @@ export function createApiServer(deps: ApiDependencies): Hono {
       return c.json({ error: 'Funnel engine is disabled in this runtime profile' }, 503);
     }
     // Unauthenticated route: never expose per-target credentials.
-    const methods = funnelEngine.registry.listMethods().map((m) => ({
-      ...m,
-      targets: (m.targets ?? []).map(({ authHeader, headers, ...safe }) => ({
-        ...safe,
-        hasAuthHeader: Boolean(authHeader),
-        headerNames: Object.keys(headers ?? {})
-      }))
-    }));
+    const rawMethods = funnelEngine.registry.listMethods();
+    const methods = [];
+    for (const m of rawMethods) {
+      const safeTargets = [];
+      for (const t of m.targets ?? []) {
+        const { authHeader, headers, ...safe } = t;
+        safeTargets.push({
+          ...safe,
+          hasAuthHeader: Boolean(authHeader),
+          headerNames: Object.keys(headers ?? {})
+        });
+      }
+      methods.push({ ...m, targets: safeTargets });
+    }
     return c.json({ methods });
   });
 
@@ -1106,8 +1132,15 @@ export function createApiServer(deps: ApiDependencies): Hono {
 
   app.post('/api/chats/:jid/style', async (c) => {
     const jid = c.req.param('jid');
-    const body = await c.req.json().catch(() => ({}));
-    const style = (body.style as ConversationStyle) || 'casual';
+    const body: unknown = await c.req.json().catch(() => ({}));
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+      return c.json({ error: 'Invalid style payload' }, 400);
+    }
+    const value = 'style' in body ? body.style : undefined;
+    const style = value === undefined ? 'casual' : value;
+    if (style !== 'professional' && style !== 'casual' && style !== 'playful' && style !== 'assertive' && style !== 'empathetic') {
+      return c.json({ error: 'Unsupported conversation style' }, 400);
+    }
     deps.memoryStore.setChatStyle(jid, style);
     return c.json({ success: true, style });
   });
@@ -1200,6 +1233,23 @@ export function createApiServer(deps: ApiDependencies): Hono {
 
     return c.json({ error: `Unknown reset target '${target}'. Allowed: all, session, chats, drafts, memories, learning, cache` }, 400);
   });
+
+  const broadcastStore = typeof deps.memoryStore?.getBroadcastStore === 'function'
+    ? deps.memoryStore.getBroadcastStore()
+    : undefined;
+  if (broadcastStore) {
+    const broadcastOrchestrator = deps.broadcastOrchestrator ?? new BroadcastOrchestrator({
+      store: broadcastStore,
+      memoryStore: deps.memoryStore,
+      composer: new BroadcastComposer(),
+      whatsappClient: deps.whatsappClient,
+      voiceSynthesizer: deps.voiceSynthesizer,
+      voiceName: () => deps.moderatorAgent.getPersona().voiceName,
+      defaultTransport: deps.transportMode,
+      publish: (event, data) => deps.sse.broadcast(event, data),
+    });
+    registerBroadcastRoutes(app, { store: broadcastStore, orchestrator: broadcastOrchestrator });
+  }
 
   return app;
 }

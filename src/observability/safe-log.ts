@@ -7,10 +7,10 @@ const processSalt = randomBytes(16).toString('hex');
 // A short or guessable configured salt would let someone enumerate phone numbers against logged hashes,
 // so values under 16 characters are ignored in favor of the random per-process salt. Use a random secret.
 const MIN_SALT_LENGTH = 16;
-function configuredSalt(): string {
+const configuredSalt = (): string => {
   const value = process.env.LOG_HASH_SALT ?? '';
   return value.length >= MIN_SALT_LENGTH ? value : processSalt;
-}
+};
 
 export function hashChatId(chatId: string, salt: string = configuredSalt()): string {
   return createHmac('sha256', salt).update(chatId).digest('hex').slice(0, 12);
@@ -79,7 +79,7 @@ export function describeError(err: unknown): string {
   if (!(err instanceof Error)) return typeof err;
   // Names and codes are only logged when they look like identifiers, so content cannot ride in them.
   const safeName = /^[A-Za-z][A-Za-z0-9_]{0,39}$/.test(err.name) ? err.name : 'Error';
-  const code = (err as { code?: unknown }).code;
+  const code = 'code' in err ? err.code : undefined;
   const safeCode = typeof code === 'string' && /^[A-Z0-9_]{1,40}$/.test(code) ? code
     : typeof code === 'number' && Number.isFinite(code) ? String(code) : '';
   return safeCode ? `${safeName}:${safeCode}` : safeName;
@@ -96,7 +96,7 @@ export function describeErrorDetail(err: unknown): string {
   // numeric status keep the log actionable without the risk.
   if (!(err instanceof Error)) return describeError(err);
   const base = describeError(err);
-  const status = (err as { status?: unknown; statusCode?: unknown }).status ?? (err as { statusCode?: unknown }).statusCode;
+  const status = ('status' in err ? err.status : undefined) ?? ('statusCode' in err ? err.statusCode : undefined);
   const safeStatus = typeof status === 'number' && Number.isFinite(status) ? `:${status}` : '';
   return `${base}${safeStatus}`;
 }

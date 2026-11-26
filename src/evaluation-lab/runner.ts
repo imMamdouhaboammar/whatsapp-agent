@@ -6,11 +6,10 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { ModeratorAgent, DEFAULT_MODERATOR_PERSONA } from '../ai/moderator-agent';
-import type { GeminiClient } from '../ai/gemini-client';
 import { MemoryStore } from '../domain/memory-store';
 import { scrubCredentials } from '../domain/learning-memory';
 import { evaluatePermission } from '../domain/permission-engine';
-import type { AgentMode, AutonomyAction, ChatMessage, PolicyConfig } from '../domain/types';
+import type { AgentMode, AutonomyAction, ChatMessage, PolicyConfig, PolicyRule } from '../domain/types';
 
 export type EvaluationLocale = 'ar-EG' | 'ar-SA' | 'en';
 export type EvaluationTurn = { sender: 'contact' | 'owner'; text: string };
@@ -99,9 +98,8 @@ type ReplayObservation = Pick<EvaluationResult, 'observed_action' | 'should_send
     infrastructureError?: string;
   };
 
-const ALLOWED_LOCALES: readonly EvaluationLocale[] = ['ar-EG', 'ar-SA', 'en'];
-const ALLOWED_MODES: readonly AgentMode[] = ['autopilot', 'copilot', 'human'];
-const ALLOWED_ACTIONS: readonly AutonomyAction[] = ['reply', 'draft', 'human', 'ignore', 'act'];
+const ALLOWED_LOCALES = new Set<string>(['ar-EG', 'ar-SA', 'en']);
+const ALLOWED_MODES = new Set<string>(['autopilot', 'copilot', 'human']);
 const MAX_TIMEOUT_MS = 120_000;
 
 /** Fail-closed, bounded credential screening before replay memory and report writes. */
@@ -130,74 +128,112 @@ function assertSafeFixtureContent(value: unknown): void {
   }
 }
 
-function assertValidInputs(suite: EvaluationSuite, approved: EvaluationSnapshot, candidate: EvaluationSnapshot, review?: HumanReview) {
-  for (const input of [suite, approved, candidate, review]) assertSafeFixtureContent(input);
-  if (!suite || !Array.isArray(suite.cases) || suite.cases.length === 0 ||
-      !Number.isInteger(suite.version) || typeof suite.suite_id !== 'string' || !suite.suite_id.trim()) {
-    throw new Error('Evaluation suite must have a version, identifier and nonempty cases');
-  }
-  for (const snapshot of [approved, candidate]) {
-    if (!snapshot || typeof snapshot.snapshot_id !== 'string' || !snapshot.snapshot_id.trim() ||
-        typeof snapshot.model_id !== 'string' || !snapshot.model_id.trim() ||
-        !snapshot.policy || !Array.isArray(snapshot.policy.rules) ||
-        !snapshot.responses || typeof snapshot.responses !== 'object') {
-      throw new Error('Invalid evaluation snapshot');
-    }
-  }
-  if (approved.snapshot_id === candidate.snapshot_id) {
-    throw new Error('Candidate must have an independent snapshot identifier');
-  }
-
-  const ids = new Set<string>();
-  for (const testCase of suite.cases) {
-    if (!testCase || !/^[A-Za-z0-9][A-Za-z0-9_-]{1,100}$/.test(testCase.case_id) ||
-        ids.has(testCase.case_id) || !ALLOWED_LOCALES.includes(testCase.locale) ||
-        !ALLOWED_MODES.includes(testCase.chat_mode) ||
-        !ALLOWED_ACTIONS.includes(testCase.expected_action) ||
-        !Array.isArray(testCase.inbound_turns) || testCase.inbound_turns.length === 0 ||
-        testCase.inbound_turns.some(t => !['contact', 'owner'].includes(t.sender) ||
-          typeof t.text !== 'string' || !t.text.trim()) ||
-        testCase.inbound_turns.at(-1)?.sender !== 'contact' ||
-        !Array.isArray(testCase.dossier_facts) ||
-        !Array.isArray(testCase.forbidden_outcomes) ||
-        !testCase.forbidden_outcomes.every(x => x === 'send' || x === 'draft') ||
-        !Array.isArray(testCase.evidence_ids) ||
-        typeof testCase.notes_for_reviewer !== 'string' || !testCase.notes_for_reviewer.trim() ||
-        typeof testCase.expected_send !== 'boolean' || typeof testCase.expected_draft !== 'boolean' ||
-        typeof testCase.critical !== 'boolean' ||
-        testCase.approved_policy_revision !== approved.policy.version) {
-      throw new Error(`Invalid or duplicate fixture: ${testCase?.case_id ?? 'unknown'}`);
-    }
-    ids.add(testCase.case_id);
-  }
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function eligibleReviews(review: HumanReview | undefined, candidateId: string): Set<string> {
-  if (!review || review.candidate_id !== candidateId || !review.reviewer?.trim() ||
-      !review.reviewed_at || !Number.isFinite(Date.parse(review.reviewed_at)) ||
-      !Array.isArray(review.approved_case_ids)) return new Set();
+function isStringList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry: unknown) => typeof entry === 'string');
+}
+
+function isAction(value: unknown): value is AutonomyAction {
+  return value === 'reply' || value === 'draft' || value === 'human' ||
+    value === 'ignore' || value === 'act';
+}
+
+function isNonemptyString(value: unknown): value is string {
+  return typeof value === 'string' && Boolean(value.trim());
+}
+
+function isPolicyRule(value: unknown): value is PolicyRule {
+  return isRecord(value) && typeof value.id === 'string' && typeof value.intent === 'string' &&
+    (value.effect === 'allow' || value.effect === 'require_approval' || value.effect === 'deny') &&
+    (value.action === undefined || isAction(value.action)) &&
+    (value.minConfidence === undefined || typeof value.minConfidence === 'number');
+}
+
+type ReplaySnapshot = Pick<EvaluationSnapshot, 'snapshot_id' | 'model_id' | 'policy'> & {
+  responses: Record<string, unknown>;
+  approval?: unknown;
+};
+
+function isReplaySnapshot(value: unknown): value is ReplaySnapshot {
+  return isRecord(value) && isNonemptyString(value.snapshot_id) && isNonemptyString(value.model_id) &&
+    isRecord(value.responses) && isRecord(value.policy) &&
+    typeof value.policy.version === 'number' && isAction(value.policy.defaultAction) &&
+    typeof value.policy.minConfidence === 'number' &&
+    Array.isArray(value.policy.rules) && value.policy.rules.every(isPolicyRule);
+}
+
+function isEvaluationTurn(value: unknown): value is EvaluationTurn {
+  return isRecord(value) && (value.sender === 'contact' || value.sender === 'owner') &&
+    isNonemptyString(value.text);
+}
+
+function isEvaluationCase(value: unknown): value is EvaluationCase {
+  if (!isRecord(value)) return false;
+  const { inbound_turns: turns, forbidden_outcomes: forbidden } = value;
+  return typeof value.case_id === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{1,100}$/.test(value.case_id) &&
+    typeof value.locale === 'string' && ALLOWED_LOCALES.has(value.locale) &&
+    typeof value.chat_mode === 'string' && ALLOWED_MODES.has(value.chat_mode) &&
+    isAction(value.expected_action) &&
+    Array.isArray(turns) && turns.every(isEvaluationTurn) && turns.at(-1)?.sender === 'contact' &&
+    isStringList(value.dossier_facts) && isStringList(value.evidence_ids) &&
+    Array.isArray(forbidden) && forbidden.every((item: unknown) => item === 'send' || item === 'draft') &&
+    isNonemptyString(value.notes_for_reviewer) &&
+    typeof value.expected_send === 'boolean' && typeof value.expected_draft === 'boolean' &&
+    typeof value.critical === 'boolean' && typeof value.approved_policy_revision === 'number';
+}
+
+function readSuite(value: unknown, policyVersion: number): EvaluationSuite {
+  if (!isRecord(value) || !isNonemptyString(value.suite_id) ||
+      typeof value.version !== 'number' || !Number.isInteger(value.version) ||
+      !Array.isArray(value.cases) || value.cases.length === 0) {
+    throw new Error('Evaluation suite must have a version, identifier and nonempty cases');
+  }
+  const ids = new Set<string>();
+  const cases: EvaluationCase[] = [];
+  const rawCases: unknown[] = value.cases;
+  for (const testCase of rawCases) {
+    if (!isEvaluationCase(testCase) || ids.has(testCase.case_id) ||
+        testCase.approved_policy_revision !== policyVersion) {
+      const id = isRecord(testCase) && typeof testCase.case_id === 'string' ? testCase.case_id : 'unknown';
+      throw new Error(`Invalid or duplicate fixture: ${id}`);
+    }
+    cases.push(testCase);
+    ids.add(testCase.case_id);
+  }
+  return { suite_id: value.suite_id, version: value.version, cases };
+}
+
+const hasReviewMetadata = (value: unknown): value is Record<string, unknown> => {
+  return isRecord(value) && isNonemptyString(value.reviewer) &&
+    typeof value.reviewed_at === 'string' && Number.isFinite(Date.parse(value.reviewed_at));
+};
+
+function eligibleReviews(review: unknown, candidateId: string): Set<string> {
+  if (!hasReviewMetadata(review) || review.candidate_id !== candidateId ||
+      !isStringList(review.approved_case_ids)) return new Set();
   return new Set(review.approved_case_ids);
 }
 
-function validateRecording(recording: RecordedModelResponse | undefined): 'missing_candidate_recording' | 'invalid_recording' | 'invalid_model_decision' | null {
-  if (!recording) return 'missing_candidate_recording';
-  if (!['decision', 'timeout', 'error'].includes(recording.kind)) return 'invalid_recording';
-  if (recording.kind === 'decision') {
-    const val = recording.value;
-    if (!val || typeof val !== 'object' ||
-        !ALLOWED_ACTIONS.includes(val.action as AutonomyAction) ||
-        typeof val.intent !== 'string' || !val.intent.trim() ||
-        typeof val.confidence !== 'number' ||
-        !Number.isFinite(val.confidence) ||
-        val.confidence < 0 || val.confidence > 1 ||
-        (val.replyText !== undefined && typeof val.replyText !== 'string') ||
-        (val.citations !== undefined &&
-          (!Array.isArray(val.citations) ||
-            !val.citations.every((id: unknown) => typeof id === 'string')))) {
-      return 'invalid_model_decision';
-    }
-  }
-  return null;
+type ReplayDecision = Record<string, unknown> & {
+  action: AutonomyAction;
+  intent: string;
+  confidence: number;
+  citations?: string[];
+};
+
+function isReplayDecision(value: unknown): value is ReplayDecision {
+  return isRecord(value) && isAction(value.action) && isNonemptyString(value.intent) &&
+    typeof value.confidence === 'number' && value.confidence >= 0 && value.confidence <= 1 &&
+    (value.replyText === undefined || typeof value.replyText === 'string') &&
+    (value.citations === undefined || isStringList(value.citations));
+}
+
+function isModelUsage(value: unknown): value is NonNullable<EvaluationResult['model_usage']> {
+  return isRecord(value) && (value.input_tokens === undefined || typeof value.input_tokens === 'number') &&
+    (value.output_tokens === undefined || typeof value.output_tokens === 'number');
 }
 
 function setupSyntheticHistory(memory: MemoryStore, testCase: EvaluationCase, chatId: string): void {
@@ -216,15 +252,21 @@ function setupSyntheticHistory(memory: MemoryStore, testCase: EvaluationCase, ch
   }
 }
 
-async function observe(testCase: EvaluationCase, snapshot: EvaluationSnapshot, timeoutMs: number): Promise<ReplayObservation> {
+async function observe(testCase: EvaluationCase, snapshot: ReplaySnapshot, timeoutMs: number): Promise<ReplayObservation> {
   const recording = snapshot.responses[testCase.case_id];
-  const invalidReason = validateRecording(recording);
-  if (invalidReason) return { infrastructureError: invalidReason, elapsed_ms: 0 };
-  const validRecording = recording!;
+  if (!recording) return { infrastructureError: 'missing_candidate_recording', elapsed_ms: 0 };
+  if (!isRecord(recording) ||
+      (recording.kind !== 'decision' && recording.kind !== 'timeout' && recording.kind !== 'error')) {
+    return { infrastructureError: 'invalid_recording', elapsed_ms: 0 };
+  }
+  const decision = isReplayDecision(recording.value) ? recording.value : undefined;
+  if (recording.kind === 'decision' && !decision) {
+    return { infrastructureError: 'invalid_model_decision', elapsed_ms: 0 };
+  }
 
   const memory = new MemoryStore({ dataDir: ':memory:' });
   const started = performance.now();
-  let modelError: string | undefined;
+  let modelError = false;
   const chatId = `case_${testCase.case_id}@simulator.invalid`;
   try {
     setupSyntheticHistory(memory, testCase, chatId);
@@ -232,20 +274,21 @@ async function observe(testCase: EvaluationCase, snapshot: EvaluationSnapshot, t
     // The model is a scripted in-process double: no credentials, transport or network access.
     const model = {
       generateContent: async () => {
-        if (validRecording.kind === 'timeout') return new Promise<never>(() => {});
-        if (validRecording.kind === 'error') {
-          modelError = validRecording.code || 'model_error';
+        if (recording.kind === 'timeout') return new Promise<never>(() => {});
+        if (recording.kind === 'error') {
+          modelError = true;
           throw new Error('Recorded model failure');
         }
-        return { text: JSON.stringify(validRecording.value) };
+        return { text: JSON.stringify(recording.value) };
       }
     };
-    const moderator = new ModeratorAgent(model as unknown as GeminiClient, memory, {
+    const moderator = new ModeratorAgent(model, memory, {
       policy: structuredClone(snapshot.policy),
       persona: { ...DEFAULT_MODERATOR_PERSONA, language: testCase.locale,
         model: snapshot.model_id, simulateTypingDelay: false }
     });
-    const inbound = testCase.inbound_turns.at(-1)!;
+    const inbound = testCase.inbound_turns.at(-1);
+    if (!inbound) return { infrastructureError: 'missing_inbound_turn', elapsed_ms: 0 };
     const message: ChatMessage = {
       id: 'current', chatId, sender: 'contact', senderName: 'Synthetic contact',
       text: inbound.text, timestamp: testCase.inbound_turns.length + 1,
@@ -255,7 +298,7 @@ async function observe(testCase: EvaluationCase, snapshot: EvaluationSnapshot, t
     try {
       const result = await Promise.race([
         moderator.processInboundMessage(message, { dryRun: true }),
-        new Promise<never>((_, reject) => {
+        new Promise<never>((_resolve, reject) => {
           timer = setTimeout(() => reject(new Error('Replay timeout')), timeoutMs);
         })
       ]);
@@ -263,11 +306,10 @@ async function observe(testCase: EvaluationCase, snapshot: EvaluationSnapshot, t
 
       // Record the actual production evaluator's matched rule; the actual action
       // and send disposition come from the real ModeratorAgent dry run.
-      const modelDecision = validRecording.kind === 'decision' ? validRecording.value : {};
       const permission = evaluatePermission(snapshot.policy, {
-        intent: String(modelDecision.intent ?? 'general_faq'),
-        confidence: Number(modelDecision.confidence ?? 0.85),
-        requestedAction: modelDecision.action as AutonomyAction | undefined
+        intent: decision?.intent ?? 'general_faq',
+        confidence: decision?.confidence ?? 0.85,
+        requestedAction: decision?.action
       });
       return {
         observed_action: result.decision.action,
@@ -275,9 +317,8 @@ async function observe(testCase: EvaluationCase, snapshot: EvaluationSnapshot, t
         draft_created: Boolean(result.draftCreated),
         matched_rule_id: permission.matchedRuleId,
         policy_reason: permission.reason,
-        model_usage: validRecording.kind === 'decision' ? validRecording.usage : undefined,
-        cited_evidence_ids: validRecording.kind === 'decision' && Array.isArray(validRecording.value.citations)
-          ? [...validRecording.value.citations as string[]] : undefined,
+        model_usage: decision && isModelUsage(recording.usage) ? recording.usage : undefined,
+        cited_evidence_ids: decision?.citations && [...decision.citations],
         elapsed_ms: Math.round(performance.now() - started)
       };
     } catch (error) {
@@ -311,17 +352,22 @@ function verdict(testCase: EvaluationCase, observed: ReplayObservation): { outco
 }
 
 /** Independent goldens remain untouched even when the candidate fails. */
-export async function runEvaluationLab(options: EvaluationOptions): Promise<EvaluationReport> {
-  const { suite, approved, candidate, review } = options;
-  assertValidInputs(suite, approved, candidate, review);
+export async function runEvaluationLab(options: { suite: unknown; approved: unknown; candidate: unknown; review?: unknown; timeoutMs?: number }): Promise<EvaluationReport> {
+  const { approved, candidate, review } = options;
+  for (const input of [options.suite, approved, candidate, review]) assertSafeFixtureContent(input);
+  if (!isReplaySnapshot(approved) || !isReplaySnapshot(candidate)) {
+    throw new Error('Invalid evaluation snapshot');
+  }
+  if (approved.snapshot_id === candidate.snapshot_id) {
+    throw new Error('Candidate must have an independent snapshot identifier');
+  }
+  const suite = readSuite(options.suite, approved.policy.version);
   const timeoutMs = options.timeoutMs ?? 5_000;
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMEOUT_MS) {
     throw new Error('timeoutMs must be between 1 and 120000');
   }
   const approvedReviews = eligibleReviews(review, candidate.snapshot_id);
-  const baselineReviewRequired = !approved.approval?.reviewer?.trim() ||
-    !approved.approval.reviewed_at ||
-    !Number.isFinite(Date.parse(approved.approval.reviewed_at));
+  const baselineReviewRequired = !hasReviewMetadata(approved.approval);
   const results: EvaluationResult[] = [];
   const baselineViolations: string[] = [];
   for (const testCase of suite.cases) {

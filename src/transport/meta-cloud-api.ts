@@ -13,9 +13,22 @@ export interface MetaCloudApiConfig {
   businessAccountId?: string;
 }
 export interface MetaCloudSendAccepted { messageId: string }
+export interface MetaCloudMediaSource {
+  link?: string;
+  id?: string;
+  filename?: string;
+}
+export type MetaCloudTemplateParameter =
+  | { type: 'text'; text: string }
+  | { type: 'image'; image: MetaCloudMediaSource }
+  | { type: 'video'; video: MetaCloudMediaSource }
+  | { type: 'document'; document: MetaCloudMediaSource }
+  | { type: 'payload'; payload: string };
 export interface MetaCloudTemplateComponent {
-  type: 'header' | 'body';
-  parameters: Array<{ type: 'text'; text: string }>;
+  type: 'header' | 'body' | 'button';
+  sub_type?: 'url' | 'quick_reply';
+  index?: number;
+  parameters: MetaCloudTemplateParameter[];
 }
 export interface MetaCloudTemplateRequest {
   to: string;
@@ -25,6 +38,14 @@ export interface MetaCloudTemplateRequest {
 export interface MetaCloudTextRequest {
   to: string;
   text: string;
+  lastInboundAtMs: number;
+}
+export interface MetaCloudRichMediaRequest {
+  to: string;
+  kind: 'image' | 'video' | 'document' | 'audio';
+  mediaUrl: string;
+  caption?: string;
+  fileName?: string;
   lastInboundAtMs: number;
 }
 export type MetaCloudWebhookEvent =
@@ -65,10 +86,12 @@ function validTimestamp(value: number, now: number): boolean {
   return Number.isSafeInteger(value) && value > 0 && value <= now;
 }
 
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+};
+
 function record(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
+  return isRecord(value) ? value : null;
 }
 
 function safeArray(value: unknown): unknown[] {
@@ -86,19 +109,59 @@ function signedEventKey(event: MetaCloudWebhookEvent): string {
     event.kind === 'receipt' ? event.status : ''].join(':');
 }
 
+function validateMediaSource(source: unknown): MetaCloudMediaSource {
+  if (!isRecord(source)) {
+    throw new TypeError('Unsupported template parameter');
+  }
+  const { link, id, filename } = source;
+  const hasLink = typeof link === 'string' && /^https:\/\/\S{1,2040}$/.test(link);
+  const hasId = typeof id === 'string' && id.trim().length > 0 && id.length <= 256;
+  if (!hasLink && !hasId) {
+    throw new TypeError('Unsupported template parameter');
+  }
+  return {
+    ...(hasLink ? { link } : {}),
+    ...(hasId ? { id } : {}),
+    ...(typeof filename === 'string' && filename.trim() ? { filename: filename.slice(0, 240) } : {})
+  };
+}
+
 function textParameter(component: MetaCloudTemplateComponent): MetaCloudTemplateComponent {
-  if (!['header', 'body'].includes(component.type) ||
+  if (!['header', 'body', 'button'].includes(component.type) ||
       !Array.isArray(component.parameters) || component.parameters.length > 16) {
     throw new TypeError('Unsupported template component');
   }
+  if (component.type === 'button') {
+    if (!component.sub_type || !['url', 'quick_reply'].includes(component.sub_type) ||
+        typeof component.index !== 'number' || !Number.isSafeInteger(component.index) || component.index < 0 || component.index > 10) {
+      throw new TypeError('Unsupported template component');
+    }
+  }
   return {
     type: component.type,
-    parameters: component.parameters.map(parameter => {
-      if (parameter?.type !== 'text' || typeof parameter.text !== 'string' ||
-          !parameter.text.trim() || parameter.text.length > 1024) {
-        throw new TypeError('Unsupported template parameter');
+    ...(component.sub_type ? { sub_type: component.sub_type } : {}),
+    ...(component.index !== undefined ? { index: component.index } : {}),
+    parameters: component.parameters.map((parameter): MetaCloudTemplateParameter => {
+      if (parameter?.type === 'text') {
+        if (typeof parameter.text !== 'string' || !parameter.text.trim() || parameter.text.length > 1024) {
+          throw new TypeError('Unsupported template parameter');
+        }
+        return { type: 'text', text: parameter.text };
       }
-      return { type: 'text', text: parameter.text };
+      if (component.type === 'header') {
+        switch (parameter?.type) {
+          case 'image': return { type: 'image', image: validateMediaSource(parameter.image) };
+          case 'video': return { type: 'video', video: validateMediaSource(parameter.video) };
+          case 'document': return { type: 'document', document: validateMediaSource(parameter.document) };
+        }
+      }
+      if (component.type === 'button' && parameter?.type === 'payload') {
+        if (typeof parameter.payload !== 'string' || !parameter.payload.trim() || parameter.payload.length > 256) {
+          throw new TypeError('Unsupported template parameter');
+        }
+        return { type: 'payload', payload: parameter.payload };
+      }
+      throw new TypeError('Unsupported template parameter');
     })
   };
 }
@@ -140,6 +203,34 @@ export class MetaCloudApi {
     return this.send({
       messaging_product: 'whatsapp', to, type: 'text',
       text: { body: request.text, preview_url: false }
+    });
+  }
+
+  async sendRichMedia(request: MetaCloudRichMediaRequest): Promise<MetaCloudSendAccepted> {
+    const to = recipientNumber(request.to);
+    const now = this.now();
+    if (!validTimestamp(request.lastInboundAtMs, now) ||
+        now - request.lastInboundAtMs >= SERVICE_WINDOW_MS) {
+      throw new Error('A verified recent customer message is required for free-form media');
+    }
+    if (!['image', 'video', 'document', 'audio'].includes(request.kind)) {
+      throw new TypeError('Unsupported Meta rich media kind');
+    }
+    if (typeof request.mediaUrl !== 'string' || !/^https:\/\/\S{1,2040}$/.test(request.mediaUrl)) {
+      throw new TypeError('Meta rich media requires an https:// URL');
+    }
+    const mediaBody: Record<string, unknown> = { link: request.mediaUrl };
+    if (request.kind !== 'audio' && typeof request.caption === 'string' && request.caption.trim()) {
+      mediaBody.caption = request.caption.slice(0, 1024);
+    }
+    if (request.kind === 'document' && typeof request.fileName === 'string' && request.fileName.trim()) {
+      mediaBody.filename = request.fileName.slice(0, 240);
+    }
+    return this.send({
+      messaging_product: 'whatsapp',
+      to,
+      type: request.kind,
+      [request.kind]: mediaBody
     });
   }
 
@@ -192,7 +283,8 @@ export class MetaCloudApi {
     } catch {
       throw new MetaCloudTransportError();
     }
-    const id = (data as { messages?: Array<{ id?: unknown }> })?.messages?.[0]?.id;
+    const firstMessage = safeArray(record(data)?.messages)[0];
+    const id = record(firstMessage)?.id;
     if (typeof id !== 'string' || !META_MESSAGE_ID.test(id)) {
       throw new MetaCloudTransportError();
     }

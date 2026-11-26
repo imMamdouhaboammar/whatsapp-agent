@@ -1,3 +1,4 @@
+import { isRecord } from './sqlite-values';
 import { createHash, randomUUID } from 'node:crypto';
 import type { Database } from 'bun:sqlite';
 import type { RecipientBinding } from '../identity/contact-directory';
@@ -127,8 +128,8 @@ function validateTemplateIntent(input: SendIntentInput, now: number): void {
       !Number.isSafeInteger(eligibility.relevanceVerifiedAtMs) ||
       eligibility.relevanceVerifiedAtMs > now ||
       eligibility.relevanceVerifiedAtMs < now - MAX_TEMPLATE_EVIDENCE_AGE_MS ||
-      !Number.isSafeInteger(input.expiresAt) || input.expiresAt! <= now ||
-      input.expiresAt! > now + MAX_TEMPLATE_TTL_MS) {
+      typeof input.expiresAt !== 'number' || !Number.isSafeInteger(input.expiresAt) || input.expiresAt <= now ||
+      input.expiresAt > now + MAX_TEMPLATE_TTL_MS) {
     throw new Error('Invalid or stale template eligibility evidence');
   }
   const quiet = eligibility.quietHours;
@@ -153,6 +154,59 @@ const payloadHash = (input: SendIntentInput): string => {
   }
   return createHash('sha256').update(JSON.stringify(parts)).digest('hex');
 };
+
+
+
+function readRow(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) throw new Error('Invalid send ledger row');
+  return value;
+}
+
+function readText(row: Record<string, unknown>, column: string): string {
+  const value = row[column];
+  if (typeof value !== 'string') throw new Error(`Invalid send ledger column ${column}`);
+  return value;
+}
+
+function readNumber(row: Record<string, unknown>, column: string): number {
+  const value = row[column];
+  if (typeof value !== 'number') throw new Error(`Invalid send ledger column ${column}`);
+  return value;
+}
+
+const isSendState = (value: unknown): value is SendIntentState => {
+  return value === 'queued' || value === 'attempting' || value === 'accepted' ||
+    value === 'delivered' || value === 'read' || value === 'uncertain' || value === 'failed';
+};
+
+function readState(value: unknown): SendIntentState {
+  if (!isSendState(value)) throw new Error('Invalid send ledger state');
+  return value;
+}
+
+function isRecipientBinding(value: unknown): value is RecipientBinding {
+  return isRecord(value) && typeof value.brandId === 'string' && typeof value.jid === 'string' &&
+    typeof value.aliasId === 'string' && typeof value.rawContactId === 'string' &&
+    typeof value.contactId === 'string' && typeof value.identityVersion === 'number';
+}
+
+function isTemplateComponent(value: unknown): value is SendTemplateComponent {
+  return isRecord(value) && (value.type === 'header' || value.type === 'body') &&
+    Array.isArray(value.parameters) && value.parameters.every((param: unknown) =>
+      isRecord(param) && param.type === 'text' && typeof param.text === 'string');
+}
+
+function isTemplate(value: unknown): value is SendTemplatePayload {
+  return isRecord(value) && typeof value.name === 'string' && typeof value.languageCode === 'string' &&
+    (value.components === undefined || (Array.isArray(value.components) && value.components.every(isTemplateComponent)));
+}
+
+function isTemplateEligibility(value: unknown): value is SendTemplateEligibility {
+  return isRecord(value) && typeof value.consentRef === 'string' && typeof value.optedInAtMs === 'number' &&
+    typeof value.sourceWorkflowId === 'string' && typeof value.relevanceVerifiedAtMs === 'number' &&
+    isRecord(value.quietHours) && typeof value.quietHours.from === 'number' &&
+    typeof value.quietHours.to === 'number' && typeof value.quietHours.timeZone === 'string';
+}
 
 export class SendLedger {
   constructor(private readonly db: Database) {
@@ -179,7 +233,7 @@ export class SendLedger {
         UNIQUE(source_kind, source_id, source_revision, action_kind)
       )
     `);
-    const columns = this.db.prepare('PRAGMA table_info(send_intents)').all() as Array<{ name: string }>;
+    const columns = this.db.prepare('PRAGMA table_info(send_intents)').all().map(readRow);
     if (!columns.some((column) => column.name === 'parent_intent_id')) {
       this.db.run('ALTER TABLE send_intents ADD COLUMN parent_intent_id TEXT');
     }
@@ -222,9 +276,12 @@ export class SendLedger {
     this.db.run('CREATE INDEX IF NOT EXISTS idx_send_events_intent ON send_intent_events(intent_id, created_at)');
   }
 
-  private atomic<T>(work: () => T): T {
-    // Bun's declared transaction.immediate return is void, but runtime returns the callback result.
-    return this.db.transaction(work).immediate() as unknown as T;
+  private atomic<T>(work: () => T, mode: 'immediate' | 'deferred' = 'immediate'): T {
+    // The installed Bun declarations type both transaction variants as void.
+    let result: { value: T } | undefined;
+    this.db.transaction(() => { result = { value: work() }; })[mode]();
+    if (!result) throw new Error('SQLite transaction callback did not run');
+    return result.value;
   }
 
   private event(id: string, from: SendIntentState | undefined, to: SendIntentState, reason: string, at: number) {
@@ -234,41 +291,47 @@ export class SendLedger {
     `).run(randomUUID(), id, from ?? null, to, reason, at);
   }
 
-  private rowToIntent(row: any): SendIntent {
-    const data = JSON.parse(row.payload_json) as {
-      text: string;
-      replyToMessageId?: string;
-      simulatedDelayMs?: number;
-      recipientBinding?: RecipientBinding;
-      template?: SendTemplatePayload;
-      templateEligibility?: SendTemplateEligibility;
-    };
+  private rowToIntent(value: unknown): SendIntent {
+    const row = readRow(value);
+    const { source_kind: sourceKind, action_kind: actionKind } = row;
+    if (sourceKind !== 'ui' && sourceKind !== 'mcp' && sourceKind !== 'autopilot' && sourceKind !== 'draft') {
+      throw new Error('Invalid send intent source kind');
+    }
+    if (actionKind !== 'text' && actionKind !== 'voice' && actionKind !== 'template') {
+      throw new Error('Invalid send intent action kind');
+    }
+    const data: unknown = JSON.parse(readText(row, 'payload_json'));
+    if (!isRecord(data)) throw new Error('Invalid send intent payload');
+    const { text, replyToMessageId, simulatedDelayMs, recipientBinding, template, templateEligibility } = data;
+    if (typeof text !== 'string' ||
+        (replyToMessageId !== undefined && typeof replyToMessageId !== 'string') ||
+        (simulatedDelayMs !== undefined && typeof simulatedDelayMs !== 'number') ||
+        (recipientBinding !== undefined && !isRecipientBinding(recipientBinding)) ||
+        (template !== undefined && !isTemplate(template)) ||
+        (templateEligibility !== undefined && !isTemplateEligibility(templateEligibility))) {
+      throw new Error('Invalid send intent payload');
+    }
     return {
-      id: row.id,
-      sourceKind: row.source_kind,
-      sourceId: row.source_id,
-      sourceRevision: row.source_revision,
-      parentIntentId: row.parent_intent_id ?? undefined,
-      batchId: row.batch_id ?? undefined,
-      batchOrdinal: row.batch_ordinal ?? undefined,
-      actionKind: row.action_kind,
-      chatId: row.chat_id,
-      text: data.text,
-      replyToMessageId: data.replyToMessageId,
-      simulatedDelayMs: data.simulatedDelayMs,
-      recipientBinding: data.recipientBinding,
-      template: data.template,
-      templateEligibility: data.templateEligibility,
-      policyRevision: row.policy_revision,
-      expiresAt: row.expires_at ?? undefined,
-      payloadHash: row.payload_hash,
-      state: row.state,
-      nativeMessageId: row.native_message_id ?? undefined,
-      attemptCount: row.attempt_count,
-      nextAttemptAt: row.next_attempt_at,
-      leaseExpiresAt: row.lease_expires_at ?? undefined,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at
+      id: readText(row, 'id'),
+      sourceKind,
+      sourceId: readText(row, 'source_id'),
+      sourceRevision: readNumber(row, 'source_revision'),
+      parentIntentId: row.parent_intent_id === null ? undefined : readText(row, 'parent_intent_id'),
+      batchId: row.batch_id === null ? undefined : readText(row, 'batch_id'),
+      batchOrdinal: row.batch_ordinal === null ? undefined : readNumber(row, 'batch_ordinal'),
+      actionKind,
+      chatId: readText(row, 'chat_id'),
+      text, replyToMessageId, simulatedDelayMs, recipientBinding, template, templateEligibility,
+      policyRevision: readNumber(row, 'policy_revision'),
+      expiresAt: row.expires_at === null ? undefined : readNumber(row, 'expires_at'),
+      payloadHash: readText(row, 'payload_hash'),
+      state: readState(row.state),
+      nativeMessageId: row.native_message_id === null ? undefined : readText(row, 'native_message_id'),
+      attemptCount: readNumber(row, 'attempt_count'),
+      nextAttemptAt: readNumber(row, 'next_attempt_at'),
+      leaseExpiresAt: row.lease_expires_at === null ? undefined : readNumber(row, 'lease_expires_at'),
+      createdAt: readNumber(row, 'created_at'),
+      updatedAt: readNumber(row, 'updated_at')
     };
   }
 
@@ -290,7 +353,7 @@ export class SendLedger {
       if (existing.payloadHash !== payloadHash(input)) throw new SendIntentConflictError();
       return existing;
     }
-    const validJid = /^[0-9A-Za-z._:\-]+@(s\.whatsapp\.net|g\.us|lid)$/.test(input.chatId);
+    const validJid = /^[0-9A-Za-z._:-]+@(s\.whatsapp\.net|g\.us|lid)$/.test(input.chatId);
     if (!input.sourceId.trim() || (input.actionKind !== 'template' && !input.text.trim()) || !validJid) {
       throw new Error('Invalid send intent identity, recipient, or text');
     }
@@ -327,7 +390,9 @@ export class SendLedger {
       input.policyRevision, now, now, input.expiresAt ?? null, batch?.batchId ?? null, batch?.batchOrdinal ?? null
     );
     this.event(id, undefined, 'queued', 'intent_created', now);
-    return this.getIntent(id)!;
+    const created = this.getIntent(id);
+    if (!created) throw new Error(`Failed to load created send intent ${id}`);
+    return created;
   }
 
   createIntent(input: SendIntentInput, now = Date.now()): SendIntent {
@@ -434,7 +499,9 @@ export class SendLedger {
         VALUES (?, ?, ?, ?, ?, ?)
       `).run(attempt.id, id, owner, now, attempt.outcome, id);
       this.event(id, 'queued', 'attempting', 'claimed', now);
-      return { intent: this.getIntent(id)!, attempt };
+      const claimedIntent = this.getIntent(id);
+      if (!claimedIntent) throw new Error(`Failed to load claimed send intent ${id}`);
+      return { intent: claimedIntent, attempt };
     });
   }
 
@@ -512,22 +579,27 @@ export class SendLedger {
       const intent = this.getIntent(id);
       if (!intent || intent.state !== 'uncertain') return undefined;
       // Never record acceptance before the interruption it follows, even if the clock moved backwards.
-      const interrupted = this.db.prepare('SELECT finished_at FROM send_attempts WHERE id=? AND intent_id=?').get(attemptId, id) as { finished_at?: number } | undefined;
-      now = Math.max(now, Number(interrupted?.finished_at ?? 0), intent.updatedAt);
+      const result = this.db.prepare('SELECT finished_at FROM send_attempts WHERE id=? AND intent_id=?').get(attemptId, id);
+      const interrupted = result === null ? null : readRow(result);
+      const finishedAt = interrupted === null || interrupted.finished_at === null
+        ? null : readNumber(interrupted, 'finished_at');
+      const effectiveNow = Math.max(now, finishedAt ?? 0, intent.updatedAt);
       const changed = this.db.prepare(`
         UPDATE send_attempts SET outcome='accepted', failure_code='late_transport_acceptance', finished_at=?
         WHERE id=? AND intent_id=? AND outcome='uncertain' AND failure_code='process_interrupted'
-      `).run(now, attemptId, id);
+      `).run(effectiveNow, attemptId, id);
       if (changed.changes !== 1) return undefined;
       this.db.prepare(`
         UPDATE send_intents SET state='accepted', native_message_id=?, updated_at=? WHERE id=? AND state='uncertain'
-      `).run(nativeMessageId, now, id);
-      this.event(id, 'uncertain', 'accepted', 'late_transport_acceptance', now);
+      `).run(nativeMessageId, effectiveNow, id);
+      this.event(id, 'uncertain', 'accepted', 'late_transport_acceptance', effectiveNow);
       // The message exists, so a retry child that has not started must not send a second copy.
-      const child = this.db.prepare('SELECT id, state FROM send_intents WHERE parent_intent_id=? LIMIT 1').get(id) as { id: string; state: SendIntentState } | undefined;
+      const retry = this.db.prepare('SELECT id, state FROM send_intents WHERE parent_intent_id=? LIMIT 1').get(id);
+      const child = retry === null ? null : readRow(retry);
       if (child?.state === 'queued') {
-        this.db.prepare(`UPDATE send_intents SET state='failed', updated_at=? WHERE id=? AND state='queued'`).run(now, child.id);
-        this.event(child.id, 'queued', 'failed', 'superseded_by_late_acceptance', now);
+        const childId = readText(child, 'id');
+        this.db.prepare(`UPDATE send_intents SET state='failed', updated_at=? WHERE id=? AND state='queued'`).run(now, childId);
+        this.event(childId, 'queued', 'failed', 'superseded_by_late_acceptance', now);
       } else if (child) {
         // The retry already started or finished: a duplicate may have reached the customer. Make that visible.
         this.event(id, 'accepted', 'accepted', 'late_acceptance_after_retry_started', now);
@@ -560,8 +632,9 @@ export class SendLedger {
     return this.atomic(() => {
       const rows = this.db.prepare(`
         SELECT id FROM send_intents WHERE state='attempting' AND lease_expires_at <= ? LIMIT 1000
-      `).all(now) as Array<{ id: string }>;
-      for (const { id } of rows) {
+      `).all(now);
+      for (const row of rows) {
+        const id = readText(readRow(row), 'id');
         this.db.prepare(`
           UPDATE send_attempts SET outcome='uncertain', finished_at=?, failure_code='process_interrupted'
           WHERE intent_id=? AND outcome='attempting'
@@ -580,7 +653,7 @@ export class SendLedger {
     const rows = this.db.prepare(`
       SELECT * FROM send_intents WHERE state='queued' AND next_attempt_at <= ?
       ORDER BY created_at ASC LIMIT ?
-    `).all(now, limit) as any[];
+    `).all(now, limit);
     return rows.map((r) => this.rowToIntent(r));
   }
 
@@ -627,15 +700,16 @@ export class SendLedger {
     actionKind: SendActionKind = 'text', recipientBinding?: RecipientBinding
   ): { created: boolean; intent?: SendIntent } {
     return this.atomic(() => {
-      const row = this.db.prepare('SELECT * FROM drafts WHERE id=?').get(draftId) as any;
-      if (!row) return { created: false };
+      const result = this.db.prepare('SELECT id, chat_id, incoming_message_id, status FROM drafts WHERE id=?').get(draftId);
+      if (result === null) return { created: false };
+      const row = readRow(result);
       const identity: SendIntentInput = {
         sourceKind: 'draft', sourceId: draftId, sourceRevision: 1,
-        actionKind, chatId: row.chat_id,
-        text, replyToMessageId: row.incoming_message_id, policyRevision,
+        actionKind, chatId: readText(row, 'chat_id'),
+        text, replyToMessageId: readText(row, 'incoming_message_id'), policyRevision,
         recipientBinding
       };
-      if (row.status !== 'pending') {
+      if (readText(row, 'status') !== 'pending') {
         return { created: false, intent: this.getBySource(identity) };
       }
       const updated = this.db.prepare(`
@@ -655,7 +729,7 @@ export class SendLedger {
           SELECT 1 FROM send_intents AS retry WHERE retry.parent_intent_id=parent.id
         )
       ORDER BY parent.created_at DESC LIMIT 100
-    `).all(chatId) as any[];
+    `).all(chatId);
     return rows.map((row) => this.rowToIntent(row));
   }
 
@@ -663,36 +737,45 @@ export class SendLedger {
   getDiagnosticsSummary(now = Date.now()): PersistedSendSummary {
     // BEGIN DEFERRED shares one read snapshot across both aggregates while
     // allowing WAL writers on other connections to continue independently.
-    return this.db.transaction(() => {
+    return this.atomic<PersistedSendSummary>(() => {
       const states: PersistedSendSummary['states'] = {
         queued: 0, attempting: 0, accepted: 0, delivered: 0,
         read: 0, uncertain: 0, failed: 0
       };
       const rows = this.db.prepare('SELECT state, COUNT(*) AS count FROM send_intents GROUP BY state')
-        .all() as Array<{ state: SendIntentState; count: number }>;
+        .all().map(readRow);
       for (const row of rows) {
-        if (Object.prototype.hasOwnProperty.call(states, row.state)) {
-          states[row.state] = row.count;
+        if (isSendState(row.state)) {
+          states[row.state] = readNumber(row, 'count');
         }
       }
-      const oldest = this.db.prepare("SELECT MIN(updated_at) AS at FROM send_intents WHERE state='uncertain'")
-        .get() as { at: number | null };
+      const oldest = readRow(this.db.prepare("SELECT MIN(updated_at) AS at FROM send_intents WHERE state='uncertain'")
+        .get());
       return {
         source: 'sqlite_send_ledger',
         totalIntents: Object.values(states).reduce((total, count) => total + count, 0),
         states,
-        oldestUncertainAgeMs: oldest.at === null ? 0 : Math.max(0, now - oldest.at)
+        oldestUncertainAgeMs: oldest.at === null ? 0 : Math.max(0, now - readNumber(oldest, 'at'))
       };
-    }).deferred() as unknown as PersistedSendSummary;
+    }, 'deferred');
   }
 
   getAttempts(id: string): SendAttempt[] {
-    const rows = this.db.prepare('SELECT * FROM (SELECT * FROM send_attempts WHERE intent_id=? ORDER BY started_at DESC, id DESC LIMIT 100) ORDER BY started_at ASC, id ASC').all(id) as any[];
-    return rows.map((r) => ({
-      id: r.id, intentId: r.intent_id, leaseOwner: r.lease_owner, startedAt: r.started_at,
-      networkStartedAt: r.network_started_at ?? undefined, finishedAt: r.finished_at ?? undefined,
-      outcome: r.outcome, failureCode: r.failure_code ?? undefined, traceId: r.trace_id
-    }));
+    const rows = this.db.prepare('SELECT * FROM (SELECT * FROM send_attempts WHERE intent_id=? ORDER BY started_at DESC, id DESC LIMIT 100) ORDER BY started_at ASC, id ASC').all(id);
+    return rows.map(value => {
+      const row = readRow(value);
+      const { outcome } = row;
+      if (outcome !== 'attempting' && outcome !== 'accepted' &&
+          outcome !== 'pre_send_failed' && outcome !== 'uncertain') throw new Error('Invalid send attempt outcome');
+      return {
+        id: readText(row, 'id'), intentId: readText(row, 'intent_id'), leaseOwner: readText(row, 'lease_owner'),
+        startedAt: readNumber(row, 'started_at'),
+        networkStartedAt: row.network_started_at === null ? undefined : readNumber(row, 'network_started_at'),
+        finishedAt: row.finished_at === null ? undefined : readNumber(row, 'finished_at'),
+        outcome, failureCode: row.failure_code === null ? undefined : readText(row, 'failure_code'),
+        traceId: readText(row, 'trace_id')
+      };
+    });
   }
 
   getLastAttempts(intentIds: string[]): Map<string, number> {
@@ -704,18 +787,19 @@ export class SendLedger {
       FROM send_attempts
       WHERE intent_id IN (${placeholders})
       GROUP BY intent_id
-    `).all(...intentIds) as Array<{ intent_id: string; last_started: number }>;
-    for (const r of rows) {
-      map.set(r.intent_id, r.last_started);
+    `).all(...intentIds).map(readRow);
+    for (const row of rows) {
+      map.set(readText(row, 'intent_id'), readNumber(row, 'last_started'));
     }
     return map;
   }
 
   getEvents(id: string): SendEvent[] {
-    const rows = this.db.prepare('SELECT * FROM (SELECT *, rowid AS event_order FROM send_intent_events WHERE intent_id=? ORDER BY created_at DESC, rowid DESC LIMIT 100) ORDER BY created_at ASC, event_order ASC').all(id) as any[];
-    return rows.map((r) => ({
-      id: r.id, intentId: r.intent_id, fromState: r.from_state ?? undefined,
-      toState: r.to_state, reason: r.reason, createdAt: r.created_at
+    const rows = this.db.prepare('SELECT * FROM (SELECT *, rowid AS event_order FROM send_intent_events WHERE intent_id=? ORDER BY created_at DESC, rowid DESC LIMIT 100) ORDER BY created_at ASC, event_order ASC').all(id).map(readRow);
+    return rows.map(row => ({
+      id: readText(row, 'id'), intentId: readText(row, 'intent_id'),
+      fromState: row.from_state === null ? undefined : readState(row.from_state),
+      toState: readState(row.to_state), reason: readText(row, 'reason'), createdAt: readNumber(row, 'created_at')
     }));
   }
 

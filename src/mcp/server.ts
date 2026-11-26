@@ -10,22 +10,35 @@ import { SendIntentService } from '../domain/send-intent-service';
 import type { WhatsAppSocketClient } from '../transport/whatsapp-socket';
 import type { FableFunnelEngine } from '../funnel';
 import { UserMemoryManager } from '../domain/user-memory';
-import type { ConversationStyle } from '../ai/adaptive-style';
 import type { McpClientManager } from './client-manager';
+import { buildTemporalEnvelope, clockTruth } from '../ai/temporal-guard';
+import { isRecord, isStringRecord } from './records';
+
+const requiredString = (value: unknown, field: string): string => {
+  if (typeof value !== 'string') throw new Error(field + ' must be a string');
+  return value;
+};
+
+function optionalString(value: unknown, field: string): string | undefined {
+  return value === undefined ? undefined : requiredString(value, field);
+}
+
+type McpToolTransport = Pick<WhatsAppSocketClient, 'getState' | 'sendMessage' | 'sendReaction'>
+  & Partial<Pick<WhatsAppSocketClient, 'canonicalizeJid'>>;
 
 /** Tools with no persistent or outbound effect. `whatsapp_get_messages` skips its mark-as-read side effect in read-only mode. */
 const READ_ONLY_TOOLS = new Set([
   'whatsapp_list_chats', 'whatsapp_get_messages', 'whatsapp_search_chat_memory',
   'whatsapp_get_chat_folds', 'whatsapp_decompress_fold', 'whatsapp_get_status',
-  'whatsapp_get_context_status'
+  'whatsapp_get_context_status', 'whatsapp_get_current_time', 'whatsapp_check_temporal_freshness'
 ]);
 
 export function createWhatsAppMcpServer(deps: {
   memoryStore: MemoryStore;
-  whatsappClient: WhatsAppSocketClient;
+  whatsappClient: McpToolTransport;
   moderatorAgent: ModeratorAgent;
   audioTranscriber?: AudioTranscriber;
-  funnelEngine?: FableFunnelEngine;
+  funnelEngine?: Pick<FableFunnelEngine, 'dispatch'>;
   sendIntents?: SendIntentService;
   mcpClientManager?: McpClientManager;
   /** Expose only tools that cannot change stored state or send anything. */
@@ -288,6 +301,42 @@ export function createWhatsAppMcpServer(deps: {
             required: ['chatId', 'style']
           }
         },
+        {
+          name: 'whatsapp_get_current_time',
+          description: 'Get the authoritative current system date, time, day of week, and timezone for real-time temporal grounding.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              timezone: {
+                type: 'string',
+                description: 'Optional IANA timezone (e.g. Africa/Cairo, Asia/Riyadh, UTC). Defaults to system timezone.'
+              }
+            }
+          }
+        },
+        {
+          name: 'whatsapp_check_temporal_freshness',
+          description: 'Classify a message or query into STATIC, VERSIONED, VOLATILE, or LIVE freshness class and build a TemporalEnvelope.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              prompt: {
+                type: 'string',
+                description: 'Message or question to classify for temporal freshness'
+              },
+              timezone: {
+                type: 'string',
+                description: 'Optional IANA timezone'
+              },
+              mode: {
+                type: 'string',
+                enum: ['balanced', 'strict'],
+                description: 'Classification strictness mode'
+              }
+            },
+            required: ['prompt']
+          }
+        },
         ...(deps.funnelEngine ? [{
           name: 'whatsapp_funnel_scatter_gather',
           description: 'Execute concurrent scatter-gather or hedged race dispatch across multiple external APIs/ERPs/CRMs with automatic circuit breaking and telemetry receipt.',
@@ -343,7 +392,7 @@ export function createWhatsAppMcpServer(deps: {
       }
 
       case 'whatsapp_get_messages': {
-        const chatId = String(args?.chatId);
+        const chatId = requiredString(args?.chatId, 'chatId');
         const limit = Number(args?.limit ?? 20);
         const messages = deps.memoryStore.getMessages(chatId, limit);
         if (!deps.readOnly) deps.memoryStore.markChatRead(chatId);
@@ -369,8 +418,8 @@ export function createWhatsAppMcpServer(deps: {
       }
 
       case 'whatsapp_search_chat_memory': {
-        const chatId = String(args?.chatId ?? '').trim();
-        const query = String(args?.query ?? '').trim();
+        const chatId = requiredString(args?.chatId, 'chatId').trim();
+        const query = requiredString(args?.query, 'query').trim();
         if (!chatId || !query || query.length > 200) throw new Error('Valid chatId and query are required');
         const limit = Math.max(1, Math.min(50, Math.floor(Number(args?.limit ?? 25)) || 25));
         return {
@@ -379,16 +428,17 @@ export function createWhatsAppMcpServer(deps: {
       }
 
       case 'whatsapp_get_chat_folds': {
-        const chatId = String(args?.chatId ?? '').trim();
+        const chatId = requiredString(args?.chatId, 'chatId').trim();
         if (!chatId) throw new Error('chatId is required');
-        const tier = args?.tier ? (Number(args.tier) as 1 | 2 | 3) : undefined;
+        const tier = args?.tier;
+        if (tier !== undefined && tier !== 1 && tier !== 2 && tier !== 3) throw new Error('tier must be 1, 2, or 3');
         return {
           content: [{ type: 'text', text: JSON.stringify(deps.memoryStore.getFolds(chatId, tier)) }]
         };
       }
 
       case 'whatsapp_get_context_status': {
-        const chatId = String(args?.chatId ?? '').trim();
+        const chatId = requiredString(args?.chatId, 'chatId').trim();
         if (!chatId) throw new Error('chatId is required');
         const engine = deps.moderatorAgent.getContextFoldEngine();
         const status = engine?.getContextBudgetStatus(chatId, deps.moderatorAgent.getPersona().model);
@@ -398,7 +448,7 @@ export function createWhatsAppMcpServer(deps: {
       }
 
       case 'whatsapp_compress_context_now': {
-        const chatId = String(args?.chatId ?? '').trim();
+        const chatId = requiredString(args?.chatId, 'chatId').trim();
         if (!chatId) throw new Error('chatId is required');
         const engine = deps.moderatorAgent.getContextFoldEngine();
         if (!engine) throw new Error('Context fold engine not available');
@@ -409,12 +459,12 @@ export function createWhatsAppMcpServer(deps: {
       }
 
       case 'whatsapp_decompress_fold': {
-        const chatId = String(args?.chatId ?? '').trim();
-        const foldId = String(args?.foldId ?? '').trim();
+        const chatId = requiredString(args?.chatId, 'chatId').trim();
+        const foldId = requiredString(args?.foldId, 'foldId').trim();
+        const aroundId = optionalString(args?.aroundMessageId, 'aroundMessageId') || undefined;
         const fold = deps.memoryStore.getFold(foldId);
         if (!chatId || !fold || fold.chatId !== chatId) throw new Error('Fold not found in chat');
         const raw = deps.memoryStore.getFoldMessages(foldId);
-        const aroundId = args?.aroundMessageId ? String(args.aroundMessageId) : undefined;
         if (aroundId && !fold.directMessageIds.includes(aroundId)) throw new Error('Message outside selected fold');
         const offset = Math.max(0, Math.min(512, Math.floor(Number(args?.offset ?? 0)) || 0));
         const limit = Math.max(1, Math.min(40, Math.floor(Number(args?.limit ?? 40)) || 40));
@@ -429,15 +479,17 @@ export function createWhatsAppMcpServer(deps: {
       }
 
       case 'whatsapp_send_message': {
-        const chatId = deps.whatsappClient.canonicalizeJid
-          ? await deps.whatsappClient.canonicalizeJid(String(args?.chatId))
-          : String(args?.chatId);
-        const text = String(args?.text ?? '');
+        const requestedChatId = requiredString(args?.chatId, 'chatId');
+        const text = requiredString(args?.text, 'text');
         if (!text.trim()) throw new Error('Message text is required');
-        const replyToMessageId = args?.replyToMessageId ? String(args.replyToMessageId) : undefined;
+        const replyToMessageId = optionalString(args?.replyToMessageId, 'replyToMessageId') || undefined;
+        const mutationId = optionalString(args?.mutationId, 'mutationId') || crypto.randomUUID();
+        const chatId = deps.whatsappClient.canonicalizeJid
+          ? await deps.whatsappClient.canonicalizeJid(requestedChatId)
+          : requestedChatId;
         const result = await getDelivery().sendText({
           sourceKind: 'mcp',
-          sourceId: String(args?.mutationId || crypto.randomUUID()),
+          sourceId: mutationId,
           sourceRevision: 1,
           actionKind: 'text',
           chatId,
@@ -459,9 +511,9 @@ export function createWhatsAppMcpServer(deps: {
       }
 
       case 'whatsapp_send_reaction': {
-        const chatId = String(args?.chatId);
-        const messageId = String(args?.messageId);
-        const emoji = String(args?.emoji);
+        const chatId = requiredString(args?.chatId, 'chatId');
+        const messageId = requiredString(args?.messageId, 'messageId');
+        const emoji = requiredString(args?.emoji, 'emoji');
         await deps.whatsappClient.sendReaction(chatId, messageId, emoji);
         return {
           content: [
@@ -496,8 +548,9 @@ export function createWhatsAppMcpServer(deps: {
       }
 
       case 'whatsapp_set_chat_mode': {
-        const chatId = String(args?.chatId);
-        const mode = args?.mode as any;
+        const chatId = requiredString(args?.chatId, 'chatId');
+        const mode = args?.mode;
+        if (mode !== 'autopilot' && mode !== 'copilot' && mode !== 'human') throw new Error('Invalid mode');
         deps.memoryStore.setChatMode(chatId, mode);
         return {
           content: [
@@ -510,8 +563,8 @@ export function createWhatsAppMcpServer(deps: {
       }
 
       case 'whatsapp_approve_draft': {
-        const draftId = String(args?.draftId);
-        let editedText = args?.editedText ? String(args.editedText) : undefined;
+        const draftId = requiredString(args?.draftId, 'draftId');
+        let editedText = optionalString(args?.editedText, 'editedText') || undefined;
         const draft = deps.memoryStore.getDraft(draftId);
         if (draft?.toolCall && draft.status === 'pending') {
           if (!deps.mcpClientManager) {
@@ -542,9 +595,10 @@ export function createWhatsAppMcpServer(deps: {
       }
 
       case 'whatsapp_manage_memory': {
-        const chatId = String(args?.chatId);
-        const action = String(args?.action) as 'save' | 'list' | 'delete' | 'clear';
-        const content = args?.content ? String(args.content) : undefined;
+        const chatId = requiredString(args?.chatId, 'chatId');
+        const action = args?.action;
+        if (action !== 'save' && action !== 'list' && action !== 'delete' && action !== 'clear') throw new Error('Invalid action');
+        const content = optionalString(args?.content, 'content') || undefined;
         const index = args?.index ? Number(args.index) : undefined;
 
         const manager = new UserMemoryManager(deps.memoryStore.getSqliteStore());
@@ -573,8 +627,11 @@ export function createWhatsAppMcpServer(deps: {
       }
 
       case 'whatsapp_set_chat_style': {
-        const chatId = String(args?.chatId);
-        const style = String(args?.style) as ConversationStyle;
+        const chatId = requiredString(args?.chatId, 'chatId');
+        const style = args?.style;
+        if (style !== 'professional' && style !== 'casual' && style !== 'playful' && style !== 'assertive' && style !== 'empathetic') {
+          throw new Error('Invalid style');
+        }
         deps.memoryStore.setChatStyle(chatId, style);
 
         return {
@@ -587,15 +644,44 @@ export function createWhatsAppMcpServer(deps: {
         };
       }
 
+      case 'whatsapp_get_current_time': {
+        const timezone = optionalString(args?.timezone, 'timezone') || 'system';
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(clockTruth({ timezone }), null, 2)
+            }
+          ]
+        };
+      }
+
+      case 'whatsapp_check_temporal_freshness': {
+        const prompt = requiredString(args?.prompt, 'prompt');
+        const timezone = optionalString(args?.timezone, 'timezone') || 'system';
+        const mode = args?.mode === 'strict' ? 'strict' : 'balanced';
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(buildTemporalEnvelope(prompt, { timezone, mode }), null, 2)
+            }
+          ]
+        };
+      }
+
       case 'whatsapp_funnel_scatter_gather': {
         if (!deps.funnelEngine) {
           throw new Error('Funnel engine is not initialized');
         }
-        const method = String(args?.method);
+        const method = requiredString(args?.method, 'method');
+        const { payload, queryParams } = args ?? {};
+        if (payload !== undefined && !isRecord(payload)) throw new Error('payload must be an object');
+        if (queryParams !== undefined && !isStringRecord(queryParams)) throw new Error('queryParams must be an object with string values');
         const receipt = await deps.funnelEngine.dispatch({
           method,
-          payload: (args?.payload as any) || undefined,
-          queryParams: (args?.queryParams as any) || undefined,
+          payload,
+          queryParams,
           timeoutMs: args?.timeoutMs ? Number(args.timeoutMs) : undefined
         });
         return {

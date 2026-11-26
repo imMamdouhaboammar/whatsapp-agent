@@ -22,6 +22,16 @@ function getIndustryIdFromVertical(slug: VerticalSlug): IndustryId {
   return 'medical';
 }
 
+function handleHeroCtaClick(e: React.MouseEvent<HTMLAnchorElement>) {
+  if (typeof document !== 'undefined') {
+    const el = document.getElementById('assessment-funnel');
+    if (el) {
+      e.preventDefault();
+      el.scrollIntoView({ behavior: 'smooth' });
+    }
+  }
+}
+
 export const LandingPage: React.FC<LandingPageProps> = ({
   vertical,
   initialLocale = 'eg',
@@ -69,16 +79,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({
     () => [...content.verticalFaqs, ...core.coreFaqs],
     [content.verticalFaqs, core.coreFaqs],
   );
-
-  const handleHeroCtaClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
-    if (typeof document !== 'undefined') {
-      const el = document.getElementById('assessment-funnel');
-      if (el) {
-        e.preventDefault();
-        el.scrollIntoView({ behavior: 'smooth' });
-      }
-    }
-  };
 
   return (
     <div

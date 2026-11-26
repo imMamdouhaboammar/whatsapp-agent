@@ -43,7 +43,7 @@ export function App({ initialPath }: { initialPath?: string } = {}) {
   const [publicRoute, setPublicRoute] = useState<PublicRoute | null>(() => parsePublicRoute(initialPath));
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    if (typeof window === 'undefined') return undefined;
     const onPopState = () => {
       setPublicRoute(parsePublicRoute());
     };

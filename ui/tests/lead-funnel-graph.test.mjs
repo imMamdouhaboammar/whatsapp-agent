@@ -4,9 +4,9 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const dataDir = join(__dirname, '../src/marketing/lead-funnel/data');
+const filePath = fileURLToPath(import.meta.url);
+const directoryPath = dirname(filePath);
+const dataDir = join(directoryPath, '../src/marketing/lead-funnel/data');
 
 const coreSpine = JSON.parse(readFileSync(join(dataDir, 'core-spine.json'), 'utf8'));
 
@@ -19,7 +19,7 @@ for (const key of INDUSTRY_KEYS) {
   industryPacks[key] = JSON.parse(readFileSync(join(dataDir, 'industries', `${key}.json`), 'utf8'));
 }
 
-test('core-spine.json has valid structure and required fields', () => {
+await test('core-spine.json has valid structure and required fields', () => {
   assert.ok(coreSpine.version, 'core spine must have version');
   assert.equal(typeof coreSpine.totalEstimatedSteps, 'number', 'totalEstimatedSteps must be number');
   assert.ok(coreSpine.totalEstimatedSteps > 0, 'totalEstimatedSteps must be positive');
@@ -27,7 +27,7 @@ test('core-spine.json has valid structure and required fields', () => {
   assert.ok(Object.keys(coreSpine.nodes).length >= 15, 'core spine must contain at least 15 nodes');
 });
 
-test('all 6 industry packs contain required nodes, non-empty vocab, and sample conversations', () => {
+await test('all 6 industry packs contain required nodes, non-empty vocab, and sample conversations', () => {
   for (const indKey of INDUSTRY_KEYS) {
     const pack = industryPacks[indKey];
     assert.ok(pack.name_ar, `${indKey} must have name_ar`);
@@ -62,7 +62,7 @@ test('all 6 industry packs contain required nodes, non-empty vocab, and sample c
   }
 });
 
-test('graph link integrity: all default_next and next_node_override resolve with zero dead ends', () => {
+await test('graph link integrity: all default_next and next_node_override resolve with zero dead ends', () => {
   const allCoreNodeIds = new Set(Object.keys(coreSpine.nodes));
   const validGlobalTargets = new Set([...allCoreNodeIds, 'ind_q1', 'result_blueprint']);
 
@@ -118,7 +118,7 @@ test('graph link integrity: all default_next and next_node_override resolve with
   }
 });
 
-test('zero unresolved {{variable}} template placeholders across all nodes and industries', () => {
+await test('zero unresolved {{variable}} template placeholders across all nodes and industries', () => {
   const allowedVars = new Set(REQUIRED_VOCAB_KEYS);
 
   function checkTemplates(sourceName, nodes, vocab) {

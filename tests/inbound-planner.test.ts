@@ -14,8 +14,8 @@ const env={AGENT_PLANNER_INBOUND:'1',AGENT_PLANNER_BRAND_ID:'shop',AGENT_PLANNER
 const response={decision:{action:'reply' as const,intent:'general_faq',replyText:'Moderator fallback',reasoning:'General conversation',confidence:1,simulatedDelayMs:0},shouldSendImmediately:true};
 type Model = Pick<GeminiClient,'generateContent'>;
 const model=(responses: Array<{text?:string;functionCalls?:Array<{name:string;args:Record<string,unknown>}>}>):Model=>({
-  generateContent:async()=>responses.shift()??{text:'Need an order number'}
-}) as unknown as Model;
+  generateContent: async () => ({ text: '', ...(responses.shift() ?? { text: 'Need an order number' }) })
+});
 
 function makeFixture(dbPath=':memory:',messages?:Array<{text?:string;functionCalls?:Array<{name:string;args:Record<string,unknown>}>}>) {
   const journal=new ActionJournal({dbPath:dbPath===':memory:'?':memory:':join(dbPath,'actions.sqlite')});
@@ -51,8 +51,9 @@ function makeCoordinator(f:ReturnType<typeof makeFixture>, opts:{env?:Record<str
     dataDir:opts.dataDir??':memory:',env:opts.env??env
   });
   const coordinator=new AgentTurnCoordinator({
-    moderator:moderator as never,memory:{getChat:()=>({agentMode:opts.mode??'autopilot'})} as never,
-    operator:{resolve:async()=>{events.push('operator');return {status:'unknown',evidence:[],reply:''};}} as never,
+    moderator,
+    memory: { getChat: (id) => ({ id, name: id, unreadCount: 0, isGroup: id.endsWith('@g.us'), agentMode: opts.mode ?? 'autopilot' }) },
+    operator: { resolve: async () => { throw new Error('Disabled operator was invoked'); } },
     brandId:'shop',enabled:false,planner:inbound
   });
   return {inbound,coordinator,events};

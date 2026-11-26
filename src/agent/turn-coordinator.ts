@@ -63,12 +63,12 @@ export class AgentTurnCoordinator {
     try {
       return await Promise.race([
         processPromise,
-        new Promise<never>((_, reject) => {
+        new Promise<never>((_resolve, reject) => {
           turnTimer = setTimeout(() => reject(new Error(`Agent turn timed out after ${this.turnTimeoutMs}ms`)), this.turnTimeoutMs);
         })
       ]);
     }
-    catch (err: any) {
+    catch (err: unknown) {
       // Fail closed with an ignore decision: a timed-out turn must not publish,
       // send, or masquerade as a persisted draft.
       return {
@@ -102,10 +102,10 @@ export class AgentTurnCoordinator {
     const readOnlyStock=/\bSKU[-_][A-Za-z0-9_-]{1,80}\b/i.test(message.text??'');
     const permitted=this.deps.enabled && validBrand && activeMode==='autopilot' &&
       !message.isFromMe && message.type==='text' && !message.chatId.endsWith('@g.us') && readOnlyStock;
-    if(!permitted)return this.deps.moderator.processInboundMessage(message);
+    if(!permitted || !this.deps.brandId)return this.deps.moderator.processInboundMessage(message);
     try{
       const resolved=await this.deps.operator.resolve({
-        brandId:this.deps.brandId!,contactId:message.chatId,text:message.text,
+        brandId:this.deps.brandId,contactId:message.chatId,text:message.text,
         workflowId:message.chatId+':'+message.id
       });
       const confirmed=resolved.status==='answered' && resolved.evidence.some(e=>e.kind==='provider');

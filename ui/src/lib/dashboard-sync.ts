@@ -41,8 +41,8 @@ export class DashboardSync {
   }
 
   private isAuthFailure(error: unknown): boolean {
-    const status = (error as SyncErrorLike | undefined)?.status;
-    return status === 401 || status === 403;
+    return error !== null && (typeof error === 'object' || typeof error === 'function')
+      && 'status' in error && (error.status === 401 || error.status === 403);
   }
 
   /** A refresh succeeded end to end. */

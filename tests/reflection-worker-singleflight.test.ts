@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
 import { rmSync, existsSync, mkdirSync } from 'node:fs';
 import { DualMemoryManager } from '../src/domain/learning-memory';
 import { ReflectionEngine } from '../src/ai/reflection-engine';
+import { GeminiClient } from '../src/ai/gemini-client';
 import { ReflectionWorker } from '../src/agent/reflection-worker';
 import { MemoryStore } from '../src/domain/memory-store';
 
@@ -19,18 +20,16 @@ afterEach(() => {
   if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
 });
 
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
-  return { promise, resolve, reject };
-}
+type EvaluateFn = ReflectionEngine['evaluateThread'];
 
-function makeWorker(evaluate: (params: any) => Promise<any>) {
+function makeWorker(evaluate: EvaluateFn) {
   const memoryStore = new MemoryStore({ dataDir: ':memory:' });
   stores.push(memoryStore);
   const memoryManager = new DualMemoryManager({ storageDir: testDir, persistSqlite: false });
-  const engine = { evaluateThread: evaluate } as unknown as ReflectionEngine;
+  const gemini = new GeminiClient({ apiKey: 'test-key' });
+  gemini.generateContent = async () => { throw new Error('Unexpected Gemini call'); };
+  const engine = new ReflectionEngine(gemini, memoryManager);
+  engine.evaluateThread = evaluate;
   const worker = new ReflectionWorker({ memoryStore, memoryManager, reflectionEngine: engine, idleThresholdMs: 0 });
   return { memoryStore, memoryManager, worker };
 }
@@ -46,25 +45,25 @@ function addMessage(memoryStore: MemoryStore, id: string, timestamp: number) {
 
 describe('WA-018 reflection sweeps are single-flight with durable feedback', () => {
   it('a sweep tick while a sweep is in flight does not start a second evaluation', async () => {
-    const gate = deferred<any>();
+    const gate = Promise.withResolvers<void>();
     let evaluations = 0;
     const { memoryStore, worker } = makeWorker(async () => { evaluations++; await gate.promise; return okResult; });
     addMessage(memoryStore, 'm1', Date.now() - 1000);
     worker.recordActivity(CHAT, Date.now() - 1000);
 
     const first = worker.sweepColdThreads();
-    await new Promise((r) => setTimeout(r, 20));
+    await new Promise((resolve) => setTimeout(resolve, 20));
     const second = await worker.sweepColdThreads(); // must skip, not queue
     expect(second.evaluatedCount).toBe(0);
     expect(evaluations).toBe(1);
-    gate.resolve(okResult);
+    gate.resolve(undefined);
     await first;
     expect(evaluations).toBe(1);
   });
 
   it('feedback survives a failed evaluation and is delivered to the retry', async () => {
     let calls = 0;
-    const seen: any[] = [];
+    const seen: number[] = [];
     const { memoryStore, worker } = makeWorker(async (params) => {
       calls++;
       seen.push(params.moderationFeedback?.length ?? 0);
@@ -83,8 +82,8 @@ describe('WA-018 reflection sweeps are single-flight with durable feedback', () 
   });
 
   it('feedback arriving during an evaluation is not acknowledged by it', async () => {
-    const gate = deferred<any>();
-    const seen: any[] = [];
+    const gate = Promise.withResolvers<void>();
+    const seen: number[] = [];
     const { memoryStore, worker } = makeWorker(async (params) => {
       seen.push(params.moderationFeedback?.length ?? 0);
       await gate.promise;
@@ -95,9 +94,9 @@ describe('WA-018 reflection sweeps are single-flight with durable feedback', () 
     worker.recordModerationFeedback({ chatId: CHAT, feedbackType: 'rejected', humanNote: 'first' });
 
     const inFlight = worker.reflectOnThread(CHAT, 'test');
-    await new Promise((r) => setTimeout(r, 20));
+    await new Promise((resolve) => setTimeout(resolve, 20));
     worker.recordModerationFeedback({ chatId: CHAT, feedbackType: 'edited', humanNote: 'second' });
-    gate.resolve(okResult);
+    gate.resolve(undefined);
     await inFlight;
 
     // The late feedback must still be pending for the next reflection.
@@ -107,7 +106,7 @@ describe('WA-018 reflection sweeps are single-flight with durable feedback', () 
   });
 
   it('the reflected watermark is the exact evaluated snapshot, not wall-clock completion', async () => {
-    const gate = deferred<any>();
+    const gate = Promise.withResolvers<void>();
     const t1 = Date.now() - 5000;
     const t2 = Date.now() - 4000;
     const { memoryStore, worker } = makeWorker(async () => { await gate.promise; return okResult; });
@@ -116,12 +115,12 @@ describe('WA-018 reflection sweeps are single-flight with durable feedback', () 
     worker.recordActivity(CHAT, t2);
 
     const inFlight = worker.reflectOnThread(CHAT, 'test');
-    await new Promise((r) => setTimeout(r, 20));
+    await new Promise((resolve) => setTimeout(resolve, 20));
     // A newer message arrives while the evaluation is still running.
     const t3 = Date.now();
     addMessage(memoryStore, 'm3', t3);
     worker.recordActivity(CHAT, t3);
-    gate.resolve(okResult);
+    gate.resolve(undefined);
     await inFlight;
 
     const activity = worker.getThreadActivity(CHAT);
@@ -129,18 +128,21 @@ describe('WA-018 reflection sweeps are single-flight with durable feedback', () 
   });
 
   it('stopPeriodicSweep drains an in-flight sweep before returning', async () => {
-    const gate = deferred<any>();
+    const gate = Promise.withResolvers<void>();
     const { memoryStore, worker } = makeWorker(async () => { await gate.promise; return okResult; });
     addMessage(memoryStore, 'm1', Date.now() - 1000);
     worker.recordActivity(CHAT, Date.now() - 1000);
     worker.startPeriodicSweep(10);
-    await new Promise((r) => setTimeout(r, 30));
+    await new Promise((resolve) => setTimeout(resolve, 30));
     const stopped = worker.stopPeriodicSweep();
     let drained = false;
-    void stopped.then(() => { drained = true; });
+    const drainPromise = (async () => {
+      await stopped;
+      drained = true;
+    })();
     expect(drained).toBe(false);
-    gate.resolve(okResult);
-    await stopped;
+    gate.resolve(undefined);
+    await drainPromise;
     expect(drained).toBe(true);
   });
 });

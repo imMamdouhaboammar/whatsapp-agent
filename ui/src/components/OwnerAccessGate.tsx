@@ -4,7 +4,7 @@ import { api } from '../api/client';
 import { useLocale } from '../locale-context';
 import { OwnerAccessContext } from './owner-access-context';
 import { isPublicMarketingRoute } from '../marketing/routing';
-import './owner-access.css';
+import ownerAccessStyles from './owner-access.css?url';
 
 type AccessState = 'checking' | 'ready' | 'locked' | 'error';
 
@@ -22,9 +22,12 @@ export function OwnerAccessGate({ children, currentPath }: { children: ReactNode
   const [access, setAccess] = useState<AccessState>('checking');
   const [required, setRequired] = useState(false);
 
+  const childProps = isValidElement(children) ? children.props : undefined;
+  const initialPath = typeof childProps === 'object' && childProps !== null &&
+    'initialPath' in childProps && typeof childProps.initialPath === 'string' ? childProps.initialPath : undefined;
   const resolvedPath =
     currentPath ??
-    (isValidElement(children) ? (children.props as Record<string, unknown>)?.initialPath as string | undefined : undefined) ??
+    initialPath ??
     (typeof window !== 'undefined' ? window.location.pathname : undefined);
 
   const isPublic = isPublicMarketingRoute(resolvedPath);
@@ -40,10 +43,24 @@ export function OwnerAccessGate({ children, currentPath }: { children: ReactNode
   }, []);
 
   useEffect(() => {
-    if (isPublic) return;
-    void checkAccess();
+    if (isPublic) return undefined;
+    let active = true;
+    const loadAccess = async () => {
+      try {
+        const result = await api.getDashboardStatus();
+        if (!active) return;
+        setRequired(result.required);
+        setAccess(result.required && !result.authenticated ? 'locked' : 'ready');
+      } catch {
+        if (active) setAccess('error');
+      }
+    };
+    void loadAccess();
     window.addEventListener('focus', checkAccess);
-    return () => window.removeEventListener('focus', checkAccess);
+    return () => {
+      active = false;
+      window.removeEventListener('focus', checkAccess);
+    };
   }, [checkAccess, isPublic]);
 
   const signOut = useCallback(async () => {
@@ -55,8 +72,9 @@ export function OwnerAccessGate({ children, currentPath }: { children: ReactNode
 
   if (isPublic || access === 'ready') return <OwnerAccessContext.Provider value={contextValue}>{children}</OwnerAccessContext.Provider>;
   if (access === 'checking') {
-    return <main className="wa-owner-access-screen" dir={direction} role="status">
-      <div className="wa-owner-loading"><LockKeyhole size={22} /><p>{tr('جارٍ فتح مساحة العمل', 'Opening your workspace')}</p></div>
+    return <main className="wa-owner-access-screen" dir={direction}>
+      <link rel="stylesheet" href={ownerAccessStyles} precedence="default" />
+      <output className="wa-owner-loading"><LockKeyhole size={22} /><span>{tr('جارٍ فتح مساحة العمل', 'Opening your workspace')}</span></output>
     </main>;
   }
 
@@ -99,6 +117,7 @@ export function OwnerAccessLogin({
 
   return (
     <main className="wa-owner-access-screen" dir={direction}>
+      <link rel="stylesheet" href={ownerAccessStyles} precedence="default" />
       <div className="wa-owner-access-card">
         <aside className="wa-owner-access-brand">
           <div className="wa-owner-brand-logo" dir="ltr"><MessageCircle size={21} /><span>WhatsApp <strong>Agent</strong></span></div>

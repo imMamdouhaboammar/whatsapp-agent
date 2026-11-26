@@ -1,7 +1,7 @@
 import {useState,type FormEvent} from 'react';
 import {ArrowLeft, BookOpen, Database, Link2, PlayCircle, RotateCcw, ShieldCheck} from 'lucide-react';
 import {useLocale} from '../locale-context';
-import '../brand-brain.css';
+import brandBrainCss from '../brand-brain.css?url';
 
 interface Source {sourceId:string;type:string;locator:string;authority:string;versionId:string;lastChecked:number}
 interface Evidence {text:string;sourceId:string;versionId:string;score:number}
@@ -65,6 +65,7 @@ export function BrandBrainPage({onClose}:{onClose:()=>void}) {
  });};
 
  return <main className="bb-page" dir={direction}>
+  <link rel="stylesheet" href={brandBrainCss} precedence="page" />
   <div className="bb-top"><button className="bb-back" onClick={onClose} type="button"><ArrowLeft size={18}/>{tr('العودة للمحادثات','Back to chats')}</button><span className="bb-pill"><ShieldCheck size={15}/>{tr('إعدادات محمية','Protected settings')}</span></div>
   <header className="bb-heading"><div className="bb-icon"><BookOpen size={25}/></div><div><h1>Brand Brain</h1><p>{tr('إدارة معرفة البراند ومصادر الأدلة وربط بيانات المتجر','Manage business knowledge, grounded evidence and store data')}</p></div></header>
   <section className="bb-card bb-access"><h2>{tr('صلاحية المالك والبراند','Owner access and brand')}</h2>
@@ -74,12 +75,12 @@ export function BrandBrainPage({onClose}:{onClose:()=>void}) {
    <button type="button" onClick={()=>void run(refresh)} disabled={!token||busy}><RotateCcw size={17}/>{tr('تحميل بيانات البراند','Load brand')}</button></div>
   </section>
   {error && <p className="bb-error" role="alert">{error}</p>}
-  {notice && <p className="bb-success" role="status">{notice}</p>}
+  {notice && <output className="bb-success block">{notice}</output>}
   <div className="bb-grid">
    <section className="bb-card"><h2><BookOpen size={20}/>{tr('مصادر المعرفة','Knowledge sources')}</h2>
     <form onSubmit={upload} className="bb-form">
-     <label>{tr('نوع المصدر','Source type')}<select value={type} onChange={e=>setType(e.target.value as typeof type)}><option value="faq">FAQ</option><option value="text">{tr('نص','Text')}</option><option value="csv">CSV</option></select></label>
-     <label>{tr('درجة الاعتماد','Authority')}<select value={authority} onChange={e=>setAuthority(e.target.value as typeof authority)}><option value="official">{tr('رسمي','Official')}</option><option value="working">{tr('مسودة','Working')}</option><option value="external">{tr('مرجع خارجي','External')}</option></select></label>
+     <label>{tr('نوع المصدر','Source type')}<select value={type} onChange={({currentTarget:{value}})=>{if(value==='faq'||value==='text'||value==='csv')setType(value);}}><option value="faq">FAQ</option><option value="text">{tr('نص','Text')}</option><option value="csv">CSV</option></select></label>
+     <label>{tr('درجة الاعتماد','Authority')}<select value={authority} onChange={({currentTarget:{value}})=>{if(value==='official'||value==='working'||value==='external')setAuthority(value);}}><option value="official">{tr('رسمي','Official')}</option><option value="working">{tr('مسودة','Working')}</option><option value="external">{tr('مرجع خارجي','External')}</option></select></label>
      <label>{tr('اسم أو عنوان المصدر','Source name or reference')}<input value={locator} onChange={e=>setLocator(e.target.value)} required placeholder="shipping-policy"/></label>
      <label>{tr('محتوى المعرفة','Knowledge content')}<textarea value={content} onChange={e=>setContent(e.target.value)} rows={6} required placeholder={tr('اكتب السياسة أو الأسئلة الشائعة هنا','Paste FAQs or policy text here')}/></label>
      <button disabled={!token||busy} type="submit"><Database size={16}/>{tr('حفظ المصدر','Save source')}</button>
@@ -97,7 +98,7 @@ export function BrandBrainPage({onClose}:{onClose:()=>void}) {
     <section className="bb-card"><h2>{tr('بحث الأدلة','Evidence search')}</h2><form className="bb-form" onSubmit={search}>
      <label>{tr('سؤال البحث','Search question')}<input value={question} onChange={e=>setQuestion(e.target.value)} required/></label>
      <button type="submit" disabled={!token||busy}>{tr('ابحث','Search')}</button>
-    </form><div className="bb-items">{evidence.map((item,i)=><article key={item.sourceId+i}><p>{item.text}</p><span>{tr('المصدر','Source')}: {item.sourceId.slice(0,10)} · v:{item.versionId.slice(0,8)}</span></article>)}</div>
+    </form><div className="bb-items">{evidence.map((item)=><article key={JSON.stringify([item.sourceId,item.versionId,item.text])}><p>{item.text}</p><span>{tr('المصدر','Source')}: {item.sourceId.slice(0,10)} · v:{item.versionId.slice(0,8)}</span></article>)}</div>
     </section>
     <section className="bb-card"><h2><PlayCircle size={20}/>{tr('تجربة الـAgent','Agent dry-run')}</h2><form className="bb-form" onSubmit={simulate}>
      <label>{tr('طلب العميل التجريبي','Sample customer request')}<input value={goal} onChange={e=>setGoal(e.target.value)} required placeholder={tr('هل SKU-42 موجود؟','Is SKU-42 available?')}/></label>

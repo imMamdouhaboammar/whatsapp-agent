@@ -1,4 +1,8 @@
+import assert from 'node:assert/strict';
+import { Database } from 'bun:sqlite';
 import { afterEach, describe, expect, test } from 'bun:test';
+import { GeminiClient } from '../src/ai/gemini-client';
+import { ModeratorAgent } from '../src/ai/moderator-agent';
 import { MemoryStore } from '../src/domain/memory-store';
 import { ContextFoldEngine } from '../src/domain/context-fold-engine';
 import { buildFoldContext } from '../src/domain/context-fold-prompt';
@@ -7,25 +11,30 @@ import {
   isCcrPlaceholder,
   makeCcrRef,
   CCR_THRESHOLD_CHARS,
-  CCR_PREVIEW_CHARS,
   CCR_MARKER
 } from '../src/domain/content-cached-retrieval';
 import {
   computeDynamicRecentCount,
-  estimateFoldsTokens,
-  estimateMessageTokens,
   estimateTokens,
   evaluateContextBudgetStatus,
   getModelContextProfile
 } from '../src/domain/dynamic-context-window';
 import { createApiServer } from '../src/server/api';
 import { SSEBroadcaster } from '../src/server/sse';
+import { WhatsAppSocketClient } from '../src/transport/whatsapp-socket';
 import type { ChatMessage, ConversationFold } from '../src/domain/types';
 
 const chatId = 'adversarial-tester@s.whatsapp.net';
 const foreignChatId = 'attacker-isolated@s.whatsapp.net';
 const epoch = 1_775_000_000_000;
 const stores: MemoryStore[] = [];
+
+function requireValue<T>(value: T | undefined | null, label = 'value'): T {
+  if (value === undefined || value === null) {
+    throw new Error(`Expected ${label} to be defined`);
+  }
+  return value;
+}
 
 function createStore(): MemoryStore {
   const store = new MemoryStore({ dataDir: ':memory:' });
@@ -268,8 +277,8 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
         tier: 1,
         topic: 'T1 Part 1',
         summary: 'Summary 1',
-        startMessageId: slice1[0]!.id,
-        endMessageId: slice1.at(-1)!.id,
+        startMessageId: requireValue(slice1[0]).id,
+        endMessageId: requireValue(slice1.at(-1)).id,
         directMessageIds: slice1.map(m => m.id),
         sourceFoldIds: [],
         messageCount: slice1.length,
@@ -282,8 +291,8 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
         tier: 1,
         topic: 'T1 Part 2',
         summary: 'Summary 2',
-        startMessageId: slice2[0]!.id,
-        endMessageId: slice2.at(-1)!.id,
+        startMessageId: requireValue(slice2[0]).id,
+        endMessageId: requireValue(slice2.at(-1)).id,
         directMessageIds: slice2.map(m => m.id),
         sourceFoldIds: [],
         messageCount: slice2.length,
@@ -300,8 +309,8 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
         tier: 3,
         topic: 'Illegal Tier 3',
         summary: 'Invalid summary',
-        startMessageId: messages[0]!.id,
-        endMessageId: messages.at(-1)!.id,
+        startMessageId: requireValue(messages[0]).id,
+        endMessageId: requireValue(messages.at(-1)).id,
         directMessageIds: messages.map(m => m.id),
         sourceFoldIds: [t1Fold1.id, t1Fold2.id],
         messageCount: messages.length,
@@ -317,15 +326,20 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
       const messages = seedSequentialMessages(store, 10);
 
       // Skip message index 2 (gap: 0, 1, 3, 4)
-      const disjointSlice = [messages[0]!, messages[1]!, messages[3]!, messages[4]!];
+      const disjointSlice = [
+        requireValue(messages[0]),
+        requireValue(messages[1]),
+        requireValue(messages[3]),
+        requireValue(messages[4])
+      ];
       const disjointFold: ConversationFold = {
         id: 't1-disjoint',
         chatId,
         tier: 1,
         topic: 'Disjoint Fold',
         summary: 'Should fail contiguity check',
-        startMessageId: disjointSlice[0]!.id,
-        endMessageId: disjointSlice.at(-1)!.id,
+        startMessageId: requireValue(disjointSlice[0]).id,
+        endMessageId: requireValue(disjointSlice.at(-1)).id,
         directMessageIds: disjointSlice.map(m => m.id),
         sourceFoldIds: [],
         messageCount: disjointSlice.length,
@@ -338,7 +352,7 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
 
     test('rejects cross-tenant chat lineage contamination', () => {
       const store = createStore();
-      const clientMessages = seedSequentialMessages(store, 5, chatId);
+      seedSequentialMessages(store, 5, chatId);
       const foreignMessages = seedSequentialMessages(store, 5, foreignChatId);
 
       // Attempting to bind a fold in chatId using messages from foreignChatId
@@ -348,8 +362,8 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
         tier: 1,
         topic: 'Contaminated Fold',
         summary: 'Cross-chat attempt',
-        startMessageId: foreignMessages[0]!.id,
-        endMessageId: foreignMessages.at(-1)!.id,
+        startMessageId: requireValue(foreignMessages[0]).id,
+        endMessageId: requireValue(foreignMessages.at(-1)).id,
         directMessageIds: foreignMessages.map(m => m.id),
         sourceFoldIds: [],
         messageCount: foreignMessages.length,
@@ -372,8 +386,8 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
         tier: 1,
         topic: 'Part A',
         summary: 'Summary A',
-        startMessageId: sliceA[0]!.id,
-        endMessageId: sliceA.at(-1)!.id,
+        startMessageId: requireValue(sliceA[0]).id,
+        endMessageId: requireValue(sliceA.at(-1)).id,
         directMessageIds: sliceA.map(m => m.id),
         sourceFoldIds: [],
         messageCount: sliceA.length,
@@ -386,8 +400,8 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
         tier: 1,
         topic: 'Part B',
         summary: 'Summary B',
-        startMessageId: sliceB[0]!.id,
-        endMessageId: sliceB.at(-1)!.id,
+        startMessageId: requireValue(sliceB[0]).id,
+        endMessageId: requireValue(sliceB.at(-1)).id,
         directMessageIds: sliceB.map(m => m.id),
         sourceFoldIds: [],
         messageCount: sliceB.length,
@@ -403,8 +417,8 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
         tier: 2,
         topic: 'T2 Valid',
         summary: 'First coalesce',
-        startMessageId: messages[0]!.id,
-        endMessageId: messages.at(-1)!.id,
+        startMessageId: requireValue(messages[0]).id,
+        endMessageId: requireValue(messages.at(-1)).id,
         directMessageIds: messages.map(m => m.id),
         sourceFoldIds: [t1A.id, t1B.id],
         messageCount: messages.length,
@@ -420,8 +434,8 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
         tier: 2,
         topic: 'T2 Duplicate',
         summary: 'Second coalesce attempt on same source',
-        startMessageId: messages[0]!.id,
-        endMessageId: messages.at(-1)!.id,
+        startMessageId: requireValue(messages[0]).id,
+        endMessageId: requireValue(messages.at(-1)).id,
         directMessageIds: messages.map(m => m.id),
         sourceFoldIds: [t1A.id, t1B.id],
         messageCount: messages.length,
@@ -444,8 +458,8 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
         tier: 1,
         topic: 'Historical Warranty Discussion',
         summary: 'Agreed on 2-year warranty replacement',
-        startMessageId: slice[0]!.id,
-        endMessageId: slice.at(-1)!.id,
+        startMessageId: requireValue(slice[0]).id,
+        endMessageId: requireValue(slice.at(-1)).id,
         directMessageIds: slice.map(m => m.id),
         sourceFoldIds: [],
         messageCount: slice.length,
@@ -455,17 +469,17 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
       store.saveFold(fold);
 
       // Quoting message at index 3 (middle of fold)
-      const targetQuotedId = slice[3]!.id;
+      const targetQuotedId = requireValue(slice[3]).id;
       const promptWithDecompress = buildFoldContext(store, chatId, targetQuotedId);
 
       expect(promptWithDecompress).toContain('Historical Warranty Discussion');
       expect(promptWithDecompress).toContain('[السياق التفصيلي للرسالة المقتبسة من الأرشيف]:');
-      expect(promptWithDecompress).toContain(slice[1]!.text); // index 3 - 2 = 1
-      expect(promptWithDecompress).toContain(slice[2]!.text); // index 3 - 1 = 2
-      expect(promptWithDecompress).toContain(slice[3]!.text); // target
-      expect(promptWithDecompress).toContain(slice[4]!.text); // index 3 + 1 = 4
-      expect(promptWithDecompress).toContain(slice[5]!.text); // index 3 + 2 = 5
-      expect(promptWithDecompress).not.toContain(messages[7]!.text); // outside fold
+      expect(promptWithDecompress).toContain(requireValue(slice[1]).text); // index 3 - 2 = 1
+      expect(promptWithDecompress).toContain(requireValue(slice[2]).text); // index 3 - 1 = 2
+      expect(promptWithDecompress).toContain(requireValue(slice[3]).text); // target
+      expect(promptWithDecompress).toContain(requireValue(slice[4]).text); // index 3 + 1 = 4
+      expect(promptWithDecompress).toContain(requireValue(slice[5]).text); // index 3 + 2 = 5
+      expect(promptWithDecompress).not.toContain(requireValue(messages[7]).text); // outside fold
     });
 
     test('gracefully ignores nonexistent, malformed, or un-folded quoted message IDs', () => {
@@ -478,8 +492,8 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
         tier: 1,
         topic: 'Topic Only',
         summary: 'Summary Only',
-        startMessageId: messages[0]!.id,
-        endMessageId: messages.at(-1)!.id,
+        startMessageId: requireValue(messages[0]).id,
+        endMessageId: requireValue(messages.at(-1)).id,
         directMessageIds: messages.map(m => m.id),
         sourceFoldIds: [],
         messageCount: messages.length,
@@ -519,8 +533,8 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
         tier: 1,
         topic: 'Corrupted Session',
         summary: 'This should be omitted if messages are purged',
-        startMessageId: messages[0]!.id,
-        endMessageId: messages.at(-1)!.id,
+        startMessageId: requireValue(messages[0]).id,
+        endMessageId: requireValue(messages.at(-1)).id,
         directMessageIds: messages.map(m => m.id),
         sourceFoldIds: [],
         messageCount: messages.length,
@@ -533,7 +547,9 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
       expect(buildFoldContext(store, chatId)).toContain('Corrupted Session');
 
       // Now simulate catastrophic raw data corruption / purge: delete one message directly from SQLite
-      (store as any).sqlite.db.run('DELETE FROM messages WHERE id = ?;', messages[2]!.id);
+      const db: unknown = Reflect.get(store.getSqliteStore(), 'db');
+      assert(db instanceof Database);
+      db.run('DELETE FROM messages WHERE id = ?;', [requireValue(messages[2]).id]);
 
       // buildFoldContext must detect lineage gap and fail closed by omitting the corrupt fold
       const contextAfterPurge = buildFoldContext(store, chatId);
@@ -552,12 +568,11 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
 
       const app = createApiServer({
         memoryStore: store,
-        whatsappClient: {} as any,
-        moderatorAgent: {
-          getContextFoldEngine: () => foldEngine,
-          getPersona: () => ({ model: 'gemini-4-hydrogen' }),
-          getPreferredModel: () => 'gemini-4-hydrogen'
-        } as any,
+        whatsappClient: new WhatsAppSocketClient(),
+        moderatorAgent: new ModeratorAgent(new GeminiClient({ apiKey: 'test-key' }), store, {
+          contextFoldEngine: foldEngine,
+          persona: { model: 'gemini-4-hydrogen' }
+        }),
         sse: new SSEBroadcaster()
       });
 
@@ -566,14 +581,19 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
       });
 
       expect(response.status).toBe(200);
-      const json = (await response.json()) as { status: any };
-      expect(json.status).toBeDefined();
-      expect(json.status.chatId).toBe(chatId);
-      expect(json.status.model).toBe('gemini-4-hydrogen');
-      expect(json.status.targetContextBudget).toBe(16_000);
-      expect(json.status.currentTokens).toBeGreaterThan(0);
-      expect(typeof json.status.compressionRatio).toBe('number');
-      expect(['idle', 'soft', 'strong']).toContain(json.status.nudgeDecision);
+      const json: unknown = await response.json();
+      assert(json && typeof json === 'object' && 'status' in json);
+      const { status } = json;
+      assert(status && typeof status === 'object' && 'currentTokens' in status && typeof status.currentTokens === 'number');
+      expect(status).toMatchObject({
+        chatId,
+        model: 'gemini-4-hydrogen',
+        targetContextBudget: 16_000,
+        compressionRatio: expect.any(Number)
+      });
+      expect(status.currentTokens).toBeGreaterThan(0);
+      assert('nudgeDecision' in status);
+      expect(['idle', 'soft', 'strong']).toContain(status.nudgeDecision);
     });
 
     test('GET /api/chats/:id/memory-search resists regex injection payloads and special characters', async () => {
@@ -586,8 +606,8 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
         tier: 1,
         topic: 'Secret Code [VIP-999]',
         summary: 'Discount voucher code: SUMMER_2026_DISCOUNT',
-        startMessageId: messages[0]!.id,
-        endMessageId: messages.at(-1)!.id,
+        startMessageId: requireValue(messages[0]).id,
+        endMessageId: requireValue(messages.at(-1)).id,
         directMessageIds: messages.map(m => m.id),
         sourceFoldIds: [],
         messageCount: messages.length,
@@ -598,8 +618,8 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
 
       const app = createApiServer({
         memoryStore: store,
-        whatsappClient: {} as any,
-        moderatorAgent: {} as any,
+        whatsappClient: new WhatsAppSocketClient(),
+        moderatorAgent: new ModeratorAgent(new GeminiClient({ apiKey: 'test-key' }), store),
         sse: new SSEBroadcaster()
       });
 
@@ -611,9 +631,9 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
       );
 
       expect(searchRes.status).toBe(200);
-      const searchJson = (await searchRes.json()) as { results: { messages: any[]; folds: any[] } };
-      expect(Array.isArray(searchJson.results.folds)).toBe(true);
-      expect(Array.isArray(searchJson.results.messages)).toBe(true);
+      expect(await searchRes.json()).toMatchObject({
+        results: { folds: expect.any(Array), messages: expect.any(Array) }
+      });
 
       // Search with legitimate keyword
       const legitRes = await app.request(
@@ -621,17 +641,22 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
         { headers: { 'x-agent-owner-key': 'local-agent-owner' } }
       );
       expect(legitRes.status).toBe(200);
-      const legitJson = (await legitRes.json()) as { results: { messages: any[]; folds: any[] } };
-      expect(legitJson.results.folds.length).toBeGreaterThan(0);
-      expect(legitJson.results.folds[0]!.summary).toContain('SUMMER_2026_DISCOUNT');
+      const legitJson: unknown = await legitRes.json();
+      assert(legitJson && typeof legitJson === 'object' && 'results' in legitJson);
+      const { results } = legitJson;
+      assert(results && typeof results === 'object' && 'folds' in results && Array.isArray(results.folds));
+      expect(results.folds.length).toBeGreaterThan(0);
+      const firstFold: unknown = results.folds[0];
+      assert(firstFold && typeof firstFold === 'object' && 'summary' in firstFold && typeof firstFold.summary === 'string');
+      expect(firstFold.summary).toContain('SUMMER_2026_DISCOUNT');
     });
 
     test('GET /api/chats/:id/folds/:foldId/decompress returns 404 on nonexistent fold', async () => {
       const store = createStore();
       const app = createApiServer({
         memoryStore: store,
-        whatsappClient: {} as any,
-        moderatorAgent: {} as any,
+        whatsappClient: new WhatsAppSocketClient(),
+        moderatorAgent: new ModeratorAgent(new GeminiClient({ apiKey: 'test-key' }), store),
         sse: new SSEBroadcaster()
       });
 
@@ -641,8 +666,7 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
       );
 
       expect(res.status).toBe(404);
-      const json = (await res.json()) as { error: string };
-      expect(json.error).toBe('Fold not found');
+      expect(await res.json()).toMatchObject({ error: 'Fold not found' });
     });
   });
 
@@ -661,8 +685,8 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
           tier: 1,
           topic: `Topic ${i}`,
           summary: `Summary ${i}`,
-          startMessageId: slice[0]!.id,
-          endMessageId: slice.at(-1)!.id,
+          startMessageId: requireValue(slice[0]).id,
+          endMessageId: requireValue(slice.at(-1)).id,
           directMessageIds: slice.map(m => m.id),
           sourceFoldIds: [],
           messageCount: slice.length,
@@ -680,10 +704,10 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
         tier: 2,
         topic: 'M1',
         summary: 'MS1',
-        startMessageId: messages[0]!.id,
-        endMessageId: messages[9]!.id,
+        startMessageId: requireValue(messages[0]).id,
+        endMessageId: requireValue(messages[9]).id,
         directMessageIds: messages.slice(0, 10).map(m => m.id),
-        sourceFoldIds: [t1Folds[0]!.id, t1Folds[1]!.id],
+        sourceFoldIds: [requireValue(t1Folds[0]).id, requireValue(t1Folds[1]).id],
         messageCount: 10,
         factsExtracted: [],
         createdAt: epoch + 5000
@@ -694,10 +718,10 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
         tier: 2,
         topic: 'M2',
         summary: 'MS2',
-        startMessageId: messages[10]!.id,
-        endMessageId: messages[19]!.id,
+        startMessageId: requireValue(messages[10]).id,
+        endMessageId: requireValue(messages[19]).id,
         directMessageIds: messages.slice(10, 20).map(m => m.id),
-        sourceFoldIds: [t1Folds[2]!.id, t1Folds[3]!.id],
+        sourceFoldIds: [requireValue(t1Folds[2]).id, requireValue(t1Folds[3]).id],
         messageCount: 10,
         factsExtracted: [],
         createdAt: epoch + 6000
@@ -716,7 +740,7 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
       });
 
       // Concurrent execution of coalesceTier2Folds
-      const [res1, res2] = await Promise.all([
+      await Promise.all([
         foldEngine.coalesceTier2Folds(chatId),
         foldEngine.coalesceTier2Folds(chatId)
       ]);
@@ -724,8 +748,8 @@ describe('Active Context Pruning (ACP) Behavioral & Adversarial Suite', () => {
       // Exactly one coalesce must succeed, the other returns null or same fold
       const t3Folds = store.getFolds(chatId, 3);
       expect(t3Folds.length).toBe(1);
-      expect(t3Folds[0]!.tier).toBe(3);
-      expect(t3Folds[0]!.messageCount).toBe(20);
+      expect(requireValue(t3Folds[0]).tier).toBe(3);
+      expect(requireValue(t3Folds[0]).messageCount).toBe(20);
       expect(summarizerCalls).toBe(1);
     });
 

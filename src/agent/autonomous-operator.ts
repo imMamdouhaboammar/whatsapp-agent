@@ -1,7 +1,8 @@
 import {randomUUID} from 'node:crypto';
-import {BrandKnowledgeStore,type Evidence} from './brand-knowledge';
-import {ActionJournal,ToolRegistry} from './tools';
-import {WebScout,shouldUseWebScout} from './web-scout';
+import { isRecord } from '../mcp/records';
+import type { BrandKnowledgeStore } from './brand-knowledge';
+import type { ActionJournal, ToolRegistry } from './tools';
+import { type WebScout, shouldUseWebScout } from './web-scout';
 
 export interface Resolution {
   status:'answered'|'clarification'|'waiting_provider';
@@ -36,13 +37,16 @@ export class AutonomousOperator {
           idempotencyKey:'inventory:'+sku,input:{sku}
         });
         if(result.status!=='confirmed')return finish('waiting_provider',say('بنراجع بيانات المنتج مع المتجر، وهبلغك أول ما نتأكد.',"We're checking the product details with the store and will tell you as soon as we confirm."));
-        const item=result.output as {sku?:string;stock?:number;price?:number;currency?:string;observedAt?:number;sourceUrl?:string}|null;
-        if(!item || item.sku?.toLowerCase()!==sku.toLowerCase() || !Number.isSafeInteger(item.stock) || (item.stock??-1)<0) {
+        const item=result.output;
+        if(!isRecord(item) || typeof item.sku!=='string' || item.sku.toLowerCase()!==sku.toLowerCase() ||
+          typeof item.stock!=='number' || !Number.isSafeInteger(item.stock) || item.stock<0) {
           return finish('clarification',say('مش قادر أتأكد من توفر المنتج حاليًا. ممكن تبعت اسم المنتج أو صورته؟',"I can't confirm this product's availability right now. Could you send the product name or a photo?"));
         }
-        evidence.push({kind:'provider',source:item.sourceUrl||'inventory.lookup',observedAt:item.observedAt??Date.now()});
+        const source = typeof item.sourceUrl==='string' && item.sourceUrl ? item.sourceUrl : 'inventory.lookup';
+        const observedAt = typeof item.observedAt==='number' && Number.isFinite(item.observedAt) ? item.observedAt : Date.now();
+        evidence.push({kind:'provider',source,observedAt});
         let reply=say('المنتج '+item.sku+' متوفر منه '+item.stock+' قطعة حاليًا',item.sku+' has '+item.stock+' in stock right now');
-        if(typeof item.price==='number' && Number.isFinite(item.price) && item.price>=0 && item.currency)reply+=say('، والسعر ','. The price is ')+item.price+' '+item.currency;
+        if(typeof item.price==='number' && Number.isFinite(item.price) && item.price>=0 && typeof item.currency==='string' && item.currency)reply+=say('، والسعر ','. The price is ')+item.price+' '+item.currency;
         return finish('answered',reply+'.');
       }catch{
         return finish('waiting_provider',say('حاليًا مش قادر أتحقق من المخزون مباشرة. هحتاج أتأكد من المتجر قبل تحديد الكمية أو السعر.',"I can't check stock directly right now. I need to confirm with the store before giving a quantity or price."));
@@ -53,10 +57,10 @@ export class AutonomousOperator {
       return finish('clarification',say('فيه تعارض بين مصادر سياسة الإرجاع المتاحة؛ محتاجين نراجع السياسة المعتمدة قبل ما أؤكد المدة.','The available sources disagree on the return policy. We need to check the approved policy before I confirm the period.'));
     }
     const answer=await this.deps.knowledge.retrieve({brandId:input.brandId,question:input.text,limit:3});
-    if(answer.evidence.length){
-      const source=answer.evidence[0] as Evidence;
-      evidence.push({kind:'brand',source:source.sourceId,versionId:source.versionId,observedAt:source.lastChecked});
-      return finish('answered',source.text);
+    const brandEvidence=answer.evidence[0];
+    if(brandEvidence){
+      evidence.push({kind:'brand',source:brandEvidence.sourceId,versionId:brandEvidence.versionId,observedAt:brandEvidence.lastChecked});
+      return finish('answered',brandEvidence.text);
     }
     if(this.deps.webScout && shouldUseWebScout(input.text)) {
       try {

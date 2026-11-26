@@ -1,0 +1,9 @@
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "S", "UP", "SIM", "RUF", "I", "BLE"]
+
+[tool.ruff.lint.per-file-ignores]
+"test_*.py" = ["S101"]

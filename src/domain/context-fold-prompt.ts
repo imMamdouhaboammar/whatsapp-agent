@@ -10,6 +10,10 @@ import type { ConversationFold } from './types';
  * Superseded folds are excluded. Invalid or stale lineage is never inserted into the moderator's prompt.
  * Optionally resolves and decompresses a local window (±2 turns) if an incoming message quotes an archived message.
  */
+function renderFold(fold: ConversationFold): string {
+  return `- [${fold.id}; ${fold.startMessageId}..${fold.endMessageId}] ${fold.topic}: ${fold.summary}`;
+}
+
 export function buildFoldContext(memory: MemoryStore, chatId: string, quotedMessageId?: string): string {
   try {
     // Bound SQLite reads and per-fold lineage checks independently of conversation age.
@@ -39,14 +43,11 @@ export function buildFoldContext(memory: MemoryStore, chatId: string, quotedMess
       (memory.getMessage(chatId, a.startMessageId)?.timestamp ?? 0) -
       (memory.getMessage(chatId, b.startMessageId)?.timestamp ?? 0);
 
-    const render = (fold: ConversationFold) =>
-      `- [${fold.id}; ${fold.startMessageId}..${fold.endMessageId}] ${fold.topic}: ${fold.summary}`;
-
     const sections: string[] = [
       'أرشيف المحادثة السابقة، ملخصات للاستدلال ويمكن التحقق منها عبر الرسائل الأصلية:',
-      ...(archivals.length ? ['Archival History:', ...archivals.sort(order).map(render)] : []),
-      ...(milestones.length ? ['Milestones:', ...milestones.sort(order).map(render)] : []),
-      ...(sessions.length ? ['Sessions:', ...sessions.sort(order).map(render)] : [])
+      ...(archivals.length ? ['Archival History:', ...archivals.toSorted(order).map(renderFold)] : []),
+      ...(milestones.length ? ['Milestones:', ...milestones.toSorted(order).map(renderFold)] : []),
+      ...(sessions.length ? ['Sessions:', ...sessions.toSorted(order).map(renderFold)] : [])
     ];
 
     // Decompress-on-demand: if a quoted message ID is provided and lies within any fold,

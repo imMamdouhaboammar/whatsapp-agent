@@ -13,10 +13,12 @@ genrule(
     srcs = glob([
         "src/**/*.ts",
         "tests/**/*.ts",
+    ]) + [
         "tsconfig.json",
-    ]),
+    ],
     out = "typecheck.log",
     cmd = """
+        set -e
         TARGET_OUT="$PWD/$OUT"
         ROOT="${PWD%%/buck-out/*}"
         (cd "$ROOT" && bun x tsc --noEmit)
@@ -29,11 +31,13 @@ genrule(
     name = "backend_check",
     srcs = glob([
         "src/**/*.ts",
+    ]) + [
         "package.json",
         "tsconfig.json",
-    ]),
+    ],
     out = "backend_check.log",
     cmd = """
+        set -e
         TARGET_OUT="$PWD/$OUT"
         ROOT="${PWD%%/buck-out/*}"
         (cd "$ROOT" && bun build src/index.ts --target bun --no-bundle > /dev/null)
@@ -47,13 +51,15 @@ genrule(
     srcs = glob([
         "ui/src/**/*",
         "ui/public/**/*",
+        "ui/tsconfig*.json",
+    ]) + [
         "ui/index.html",
         "ui/package.json",
         "ui/vite.config.ts",
-        "ui/tsconfig*.json",
-    ]),
+    ],
     out = "ui_dist",
     cmd = """
+        set -e
         TARGET_OUT="$PWD/$OUT"
         ROOT="${PWD%%/buck-out/*}"
         (cd "$ROOT/ui" && bun run build)
@@ -66,10 +72,12 @@ genrule(
     name = "worker_check",
     srcs = glob([
         "workers/media-python/**/*.py",
+    ]) + [
         "workers/media-python/requirements.txt",
-    ]),
+    ],
     out = "worker_check.log",
     cmd = """
+        set -e
         TARGET_OUT="$PWD/$OUT"
         ROOT="${PWD%%/buck-out/*}"
         (cd "$ROOT" && python3 -m py_compile workers/media-python/document_worker.py workers/media-python/test_worker.py)
@@ -83,10 +91,12 @@ genrule(
     srcs = glob([
         "ui/src/**/*",
         "ui/tests/**/*",
+    ]) + [
         "ui/package.json",
-    ]),
+    ],
     out = "ui_test.log",
     cmd = """
+        set -e
         TARGET_OUT="$PWD/$OUT"
         ROOT="${PWD%%/buck-out/*}"
         (cd "$ROOT/ui" && bun run test:ui > "$TARGET_OUT" 2>&1)

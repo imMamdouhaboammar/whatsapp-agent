@@ -71,6 +71,6 @@ describe('Funnel Registry', () => {
 
     const activeTargets = registry.getActiveTargets('FALLBACK_LLM');
     expect(activeTargets.length).toBe(1);
-    expect(activeTargets[0].id).toBe('gemini-primary');
+    expect(activeTargets[0]?.id).toBe('gemini-primary');
   });
 });

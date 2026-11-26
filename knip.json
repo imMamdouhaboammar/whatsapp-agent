@@ -1,0 +1,46 @@
+{
+  "$schema": "https://unpkg.com/knip@6.48.0/schema.json",
+  "workspaces": {
+    ".": {
+      "entry": [
+        "src/index.ts",
+        "src/cli.ts",
+        "src/mcp/cli.ts",
+        "src/persistence/postgres/cli.ts",
+        "src/evaluation-lab/cli.ts",
+        "scripts/perf-benchmark.ts",
+        "scripts/security-audit.ts",
+        "scripts/quality-guard.mjs",
+        "scripts/quality-staged.mjs",
+        "tests/**/*.test.ts",
+        "patch-baileys.mjs",
+        "commitlint.config.mjs"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "scripts/**/*.{ts,mjs}",
+        "tests/**/*.ts",
+        "*.mjs"
+      ],
+      "ignoreBinaries": [
+        "qlty",
+        "no-mistakes",
+        "uvx",
+        "buildifier",
+        "hadolint"
+      ]
+    },
+    "ui": {
+      "entry": [
+        "src/main.tsx",
+        "vite.config.ts",
+        "tests/*.test.{mjs,ts}"
+      ],
+      "project": [
+        "src/**/*.{ts,tsx}",
+        "tests/**/*.{mjs,ts}",
+        "vite.config.ts"
+      ]
+    }
+  }
+}

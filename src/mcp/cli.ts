@@ -19,14 +19,25 @@ async function main() {
     memoryStore,
     moderatorAgent,
     channelMode: process.env.MCP_WHATSAPP_CHANNEL === 'none' ? 'none' : 'managed',
-    createClient: (onStateChange) => new WhatsAppSocketClient({ onStateChange }),
+    createClient: (onStateChange) => new WhatsAppSocketClient({
+      onStateChange: ({ qrDataUrl, pairingCode, error, ...state }) => {
+        onStateChange({
+          ...state,
+          qrDataUrl: qrDataUrl ?? undefined,
+          pairingCode: pairingCode ?? undefined,
+          error: error ?? undefined
+        });
+      }
+    }),
     connectTimeoutMs: Number(process.env.MCP_CONNECT_TIMEOUT_MS) || undefined
   });
 
   const transport = new StdioServerTransport();
   await runtime.server.connect(transport);
   // A host that closes stdio without a signal must not leave the WhatsApp socket running.
-  runtime.server.onclose = () => { void runtime.shutdown().finally(() => process.exit(0)); };
+  Object.assign(runtime.server, {
+    onclose: () => { void runtime.shutdown().finally(() => process.exit(0)); }
+  });
   console.error('[Fable Agentic WhatsApp] MCP Server listening on stdio');
 
   const stop = () => { void runtime.shutdown().finally(() => process.exit(0)); };

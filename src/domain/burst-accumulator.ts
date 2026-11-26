@@ -39,7 +39,7 @@ export class BurstAccumulator {
   private maxBurstMessages: number;
   private onBurstCallback: (burst: FusedBurst) => Promise<void> | void;
   private buffers = new Map<string, ChatMessage[]>();
-  private timers = new Map<string, any>();
+  private timers = new Map<string, ReturnType<typeof setTimeout>>();
   private inFlight = new Map<Promise<void>, string>();
   private intakeStopped = false;
 
@@ -127,18 +127,21 @@ export class BurstAccumulator {
 
     const fusedText = textLines.join('\n');
     const lastMsg = messages[messages.length - 1];
+    if (!lastMsg) return null;
 
     // Preserve any quoted message found in the burst (preferring the latest)
     let quotedMessage: QuotedMessageInfo | undefined = undefined;
     let replyToId: string | undefined = undefined;
 
     for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].quotedMessage) {
-        quotedMessage = messages[i].quotedMessage;
-        replyToId = messages[i].replyToId || quotedMessage?.id;
+      const candidate = messages[i];
+      if (!candidate) continue;
+      if (candidate.quotedMessage) {
+        quotedMessage = candidate.quotedMessage;
+        replyToId = candidate.replyToId || quotedMessage?.id;
         break;
-      } else if (messages[i].replyToId) {
-        replyToId = messages[i].replyToId;
+      } else if (candidate.replyToId) {
+        replyToId = candidate.replyToId;
         break;
       }
     }
@@ -158,7 +161,7 @@ export class BurstAccumulator {
     const callback = (async () => {
       try {
         await this.onBurstCallback(burst);
-      } catch (err: any) {
+      } catch (err: unknown) {
         logEvent('error', 'burst_callback_error', { chat: hashChatId(chatId), error: describeError(err) });
       }
     })();

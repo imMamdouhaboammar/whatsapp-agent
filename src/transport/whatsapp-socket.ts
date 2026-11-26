@@ -1,4 +1,5 @@
-import makeWASocket, {
+import {
+  makeWASocket,
   DisconnectReason,
   downloadMediaMessage,
   fetchLatestBaileysVersion,
@@ -6,12 +7,13 @@ import makeWASocket, {
   Browsers,
   WAMessageStatus,
   jidNormalizedUser,
+  type AuthenticationState,
   type WASocket,
   type proto,
   type WAMessage
 } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
-import { Readable } from 'node:stream';
+import type { Readable } from 'node:stream';
 import { readStreamWithCap, MediaTooLargeError } from '../agent/media-bounds';
 import pino from 'pino';
 import { rmSync, mkdirSync } from 'node:fs';
@@ -68,29 +70,75 @@ export function classifyDisconnect(statusCode: number | undefined): DisconnectCl
 export const MAX_RECONNECT_ATTEMPTS = 8;
 export const MAX_QR_CYCLES = 20;
 
-export interface WhatsAppSocketOptions {
+/** The provider operations used by this client, not the full Baileys API. */
+export type WhatsAppSocketPort = Pick<WASocket, 'sendMessage' | 'sendPresenceUpdate' | 'requestPairingCode' | 'end'> & {
+  ev: Pick<WASocket['ev'], 'on' | 'removeAllListeners'>;
+  authState: { creds: Pick<AuthenticationState['creds'], 'registered'> };
+  user?: Pick<NonNullable<WASocket['user']>, 'id' | 'name'>;
+};
+
+type BaileysConfig = Parameters<typeof makeWASocket>[0];
+type SocketConfig = Omit<BaileysConfig, 'auth'>;
+type SocketAuthState = {
+  keys?: {
+    get?: (type: 'lid-mapping', ids: string[]) => Record<string, unknown> | Promise<Record<string, unknown>>;
+  };
+  creds: WhatsAppSocketPort['authState']['creds'];
+};
+type AuthStateFactory<State> = (sessionDir: string) => Promise<{ state: State; saveCreds: () => Promise<void> }>;
+type PairingSnapshot = Omit<PairingState, 'qrDataUrl' | 'pairingCode' | 'error'> & {
+  qrDataUrl: string | null;
+  pairingCode: string | null;
+  error: string | null;
+};
+
+export type WhatsAppSocketOptions = {
   sessionDir?: string;
   audioTranscriber?: AudioTranscriber;
-  onStateChange?: (state: PairingState) => void;
+  onStateChange?: (state: PairingSnapshot) => void;
   onMessage?: (message: ChatMessage, metadata?: { historical: boolean }) => void;
   onReaction?: (reaction: WhatsAppReactionEvent) => void;
   onMessageStatus?: (event: WhatsAppMessageStatusEvent) => void;
   /** WA-013/WA-014 test seams; production defaults preserve the current Baileys wiring. */
-  socketFactory?: (config: Record<string, unknown>) => WASocket;
-  authStateFactory?: (sessionDir: string) => Promise<{ state: any; saveCreds: () => Promise<void> }>;
   versionProvider?: () => Promise<{ version: [number, number, number] }>;
   reconnectDelays?: { baseMs: number; maxMs: number };
   /** WA-017 test seam: media download as a stream so byte caps are enforced during
    * transfer. Production default preserves Baileys downloadMediaMessage behavior. */
   mediaDownloader?: (message: WAMessage) => Promise<Readable>;
+} & ({
+  socketFactory?: undefined;
+  authStateFactory?: AuthStateFactory<AuthenticationState>;
+} | {
+  socketFactory: (config: SocketConfig & { auth: SocketAuthState }) => WhatsAppSocketPort;
+  authStateFactory?: AuthStateFactory<SocketAuthState>;
+});
+
+function prepareSocket<State extends SocketAuthState>(
+  loadAuth: AuthStateFactory<State>,
+  createSocket: (config: SocketConfig & { auth: State }) => WhatsAppSocketPort
+) {
+  return async (dir: string) => {
+    const { state, saveCreds } = await loadAuth(dir);
+    return {
+      state,
+      saveCreds,
+      connect: (config: SocketConfig) => createSocket({ ...config, auth: state })
+    };
+  };
+}
+
+function missingMessageIdError() {
+  return Object.assign(new Error('WhatsApp send outcome is ambiguous: native message ID missing'), {
+    code: 'WHATSAPP_ACCEPTANCE_AMBIGUOUS'
+  });
 }
 
 export class WhatsAppSocketClient {
-  private sock: WASocket | null = null;
-  private authState: any = null;
+  private sock: WhatsAppSocketPort | null = null;
+  private authState: SocketAuthState | null = null;
   private sessionDir: string;
   private audioTranscriber?: AudioTranscriber;
-  private onStateChange?: (state: PairingState) => void;
+  private onStateChange?: (state: PairingSnapshot) => void;
   private onMessageCallback?: (message: ChatMessage, metadata?: { historical: boolean }) => void;
   private onReactionCallback?: (reaction: WhatsAppReactionEvent) => void;
   private onMessageStatusCallback?: (event: WhatsAppMessageStatusEvent) => void;
@@ -135,8 +183,7 @@ export class WhatsAppSocketClient {
   // generations fence themselves before mutating state.
   private socketGeneration = 0;
   private qrCycleCount = 0;
-  private readonly socketFactory: (config: Record<string, unknown>) => WASocket;
-  private readonly authStateFactory: (sessionDir: string) => Promise<{ state: any; saveCreds: () => Promise<void> }>;
+  private readonly loadSocket: ReturnType<typeof prepareSocket>;
   private readonly versionProvider: () => Promise<{ version: [number, number, number] }>;
   private readonly reconnectDelays: { baseMs: number; maxMs: number };
   private readonly mediaDownloader: (message: WAMessage) => Promise<Readable>;
@@ -148,12 +195,13 @@ export class WhatsAppSocketClient {
     this.onMessageCallback = options.onMessage;
     this.onReactionCallback = options.onReaction;
     this.onMessageStatusCallback = options.onMessageStatus;
-    this.socketFactory = options.socketFactory ?? ((config) => makeWASocket(config as any));
-    this.authStateFactory = options.authStateFactory ?? ((dir) => useMultiFileAuthState(dir));
+    this.loadSocket = options.socketFactory
+      ? prepareSocket(options.authStateFactory ?? useMultiFileAuthState, options.socketFactory)
+      : prepareSocket(options.authStateFactory ?? useMultiFileAuthState, makeWASocket);
     this.versionProvider = options.versionProvider ?? (() => fetchLatestBaileysVersion());
     this.reconnectDelays = options.reconnectDelays ?? { baseMs: 500, maxMs: 15_000 };
     this.mediaDownloader = options.mediaDownloader
-      ?? ((message) => downloadMediaMessage(message, 'stream', {}) as unknown as Promise<Readable>);
+      ?? ((message) => downloadMediaMessage(message, 'stream', {}));
   }
 
   getState(): PairingState {
@@ -169,8 +217,7 @@ export class WhatsAppSocketClient {
       mkdirSync(this.sessionDir, { recursive: true });
       this.authState = null;
     } catch (err: unknown) {
-      const fsErr = err as { code?: string };
-      if (fsErr?.code !== 'ENOENT') {
+      if (!(err && typeof err === 'object' && 'code' in err && err.code === 'ENOENT')) {
         console.warn('[WhatsApp] Failed to cleanly clear session directory:', err);
       }
     }
@@ -193,7 +240,7 @@ export class WhatsAppSocketClient {
       pairingCode: this.currentState.pairingCode ?? null,
       error: this.currentState.error ?? null
     };
-    this.onStateChange?.(snapshot as PairingState);
+    this.onStateChange?.(snapshot);
   }
 
   /**
@@ -206,6 +253,7 @@ export class WhatsAppSocketClient {
       this.reconnectAttempts = 0;
       this.qrCycleCount = 0;
     }
+    const queuedGeneration = this.socketGeneration;
     const priorMutex = this.startMutex;
     let releaseMutex!: () => void;
     this.startMutex = new Promise<void>((resolve) => { releaseMutex = resolve; });
@@ -214,6 +262,7 @@ export class WhatsAppSocketClient {
     });
 
     try {
+      if (options?.viaReconnect && queuedGeneration !== this.socketGeneration) return;
       await this.internalStart(pairingPhoneNumber, options);
     } finally {
       releaseMutex();
@@ -243,35 +292,21 @@ export class WhatsAppSocketClient {
 
     // Clean up any existing socket before reconnecting to prevent session conflicts
     if (this.sock) {
-      try {
-        this.sock.ev.removeAllListeners('connection.update');
-        this.sock.ev.removeAllListeners('creds.update');
-        this.sock.ev.removeAllListeners('messages.upsert');
-        this.sock.ev.removeAllListeners('messages.update');
-        this.sock.ev.removeAllListeners('message-receipt.update');
-        this.sock.ev.removeAllListeners('messaging-history.set');
-        this.sock.end(undefined);
-      } catch (err) {
-        console.warn('[WhatsApp] Error during socket listener cleanup:', err);
-      }
-      this.sock = null;
+      await this.endCurrentSocket('[WhatsApp] Error during socket listener cleanup:');
+      if (generation !== this.socketGeneration) return;
     }
 
     this.isConnecting = true;
     this.setState({ state: 'connecting', error: undefined });
 
     try {
-      let { state, saveCreds } = await this.authStateFactory(this.sessionDir);
+      const { state, saveCreds, connect } = await this.loadSocket(this.sessionDir);
 
-      // Self-heal: If auth credentials have `me` set but are unregistered (or corrupted from prior logout),
-      // Baileys will neither generate a QR code nor connect. Wipe the dead session and re-initialize.
-      if (state.creds?.me && !state.creds?.registered) {
-        console.warn('[WhatsApp] Detected stale unregistered credentials with me populated. Auto-flushing session...');
-        this.clearSession();
-        const freshAuth = await this.authStateFactory(this.sessionDir);
-        state = freshAuth.state;
-        saveCreds = freshAuth.saveCreds;
-      }
+      // NOTE: We intentionally do NOT auto-flush credentials here based on `registered: false`.
+      // After a successful QR scan, Baileys saves credentials with `me` populated but `registered: false`.
+      // The `registered` flag is only set to `true` later, inside messages-recv.js after CB:success.
+      // Auto-flushing on `me && !registered` wipes a valid post-pairing session and forces a new QR —
+      // that is the exact login-loop bug. Session cleanup only happens on an explicit logout (401).
 
       // WA-013: a disconnect() or a newer start() that landed during the auth await
       // owns the lifecycle now; this older attempt must stop before touching the socket.
@@ -283,9 +318,8 @@ export class WhatsAppSocketClient {
 
       const logger = pino({ level: 'silent' });
 
-      const sock = this.socketFactory({
+      const sock = connect({
         version,
-        auth: state,
         logger,
         printQRInTerminal: false,
         browser: Browsers.macOS('Desktop'),
@@ -294,16 +328,24 @@ export class WhatsAppSocketClient {
         connectTimeoutMs: 60_000,
         defaultQueryTimeoutMs: 60_000
       });
-      if (generation !== this.socketGeneration) return;
-      this.sock = sock;
+      // A factory may synchronously re-enter disconnect(). Never attach or leak
+      // a socket whose generation lost ownership during construction.
+      if (!this.adoptSocket(sock, generation)) {
+        await this.retireSocket(sock, '[WhatsApp] Error during stale socket cleanup:');
+        return;
+      }
 
       // WA-013: credential writes flush only while this socket generation is current.
-      this.sock.ev.on('creds.update', () => {
+      sock.ev.on('creds.update', async () => {
         if (generation !== this.socketGeneration) return;
-        void saveCreds();
+        try {
+          await saveCreds();
+        } catch (err) {
+          console.warn('[WhatsApp] Failed to save credentials:', err);
+        }
       });
 
-      this.sock.ev.on('connection.update', async (update) => {
+      sock.ev.on('connection.update', async (update) => {
         if (generation !== this.socketGeneration) return;
         const { connection, lastDisconnect, qr } = update;
 
@@ -320,8 +362,9 @@ export class WhatsAppSocketClient {
                 qrDataUrl: undefined,
                 error: undefined
               });
-            } catch (err: any) {
-              this.setState({ error: `Failed to request pairing code: ${err.message}` });
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : String(err);
+              this.setState({ error: `Failed to request pairing code: ${msg}` });
             }
           } else {
             try {
@@ -333,8 +376,9 @@ export class WhatsAppSocketClient {
                 pairingCode: undefined,
                 error: undefined // Clear any transient reconnect error once fresh QR is ready
               });
-            } catch (err: any) {
-              this.setState({ error: `Failed to render QR code: ${err.message}` });
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : String(err);
+              this.setState({ error: `Failed to render QR code: ${msg}` });
             }
           }
         }
@@ -375,7 +419,10 @@ export class WhatsAppSocketClient {
             return;
           }
 
-          const statusCode = (lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)?.output?.statusCode;
+          const error = lastDisconnect?.error;
+          const output = error && 'output' in error ? error.output : undefined;
+          const statusCode = output && typeof output === 'object' && 'statusCode' in output &&
+            typeof output.statusCode === 'number' ? output.statusCode : undefined;
           const kind = classifyDisconnect(statusCode);
 
           // WA-014: terminal codes never auto-retry - evading provider restrictions is not allowed.
@@ -437,7 +484,7 @@ export class WhatsAppSocketClient {
           .catch((error) => console.warn('[WhatsApp] Could not resolve receipt JID:', error));
       };
 
-      this.sock.ev.on('messages.update', (updates) => {
+      sock.ev.on('messages.update', (updates) => {
         if (generation !== this.socketGeneration) return;
         for (const { key, update } of updates) {
           if (!key.id || !key.remoteJid || key.fromMe === false) continue;
@@ -447,7 +494,7 @@ export class WhatsAppSocketClient {
       });
 
       // Participant receipts do not establish group-wide delivery or read state.
-      this.sock.ev.on('message-receipt.update', (receipts) => {
+      sock.ev.on('message-receipt.update', (receipts) => {
         if (generation !== this.socketGeneration) return;
         for (const { key, receipt } of receipts) {
           if (!key.id || !key.remoteJid || key.fromMe === false || key.remoteJid.endsWith('@g.us')) continue;
@@ -457,7 +504,7 @@ export class WhatsAppSocketClient {
       });
 
       // Handle incoming & synced messages (both real-time 'notify' and background 'append')
-      this.sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (generation !== this.socketGeneration) return;
         for (const raw of messages) {
           if (!raw.message) continue;
@@ -475,13 +522,13 @@ export class WhatsAppSocketClient {
               this.onMessageCallback?.(parsed, { historical: type !== "notify" });
             }
           } catch {
-            // Log message parsing error gracefully
+            console.warn('[WhatsApp] Failed to parse incoming message');
           }
         }
       });
 
       // Handle continuous history harvest synced from phone
-      this.sock.ev.on('messaging-history.set', async ({ messages: historyMessages }) => {
+      sock.ev.on('messaging-history.set', async ({ messages: historyMessages }) => {
         if (generation !== this.socketGeneration) return;
         if (!historyMessages || !Array.isArray(historyMessages)) return;
         for (const raw of historyMessages) {
@@ -502,9 +549,10 @@ export class WhatsAppSocketClient {
           }
         }
       });
-    } catch (err: any) {
+    } catch (err: unknown) {
+      if (generation !== this.socketGeneration) return;
       this.isConnecting = false;
-      this.setState({ state: 'failed', error: err.message });
+      this.setState({ state: 'failed', error: err instanceof Error ? err.message : String(err) });
     }
   }
 
@@ -531,17 +579,15 @@ export class WhatsAppSocketClient {
     const normalized = jidNormalizedUser(jid);
 
     if (normalized.endsWith('@lid')) {
-      const lidUser = normalized.split('@')[0];
       try {
-        if (this.authState?.keys) {
-          const mapping = await this.authState.keys.get('lid-mapping', [`${lidUser}_reverse`]);
-          const phone = mapping?.[`${lidUser}_reverse`];
-          if (phone) {
-            const canonical = `${phone}@s.whatsapp.net`;
-            this.boundedCacheSet(this.transportJids, canonical, jid, WhatsAppSocketClient.MAX_TRANSPORT_JIDS);
-            this.boundedCacheSet(this.transportJids, jid, canonical, WhatsAppSocketClient.MAX_TRANSPORT_JIDS);
-            return canonical;
-          }
+        const key = normalized.slice(0, -'@lid'.length) + '_reverse';
+        const mapping = await this.authState?.keys?.get?.('lid-mapping', [key]);
+        const phone = mapping?.[key];
+        if (typeof phone === 'string' && phone) {
+          const canonical = `${phone}@s.whatsapp.net`;
+          this.boundedCacheSet(this.transportJids, canonical, jid, WhatsAppSocketClient.MAX_TRANSPORT_JIDS);
+          this.boundedCacheSet(this.transportJids, jid, canonical, WhatsAppSocketClient.MAX_TRANSPORT_JIDS);
+          return canonical;
         }
       } catch (err) {
         console.warn('[WhatsApp] Failed to resolve reverse LID mapping:', err);
@@ -568,9 +614,9 @@ export class WhatsAppSocketClient {
   }
 
   /**
-   * Parses raw Baileys proto.IWebMessageInfo into clean ChatMessage
+   * Parses a raw Baileys message into clean ChatMessage
    */
-  private async parseIncomingMessage(raw: proto.IWebMessageInfo): Promise<ChatMessage | null> {
+  private async parseIncomingMessage(raw: WAMessage): Promise<ChatMessage | null> {
     const key = raw.key;
     if (!key?.remoteJid) return null;
 
@@ -635,7 +681,7 @@ export class WhatsAppSocketClient {
           if (this.sock) {
             // WA-017: stream with a hard byte cap during transfer; a false declared
             // fileLength can never cause an unbounded download.
-            const stream = await this.mediaDownloader(raw as WAMessage);
+            const stream = await this.mediaDownloader(raw);
             const buffer = await readStreamWithCap(stream, MAX_AUDIO_BYTES);
             audioBuffer = buffer;
             if (this.audioTranscriber && buffer && buffer.length > 0) {
@@ -740,9 +786,7 @@ export class WhatsAppSocketClient {
   }
 
   private notConnectedError(): Error & { code: string } {
-    const error = new Error('WhatsApp socket is not connected') as Error & { code: string };
-    error.code = 'WHATSAPP_NOT_CONNECTED';
-    return error;
+    return Object.assign(new Error('WhatsApp socket is not connected'), { code: 'WHATSAPP_NOT_CONNECTED' });
   }
 
   /**
@@ -750,7 +794,7 @@ export class WhatsAppSocketClient {
    * was swapped or torn down mid-flight (stale generation), fail instead of writing through
    * a socket that no longer owns the pairing.
    */
-  private assertCurrentSocket(socketAtEntry: WASocket | null, generationAtEntry: number): WASocket {
+  private assertCurrentSocket(socketAtEntry: WhatsAppSocketPort | null, generationAtEntry: number): WhatsAppSocketPort {
     if (!socketAtEntry || this.sock !== socketAtEntry || this.socketGeneration !== generationAtEntry) {
       throw this.notConnectedError();
     }
@@ -803,9 +847,7 @@ export class WhatsAppSocketClient {
 
     const messageId = sent?.key?.id;
     if (!messageId) {
-      const error = new Error('WhatsApp send outcome is ambiguous: native message ID missing') as Error & { code: string };
-      error.code = 'WHATSAPP_ACCEPTANCE_AMBIGUOUS';
-      throw error;
+      throw missingMessageIdError();
     }
     if (sent.message) this.boundedCacheSet(this.rawMessages, this.quoteKey(targetJid, messageId), sent, WhatsAppSocketClient.MAX_RAW_MESSAGES);
     return { messageId };
@@ -868,9 +910,7 @@ export class WhatsAppSocketClient {
 
     const messageId = sent?.key?.id;
     if (!messageId) {
-      const error = new Error('WhatsApp send outcome is ambiguous: native message ID missing') as Error & { code: string };
-      error.code = 'WHATSAPP_ACCEPTANCE_AMBIGUOUS';
-      throw error;
+      throw missingMessageIdError();
     }
     if (sent.message) this.boundedCacheSet(this.rawMessages, this.quoteKey(targetJid, messageId), sent, WhatsAppSocketClient.MAX_RAW_MESSAGES);
     return { messageId };
@@ -902,9 +942,7 @@ export class WhatsAppSocketClient {
     options: { replyToMessageId?: string } = {}
   ): Promise<{ messageId: string }> {
     if (!this.sock) {
-      const error = new Error('WhatsApp socket is not connected') as Error & { code: string };
-      error.code = 'WHATSAPP_NOT_CONNECTED';
-      throw error;
+      throw this.notConnectedError();
     }
 
     const targetJid = this.transportJids.get(chatId) || chatId;
@@ -927,12 +965,100 @@ export class WhatsAppSocketClient {
 
     const messageId = sent?.key?.id;
     if (!messageId) {
-      const error = new Error('WhatsApp send outcome is ambiguous: native message ID missing') as Error & { code: string };
-      error.code = 'WHATSAPP_ACCEPTANCE_AMBIGUOUS';
-      throw error;
+      throw missingMessageIdError();
     }
     if (sent.message) this.boundedCacheSet(this.rawMessages, this.quoteKey(targetJid, messageId), sent, WhatsAppSocketClient.MAX_RAW_MESSAGES);
     return { messageId };
+  }
+
+  /**
+   * Sends a rich media message (image, video, or document) to a WhatsApp chat.
+   */
+  async sendRichMedia(
+    chatId: string,
+    media:
+      | { kind: 'image'; buffer: Buffer | Uint8Array; caption?: string; mimetype?: string }
+      | { kind: 'video'; buffer: Buffer | Uint8Array; caption?: string; mimetype?: string }
+      | { kind: 'document'; buffer: Buffer | Uint8Array; fileName: string; mimetype: string; caption?: string },
+    options: { replyToMessageId?: string; simulatedDelayMs?: number } = {}
+  ): Promise<{ messageId: string }> {
+    const generationAtEntry = this.socketGeneration;
+    const socketAtEntry = this.assertCurrentSocket(this.sock, generationAtEntry);
+    const targetJid = this.transportJids.get(chatId) || chatId;
+
+    try {
+      await socketAtEntry.sendPresenceUpdate('composing', targetJid);
+    } catch (err) {
+      console.warn('[WhatsApp] Failed to send composing presence update:', err);
+    }
+
+    if (options.simulatedDelayMs && options.simulatedDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, options.simulatedDelayMs));
+    }
+
+    this.assertCurrentSocket(socketAtEntry, generationAtEntry);
+
+    try {
+      await socketAtEntry.sendPresenceUpdate('paused', targetJid);
+    } catch (err) {
+      console.warn('[WhatsApp] Failed to send paused presence update:', err);
+    }
+
+    let quoted: WAMessage | undefined = undefined;
+    if (options.replyToMessageId) {
+      const cached = this.rawMessages.get(this.quoteKey(targetJid, options.replyToMessageId));
+      if (cached && cached.message) {
+        quoted = cached;
+      }
+    }
+
+    const buf = Buffer.isBuffer(media.buffer) ? media.buffer : Buffer.from(media.buffer);
+    const content: Parameters<WhatsAppSocketPort['sendMessage']>[1] =
+      media.kind === 'image'
+        ? { image: buf, ...(media.mimetype ? { mimetype: media.mimetype } : {}), ...(media.caption ? { caption: media.caption } : {}) }
+        : media.kind === 'video'
+        ? { video: buf, ...(media.mimetype ? { mimetype: media.mimetype } : {}), ...(media.caption ? { caption: media.caption } : {}) }
+        : { document: buf, fileName: media.fileName, mimetype: media.mimetype, ...(media.caption ? { caption: media.caption } : {}) };
+
+    const sent = await socketAtEntry.sendMessage(
+      targetJid,
+      content,
+      quoted ? { quoted } : undefined
+    );
+
+    const messageId = sent?.key?.id;
+    if (!messageId) {
+      throw missingMessageIdError();
+    }
+    if (sent.message) this.boundedCacheSet(this.rawMessages, this.quoteKey(targetJid, messageId), sent, WhatsAppSocketClient.MAX_RAW_MESSAGES);
+    return { messageId };
+  }
+
+  private adoptSocket(socket: WhatsAppSocketPort, generation: number): boolean {
+    if (generation !== this.socketGeneration) return false;
+    this.sock = socket;
+    return true;
+  }
+
+  private async endCurrentSocket(warning: string): Promise<void> {
+    const socket = this.sock;
+    if (!socket) return;
+    this.sock = null;
+    await this.retireSocket(socket, warning);
+  }
+
+  private async retireSocket(socket: WhatsAppSocketPort, warning: string): Promise<void> {
+    try {
+      socket.ev.removeAllListeners('connection.update');
+      socket.ev.removeAllListeners('creds.update');
+      socket.ev.removeAllListeners('messages.upsert');
+      socket.ev.removeAllListeners('messages.update');
+      socket.ev.removeAllListeners('message-receipt.update');
+      socket.ev.removeAllListeners('messaging-history.set');
+      await socket.end(undefined);
+    } catch (err) {
+      console.warn(warning, err);
+    }
   }
 
   /**
@@ -951,29 +1077,20 @@ export class WhatsAppSocketClient {
       this.reconnectTimer = null;
     }
 
-    if (this.sock) {
-      try {
-        this.sock.ev.removeAllListeners('connection.update');
-        this.sock.ev.removeAllListeners('creds.update');
-        this.sock.ev.removeAllListeners('messages.upsert');
-        this.sock.ev.removeAllListeners('messages.update');
-        this.sock.ev.removeAllListeners('message-receipt.update');
-        this.sock.ev.removeAllListeners('messaging-history.set');
-        this.sock.end(undefined);
-      } catch (err) {
-        console.warn('[WhatsApp] Error during socket disconnect:', err);
+    const teardown = this.endCurrentSocket('[WhatsApp] Error during socket disconnect:');
+    try {
+      if (clearSession) {
+        this.clearSession();
       }
-      this.sock = null;
+      this.isConnecting = false;
+      this.setState({
+        state: 'disconnected',
+        error: undefined,
+        qrDataUrl: undefined,
+        pairingCode: undefined
+      });
+    } finally {
+      await teardown;
     }
-    if (clearSession) {
-      this.clearSession();
-    }
-    this.isConnecting = false;
-    this.setState({
-      state: 'disconnected',
-      error: undefined,
-      qrDataUrl: undefined,
-      pairingCode: undefined
-    });
   }
 }

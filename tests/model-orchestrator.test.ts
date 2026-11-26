@@ -1,9 +1,14 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import { orchestrateModel, toRoutingTrace } from '../src/ai/model-orchestrator';
 import { ModeratorAgent } from '../src/ai/moderator-agent';
 import { MemoryStore } from '../src/domain/memory-store';
 import type { GeminiClient } from '../src/ai/gemini-client';
 import type { ChatMessage } from '../src/domain/types';
+
+const stores: MemoryStore[] = [];
+afterEach(() => {
+  for (const store of stores.splice(0)) store.close();
+});
 
 describe('ModelOrchestrator', () => {
   it('routes trivial Arabic and English greetings to gemini-4-hydrogen (fast_responder)', () => {
@@ -119,11 +124,12 @@ describe('ModelOrchestrator', () => {
   });
 
   it('integrates with ModeratorAgent to pick model and thinkingConfig dynamically', async () => {
-    const memory = new MemoryStore({ dataDir: './data/test-memory-orchestrator' });
+    const memory = new MemoryStore({ dataDir: ':memory:' });
+    stores.push(memory);
     const calls: Array<{ model?: string; thinkingLevel?: string }> = [];
 
-    const mockGemini = {
-      generateContent: async (_contents: unknown, options?: { model?: string; thinkingConfig?: { thinkingLevel?: string } }) => {
+    const mockGemini: Pick<GeminiClient, 'generateContent'> = {
+      generateContent: async (_contents, options) => {
         calls.push({ model: options?.model, thinkingLevel: options?.thinkingConfig?.thinkingLevel });
         return {
           text: JSON.stringify({
@@ -135,7 +141,7 @@ describe('ModelOrchestrator', () => {
           })
         };
       }
-    } as unknown as GeminiClient;
+    };
 
     const agent = new ModeratorAgent(mockGemini, memory);
 

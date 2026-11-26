@@ -5,7 +5,7 @@
  * extraction) so concurrent requests cannot exhaust RAM/CPU.
  */
 
-import { Readable } from 'node:stream';
+import type { Readable } from 'node:stream';
 
 export const MEDIA_LIMITS = {
   /** Audio attachments: hard cap enforced while streaming, independent of declared fileLength. */

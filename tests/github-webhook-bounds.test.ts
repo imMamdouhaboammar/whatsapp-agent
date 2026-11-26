@@ -33,17 +33,17 @@ describe('WA-022 webhook request-body boundaries', () => {
   it('rejects a declared-oversized request before reading the body', async () => {
     // A body stream that never yields: if the handler reads it, this test times out.
     const hangingBody = new ReadableStream<Uint8Array>({ start() {} });
-    const res = await makeApp().request('http://localhost/webhook', {
+    const reqInit: RequestInit & { duplex: 'half' } = {
       method: 'POST',
       headers: {
         'content-length': String(10 * 1024 * 1024),
         'x-hub-signature-256': sign('{}'),
         'x-github-event': 'ping'
       },
-      // @ts-expect-error duplex needed for streaming bodies
       duplex: 'half',
       body: hangingBody
-    });
+    };
+    const res = await makeApp().request('http://localhost/webhook', reqInit);
     expect(res.status).toBe(413);
   }, 5_000);
 
@@ -56,16 +56,16 @@ describe('WA-022 webhook request-body boundaries', () => {
         else controller.close();
       }
     });
-    const res = await makeApp().request('http://localhost/webhook', {
+    const reqInit: RequestInit & { duplex: 'half' } = {
       method: 'POST',
       headers: {
         'x-hub-signature-256': sign('{}'),
         'x-github-event': 'ping'
       },
-      // @ts-expect-error duplex needed for streaming bodies
       duplex: 'half',
       body: growing
-    });
+    };
+    const res = await makeApp().request('http://localhost/webhook', reqInit);
     expect(res.status).toBe(413);
   });
 

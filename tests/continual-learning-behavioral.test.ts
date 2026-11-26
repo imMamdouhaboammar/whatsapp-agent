@@ -11,23 +11,19 @@ import { MemoryStore } from '../src/domain/memory-store';
 import { RsiLedger } from '../src/domain/rsi-ledger';
 import { createApiServer } from '../src/server/api';
 import { SSEBroadcaster } from '../src/server/sse';
-import type { GeminiClient } from '../src/ai/gemini-client';
-import type { ChatMessage } from '../src/domain/types';
+import { GeminiClient } from '../src/ai/gemini-client';
+import { WhatsAppSocketClient } from '../src/transport/whatsapp-socket';
 
 function createCapturingGeminiStub(
   responder: (prompt: string, systemInstruction?: string) => string
 ): { client: GeminiClient; calls: Array<{ prompt: string; systemInstruction?: string }> } {
   const calls: Array<{ prompt: string; systemInstruction?: string }> = [];
-  const client = {
-    generateContent: async (
-      contents: Array<{ parts: Array<{ text?: string }> }>,
-      options?: { systemInstruction?: string }
-    ) => {
-      const prompt = contents.map((c) => c.parts.map((p) => p.text ?? '').join('\n')).join('\n');
-      calls.push({ prompt, systemInstruction: options?.systemInstruction });
-      return { text: responder(prompt, options?.systemInstruction) };
-    }
-  } as unknown as GeminiClient;
+  const client = new GeminiClient({ apiKey: 'offline-test-fixture' });
+  client.generateContent = async (contents, options) => {
+    const prompt = contents.map((c) => c.parts.map((p) => p.text ?? '').join('\n')).join('\n');
+    calls.push({ prompt, systemInstruction: options?.systemInstruction });
+    return { text: responder(prompt, options?.systemInstruction) };
+  };
   return { client, calls };
 }
 
@@ -93,7 +89,7 @@ describe('Continual Learning & Feedback Behavioral / Adversarial Suite', () => {
     });
 
     expect(stub.calls.length).toBe(1);
-    const sys = stub.calls[0].systemInstruction ?? '';
+    const sys = stub.calls[0]?.systemInstruction ?? '';
     expect(sys).toContain('منطقة الإسكندرية');
     expect(sys).toContain('Customer in Alexandria prefers coastal pickup details first');
     expect(sys).not.toContain('SECRET_CAIRO_ONLY_TACTIC_DO_NOT_LEAK');
@@ -293,17 +289,17 @@ describe('Continual Learning & Feedback Behavioral / Adversarial Suite', () => {
       createdAt: Date.now()
     });
 
+    const whatsappClient = new WhatsAppSocketClient();
+    whatsappClient.sendMessage = async () => ({ messageId: 'sent-1' });
+    whatsappClient.getState = () => ({ state: 'connected', updatedAt: Date.now() });
+    const moderatorAgent = new ModeratorAgent(stub.client, memoryStore, {
+      dualMemoryManager: dualMemory,
+      persona: { name: 'Test', systemPrompt: '', tone: '', rules: [] },
+    });
     const app = createApiServer({
-      whatsappClient: {
-        sendMessage: async () => ({ messageId: 'sent-1', timestamp: Date.now() }),
-        getState: () => ({ status: 'connected' })
-      } as any,
+      whatsappClient,
       memoryStore,
-      moderatorAgent: {
-        getDualMemoryManager: () => dualMemory,
-        getPersona: () => ({ name: 'Test', systemPrompt: '', tone: '', rules: [] }),
-        getPolicy: () => ({})
-      } as any,
+      moderatorAgent,
       sse: new SSEBroadcaster(),
       dualMemoryManager: dualMemory,
       reflectionEngine,
@@ -330,8 +326,11 @@ describe('Continual Learning & Feedback Behavioral / Adversarial Suite', () => {
     // 2. Query /api/learning/harness with search query
     const harnessRes = await app.request('/api/learning/harness?q=approved+greeting');
     expect(harnessRes.status).toBe(200);
-    const harnessJson = (await harnessRes.json()) as { entries: Array<{ content: string }> };
-    expect(harnessJson.entries.some((e) => e.content.includes('Keep approved greeting warm'))).toBe(true);
+    expect(await harnessRes.json()).toMatchObject({
+      entries: expect.arrayContaining([expect.objectContaining({
+        content: expect.stringContaining('Keep approved greeting warm'),
+      })]),
+    });
 
     // 3. Promote a rule via RSI cycle and then roll it back via HTTP /api/learning/rsi/rollback
     const baseRulesCount = dualMemory.getWorkbook().enforcedRules.length;
@@ -354,8 +353,14 @@ describe('Continual Learning & Feedback Behavioral / Adversarial Suite', () => {
       })
     });
     expect(cycleRes.status).toBe(200);
-    const cycleJson = (await cycleRes.json()) as { result: { promoted: boolean; generation: { generationId: number } } };
-    expect(cycleJson.result.promoted).toBe(true);
+    const cycleJson: unknown = await cycleRes.json();
+    if (!cycleJson || typeof cycleJson !== 'object' || !('result' in cycleJson)
+        || !cycleJson.result || typeof cycleJson.result !== 'object'
+        || !('generation' in cycleJson.result) || !cycleJson.result.generation
+        || typeof cycleJson.result.generation !== 'object'
+        || !('generationId' in cycleJson.result.generation)
+        || typeof cycleJson.result.generation.generationId !== 'number') throw new Error('Expected RSI generation');
+    expect(cycleJson.result).toMatchObject({ promoted: true });
     expect(dualMemory.getWorkbook().enforcedRules.length).toBe(baseRulesCount + 1);
 
     const rollbackRes = await app.request('/api/learning/rsi/rollback', {
@@ -384,6 +389,7 @@ describe('Continual Learning & Feedback Behavioral / Adversarial Suite', () => {
     const rsi = new RsiCycleOrchestrator({ worldModel, memoryManager: dualMemory, ledger });
 
     const targetRule = dualMemory.getWorkbook().enforcedRules[0];
+    if (!targetRule) throw new Error('Expected at least 1 enforced rule');
     const blocked = rsi.runCycle({
       brandId: 'default',
       candidates: [

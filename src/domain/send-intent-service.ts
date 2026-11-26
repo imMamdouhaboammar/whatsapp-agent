@@ -28,7 +28,7 @@ export interface VerifiedTemplateAuthorization {
   optedInAtMs: number;
   approvedTemplate: { name: string; languageCode: string };
   sourceWorkflowId: string;
-  relevant: true | boolean;
+  relevant: boolean;
   relevanceVerifiedAtMs: number;
   relevanceExpiresAtMs: number;
   quietHours: { from: number; to: number; timeZone: string };
@@ -103,11 +103,20 @@ export class SendIntentService {
     return this.dispatch(intent.id);
   }
 
+  private requireIntent(id: string): SendIntent {
+    const intent = this.options.memoryStore.getSendLedger().getIntent(id);
+    if (!intent) throw new Error(`Missing send intent ${id}`);
+    return intent;
+  }
+
   private captureRecipient(input: SendIntentInput): SendIntentInput {
     const directory = this.options.recipientDirectory;
     if (!directory) return input;
+    if (!this.options.brandId) {
+      throw new Error('brandId is required when recipientDirectory is configured');
+    }
     const binding = directory.bindRecipient({
-      brandId: this.options.brandId!,
+      brandId: this.options.brandId,
       jid: input.chatId
     });
     if (input.recipientBinding &&
@@ -140,7 +149,7 @@ export class SendIntentService {
     // The authority callback is asynchronous; validate its evidence at completion time.
     const checkedAt = Date.now();
     const required = intent.templateEligibility;
-    if (!proof || proof.relevant !== true ||
+    if (!proof || !Object.is(proof.relevant, true) ||
         proof.consentRef !== required.consentRef ||
         proof.optedInAtMs !== required.optedInAtMs ||
         !Number.isSafeInteger(proof.optedInAtMs) || proof.optedInAtMs <= 0 || proof.optedInAtMs > checkedAt ||
@@ -229,7 +238,7 @@ export class SendIntentService {
       if (predecessor.state === 'failed') {
         const stopped = ledger.failQueued(id, 'predecessor_failed', now);
         if (stopped) this.notify(stopped);
-        return this.result(ledger.getIntent(id)!);
+        return this.result(this.requireIntent(id));
       }
       if (!['accepted', 'delivered', 'read'].includes(predecessor.state)) {
         return this.result(current);
@@ -239,10 +248,10 @@ export class SendIntentService {
     if (current.actionKind !== 'template' && current.sourceKind === 'autopilot' && this.options.memoryStore.getChat(current.chatId)?.agentMode !== 'autopilot') {
       const stopped = ledger.failQueued(id, 'chat_mode_revoked', now);
       if (stopped) this.notify(stopped);
-      return this.result(stopped ?? ledger.getIntent(id)!);
+      return this.result(stopped ?? this.requireIntent(id));
     }
     const claimed = ledger.claim(id, this.workerId, now, this.claimLeaseMs);
-    if (!claimed) return this.result(ledger.getIntent(id)!);
+    if (!claimed) return this.result(this.requireIntent(id));
     const { intent, attempt } = claimed;
     this.notify(intent);
     let whatsappCallMayHaveStarted = false;
@@ -256,7 +265,7 @@ export class SendIntentService {
         const audio = await this.options.prepareVoice(intent.text);
         const destination = this.destinationFor(intent);
         if (!this.fenceNetworkStart(intent.id, attempt.id)) {
-          return this.result(ledger.getIntent(intent.id)!);
+          return this.result(this.requireIntent(intent.id));
         }
         this.observeStage(intent, 'sending', 'ok');
         whatsappCallMayHaveStarted = true;
@@ -268,7 +277,7 @@ export class SendIntentService {
         const destination = this.destinationFor(intent);
         if (!this.options.sendTemplate || !intent.template) throw new Error('Template adapter unavailable');
         if (!this.fenceNetworkStart(intent.id, attempt.id)) {
-          return this.result(ledger.getIntent(intent.id)!);
+          return this.result(this.requireIntent(intent.id));
         }
         this.observeStage(intent, 'sending', 'ok');
         whatsappCallMayHaveStarted = true;
@@ -280,7 +289,7 @@ export class SendIntentService {
       } else {
         const destination = this.destinationFor(intent);
         if (!this.fenceNetworkStart(intent.id, attempt.id)) {
-          return this.result(ledger.getIntent(intent.id)!);
+          return this.result(this.requireIntent(intent.id));
         }
         this.observeStage(intent, 'sending', 'ok');
         whatsappCallMayHaveStarted = true;
@@ -360,8 +369,11 @@ export class SendIntentService {
     }
     // Resolve the immutable recipient before the ledger's atomic draft-status claim.
     // A missing or changed alias must leave the draft pending and unsent.
+    if (this.options.recipientDirectory && !this.options.brandId) {
+      throw new Error('brandId is required when recipientDirectory is configured');
+    }
     const recipientBinding = this.options.recipientDirectory?.bindRecipient({
-      brandId: this.options.brandId!,
+      brandId: this.options.brandId ?? '',
       jid: draft.chatId
     });
     const claim = this.options.memoryStore.getSendLedger().approveDraft(

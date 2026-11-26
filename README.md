@@ -15,7 +15,7 @@ For an evidence-based breakdown of what is implemented, partial, and planned, se
   - *Autopilot*: Automatic responses with simulated typing delay.
   - *Copilot*: Draft preparation with confidence scores and reasoning traces for one-click human approval.
   - *Human*: Silent observation with manual operator control.
-- **Model Context Protocol (MCP)**: Native stdio MCP server exposing 15 tools (14 standalone tools plus a 15th funnel tool when embedded with a funnel engine) for Claude Desktop, Gemini CLI, Cursor, and custom agent integrations. There is no HTTP MCP endpoint.
+- **Model Context Protocol (MCP)**: Native stdio MCP server exposing 17 tools (16 standalone tools plus a 17th funnel tool when embedded with a funnel engine) for Claude Desktop, Gemini CLI, Cursor, and custom agent integrations. There is no HTTP MCP endpoint.
 - **Persistence and migration**: Chat, draft and capability runtime stores currently use SQLite WAL. PostgreSQL migration/import tooling and an optional PostgreSQL-backed learning-memory store exist; the complete runtime cutover is pending. See [Implementation status](docs/IMPLEMENTATION_STATUS.md).
 - **Web cockpit**: React 19 interface with Tailwind CSS, bilingual layout (Arabic RTL and English LTR), real-time Server-Sent Events (SSE), Brand Brain manager, and token-gated access.
 
@@ -122,7 +122,7 @@ Limits of the standalone runner: it does not ingest new inbound messages or deli
 
 ### Available MCP tools
 
-The standalone runner registers these 14 tools. `whatsapp_funnel_scatter_gather` is registered only when a funnel engine is passed to `createWhatsAppMcpServer`, which the standalone runner does not do.
+The standalone runner registers these 16 tools. `whatsapp_funnel_scatter_gather` is registered only when a funnel engine is passed to `createWhatsAppMcpServer`, which the standalone runner does not do.
 
 | Tool | Parameters | Description |
 |---|---|---|
@@ -140,6 +140,8 @@ The standalone runner registers these 14 tools. `whatsapp_funnel_scatter_gather`
 | `whatsapp_get_context_status` | `chatId: string` | Retrieve real-time dynamic context window status, token usage, compression ratio, active folds count per tier, and pruning recommendations. |
 | `whatsapp_compress_context_now` | `chatId: string` | Trigger immediate active context pruning and hierarchical folding for a chat. |
 | `whatsapp_decompress_fold` | `chatId: string, foldId: string, aroundMessageId?: string, offset?: number, limit?: number` | Inspect the raw messages behind a fold, or one message with two neighbors on each side. |
+| `whatsapp_get_current_time` | `timezone?: string` | Get the authoritative current system date, time, day of week, and timezone for real-time temporal grounding. |
+| `whatsapp_check_temporal_freshness` | `prompt: string, timezone?: string, mode?: string` | Classify a message or query into `STATIC`, `VERSIONED`, `VOLATILE`, or `LIVE` freshness class and build a `TemporalEnvelope`. |
 | `whatsapp_funnel_scatter_gather` | `method: string, payload?: object, queryParams?: object, timeoutMs?: number` | Execute concurrent scatter-gather dispatch across external systems with circuit-breaking. Only registered when the funnel engine is configured. |
 
 ## Command-line interface

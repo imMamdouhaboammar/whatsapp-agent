@@ -47,16 +47,37 @@ function setup(options: {
   const meta = new MetaCloudApi({
     config: options.credentials ?? config,
     onEvent: options.onEvent,
-    fetch: (async () => {
+    fetch: Object.assign(async () => {
       fetchCalls++;
       throw new Error('Outbound Meta API must never run during webhook routing');
-    }) as unknown as typeof fetch
+    }, {
+      preconnect: () => { throw new Error('Unexpected preconnect'); }
+    })
   });
   registerMetaCloudWebhookRoutes(app, meta);
   return { app, meta, outboundCalls: () => fetchCalls };
 }
 
 describe('Meta webhook HTTP route adapter', () => {
+  test("rejects an acceptance response whose messages field is not an array", async () => {
+    const meta = new MetaCloudApi({
+      config,
+      fetch: Object.assign(
+        async () => Response.json({ messages: { "0": { id: "wamid.fake-acceptance" } } }),
+        { preconnect: () => { throw new Error("Unexpected preconnect"); } }
+      )
+    });
+    const outcome = await meta.sendText({
+      to: "201011122233",
+      text: "Hello",
+      lastInboundAtMs: Date.now() - 1000
+    }).then(
+      () => { throw new Error("Malformed acceptance was treated as a successful send"); },
+      (error: unknown) => error
+    );
+    expect(outcome).toMatchObject({ code: "WHATSAPP_ACCEPTANCE_AMBIGUOUS" });
+  });
+
   test('exposes the public GET verification challenge without owner credentials', async () => {
     const { app } = setup();
     const query = new URLSearchParams({

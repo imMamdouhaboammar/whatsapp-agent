@@ -37,6 +37,10 @@ export class ProcessLifecycleCoordinator {
     };
   }
 
+  registerHttpServer(server: { stop(closeActiveConnections?: boolean): Promise<void> }): () => void {
+    return this.register('http_server', 'stop_ingestion', () => server.stop(true));
+  }
+
   attachSignalHandlers(): void {
     if (this.signalAttached) return;
     this.signalAttached = true;

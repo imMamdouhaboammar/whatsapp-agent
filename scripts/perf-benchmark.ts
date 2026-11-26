@@ -5,7 +5,8 @@ import { ModeratorAgent } from '../src/ai/moderator-agent';
 import { MemoryStore } from '../src/domain/memory-store';
 import { SendIntentService } from '../src/domain/send-intent-service';
 import { DiagnosticsCore } from '../src/observability/diagnostics-core';
-import type { ChatMessage, GeminiGenerateOptions, ChatContent } from '../src/domain/types';
+import type { ChatMessage } from '../src/domain/types';
+import { GeminiClient, type GeminiGenerateOptions, type ChatContent } from '../src/ai/gemini-client';
 
 interface BenchmarkReport {
   timestamp: string;
@@ -38,12 +39,16 @@ interface BenchmarkReport {
 function percentile(sorted: number[], p: number): number {
   if (sorted.length === 0) return 0;
   const idx = Math.min(Math.floor((p / 100) * sorted.length), sorted.length - 1);
-  return Number(sorted[idx].toFixed(2));
+  return Number((sorted[idx] ?? 0).toFixed(2));
 }
 
 // Mock instant LLM client to isolate internal hot-path processing latency
-class MockInstantGemini {
-  async generateContent(_contents: ChatContent[], _options?: GeminiGenerateOptions) {
+class MockInstantGemini extends GeminiClient {
+  constructor() {
+    super({ apiKey: 'benchmark-mock-key' });
+  }
+
+  override async generateContent(_contents: ChatContent[], _options?: GeminiGenerateOptions) {
     return {
       text: JSON.stringify({
         action: 'reply',
@@ -205,22 +210,22 @@ async function runBenchmark(): Promise<BenchmarkReport> {
     listChats: {
       p50Ms: percentile(listChatsTimings, 50),
       p95Ms: percentile(listChatsTimings, 95),
-      maxMs: Number(listChatsTimings[listChatsTimings.length - 1].toFixed(2))
+      maxMs: Number((listChatsTimings.at(-1) ?? 0).toFixed(2))
     },
     listPendingDrafts: {
       p50Ms: percentile(draftsTimings, 50),
       p95Ms: percentile(draftsTimings, 95),
-      maxMs: Number(draftsTimings[draftsTimings.length - 1].toFixed(2))
+      maxMs: Number((draftsTimings.at(-1) ?? 0).toFixed(2))
     },
     getMessages50: {
       p50Ms: percentile(getMsgsTimings, 50),
       p95Ms: percentile(getMsgsTimings, 95),
-      maxMs: Number(getMsgsTimings[getMsgsTimings.length - 1].toFixed(2))
+      maxMs: Number((getMsgsTimings.at(-1) ?? 0).toFixed(2))
     },
     claimDueSendIntents: {
       p50Ms: percentile(claimTimings, 50),
       p95Ms: percentile(claimTimings, 95),
-      maxMs: Number(claimTimings[claimTimings.length - 1].toFixed(2))
+      maxMs: Number((claimTimings.at(-1) ?? 0).toFixed(2))
     },
     concurrentLoadP95Ms: percentile(concurrentTimings, 95)
   };
@@ -229,11 +234,11 @@ async function runBenchmark(): Promise<BenchmarkReport> {
   console.log('⚡ [Benchmark] Profiling 100 Simulated Inbound Turns (Hot-Path Latency & Peak RSS)...');
   const memoryStore = new MemoryStore({ dataDir: ':memory:' });
   const mockGemini = new MockInstantGemini();
-  const moderator = new ModeratorAgent(mockGemini as any, memoryStore);
+  const moderator = new ModeratorAgent(mockGemini, memoryStore);
   const coordinator = new AgentTurnCoordinator({
     moderator,
     memory: memoryStore,
-    operator: { resolve: async () => ({ status: 'success', summary: 'ok' }) },
+    operator: { resolve: async () => ({ status: 'answered', reply: 'ok', workflowId: 'bench', evidence: [] }) },
     enabled: false
   });
 
@@ -241,7 +246,7 @@ async function runBenchmark(): Promise<BenchmarkReport> {
   const sendIntents = new SendIntentService({
     memoryStore,
     diagnostics,
-    sendText: async () => 'test_native_id'
+    sendText: async () => ({ messageId: 'test_native_id' })
   });
 
   const memBeforeBurst = process.memoryUsage();
@@ -300,7 +305,7 @@ async function runBenchmark(): Promise<BenchmarkReport> {
     p50Ms: percentile(turnTimings, 50),
     p95Ms: percentile(turnTimings, 95),
     p99Ms: percentile(turnTimings, 99),
-    maxMs: Number(turnTimings[turnTimings.length - 1].toFixed(2)),
+    maxMs: Number((turnTimings.at(-1) ?? 0).toFixed(2)),
     peakRssMb: +(peakRss / 1024 / 1024).toFixed(2),
     memoryGrowthMb: +((memAfterBurst.rss - memBeforeBurst.rss) / 1024 / 1024).toFixed(2)
   };

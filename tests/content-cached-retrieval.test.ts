@@ -47,7 +47,7 @@ describe('Content-Cached Retrieval (CCR) for oversized payloads', () => {
     expect(crushed.transcription).toStartWith(CCR_MARKER);
     expect(crushed.transcription).toContain('type="audio_transcription"');
     expect(crushed.transcription).toContain(`size=${longTranscription.length}`);
-    expect(crushed.transcription!.length).toBeLessThan(longTranscription.length);
+    expect(crushed.transcription?.length).toBeLessThan(longTranscription.length);
     expect(crushed.ref).toStartWith('ccr:');
   });
 

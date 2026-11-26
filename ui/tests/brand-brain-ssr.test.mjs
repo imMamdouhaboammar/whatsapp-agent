@@ -9,8 +9,8 @@ const vite=await createServer({root,configFile:false,server:{middlewareMode:true
 after(async()=>{await vite.close()});
 const {LocaleProvider}=await vite.ssrLoadModule('/src/i18n.tsx');
 const {BrandBrainPage}=await vite.ssrLoadModule('/src/components/BrandBrainPage.tsx');
-test('Brand Brain supports accessible Arabic RTL and English controls',()=>{
- const render=lang=>renderToStaticMarkup(React.createElement(LocaleProvider,{initial:lang},React.createElement(BrandBrainPage,{onClose:()=>{}})));
+const render=lang=>renderToStaticMarkup(React.createElement(LocaleProvider,{initial:lang},React.createElement(BrandBrainPage,{onClose:()=>{}})));
+await test('Brand Brain supports accessible Arabic RTL and English controls',()=>{
  const ar=render('ar'),en=render('en');
  assert.match(ar,/dir="rtl"/);
  assert.match(ar,/مصادر المعرفة/);

@@ -2,37 +2,37 @@ import { describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { WhatsAppSocketClient } from '../src/transport/whatsapp-socket';
+import type { WAMessage } from '@whiskeysockets/baileys';
+import { FakeSocketEvents } from './fixtures/fake-socket-events';
+import { WhatsAppSocketClient, type WhatsAppSocketPort } from '../src/transport/whatsapp-socket';
 
-class FakeSocket {
-  handlers = new Map<string, Array<(...args: any[]) => void>>();
-  sent: Array<{ jid: string; content: any; opts: any }> = [];
+interface FakeCreds {
+  registered: boolean;
+  me: { id: string };
+}
+
+class FakeSocket implements WhatsAppSocketPort {
+  readonly ev = new FakeSocketEvents();
+  sent: Array<{ jid: string; content: unknown; opts?: { quoted?: unknown } }> = [];
   user = { id: '201000000000:5@s.whatsapp.net', name: 'Test' };
-  authState: any;
-  ev: any;
-  constructor(creds: any) {
+  readonly authState: WhatsAppSocketPort['authState'];
+  readonly presenceUpdates: Array<{ type: string; jid?: string }> = [];
+  ended = false;
+
+  constructor(creds: FakeCreds) {
     this.authState = { creds };
-    this.ev = {
-      on: (event: string, cb: (...args: any[]) => void) => {
-        const list = this.handlers.get(event) ?? [];
-        list.push(cb);
-        this.handlers.set(event, list);
-      },
-      removeAllListeners: (event: string) => { this.handlers.delete(event); }
-    };
   }
-  emit(event: string, payload: any) {
-    for (const cb of this.handlers.get(event) ?? []) void cb(payload);
-  }
-  async sendMessage(jid: string, content: any, opts?: any) {
+
+  async sendMessage(jid: string, content: unknown, opts?: { quoted?: unknown }): Promise<WAMessage> {
     this.sent.push({ jid, content, opts });
     return { key: { id: 'out-' + this.sent.length }, message: { conversation: 'x' } };
   }
-  async sendPresenceUpdate() {}
-  end() {}
+  async requestPairingCode(): Promise<string> { throw new Error('Unexpected pairing request'); }
+  async sendPresenceUpdate(type: string, jid?: string) { this.presenceUpdates.push({ type, jid }); }
+  async end() { this.ended = true; }
 }
 
-const registeredCreds = { registered: true, me: { id: '201000000000:5@s.whatsapp.net' } };
+const registeredCreds: FakeCreds = { registered: true, me: { id: '201000000000:5@s.whatsapp.net' } };
 
 function makeClient(lidMappings: Record<string, string> = {}) {
   const sockets: FakeSocket[] = [];
@@ -42,7 +42,7 @@ function makeClient(lidMappings: Record<string, string> = {}) {
     socketFactory: () => {
       const sock = new FakeSocket(registeredCreds);
       sockets.push(sock);
-      return sock as any;
+      return sock;
     },
     authStateFactory: async () => ({
       state: {
@@ -57,7 +57,7 @@ function makeClient(lidMappings: Record<string, string> = {}) {
       },
       saveCreds: async () => {}
     }),
-    versionProvider: async () => ({ version: [2, 3000, 0] as any }),
+    versionProvider: async () => ({ version: [2, 3000, 0] }),
     reconnectDelays: { baseMs: 5, maxMs: 20 }
   });
   return { client, sockets, cleanup: () => rmSync(sessionDir, { recursive: true, force: true }) };
@@ -67,7 +67,8 @@ async function startedClient(lidMappings: Record<string, string> = {}) {
   const ctx = makeClient(lidMappings);
   await ctx.client.start();
   const sock = ctx.sockets[0];
-  await sock.emit('connection.update', { connection: 'open' });
+  if (!sock) throw new Error('Expected socket');
+  await sock.ev.emit('connection.update', { connection: 'open' });
   return { ...ctx, sock };
 }
 
@@ -82,10 +83,10 @@ describe('WA-016 bounded raw message quote cache', () => {
       }
       // Replying to the very first outbound message must no longer resolve a quote
       await client.sendMessage(chat, 'reply to first', { replyToMessageId: 'out-1', simulatedDelayMs: 0 });
-      expect(sock.sent[sock.sent.length - 1].opts?.quoted).toBeUndefined();
+      expect(sock.sent.at(-1)?.opts?.quoted).toBeUndefined();
       // Replying to a recent outbound message still resolves
       await client.sendMessage(chat, 'reply to recent', { replyToMessageId: 'out-600', simulatedDelayMs: 0 });
-      expect(sock.sent[sock.sent.length - 1].opts?.quoted).toBeDefined();
+      expect(sock.sent.at(-1)?.opts?.quoted).toBeDefined();
     } finally {
       await client.disconnect();
       cleanup();
@@ -98,7 +99,7 @@ describe('WA-016 bounded raw message quote cache', () => {
       const chatA = '201000000001@s.whatsapp.net';
       const chatB = '201000000002@s.whatsapp.net';
       // inbound message in chat A
-      sock.emit('messages.upsert', {
+      await sock.ev.emit('messages.upsert', {
         type: 'notify',
         messages: [{
           key: { id: 'shared-id', remoteJid: chatA, fromMe: false },
@@ -106,13 +107,13 @@ describe('WA-016 bounded raw message quote cache', () => {
           messageTimestamp: 1_700_000_000
         }]
       });
-      await new Promise((r) => setTimeout(r, 5));
+      await new Promise((resolve) => setTimeout(resolve, 5));
       // quote from chat A resolves
       await client.sendMessage(chatA, 'reply in A', { replyToMessageId: 'shared-id', simulatedDelayMs: 0 });
-      expect(sock.sent[sock.sent.length - 1].opts?.quoted).toBeDefined();
+      expect(sock.sent.at(-1)?.opts?.quoted).toBeDefined();
       // same id referenced from chat B must NOT reuse chat A's message
       await client.sendMessage(chatB, 'reply in B', { replyToMessageId: 'shared-id', simulatedDelayMs: 0 });
-      expect(sock.sent[sock.sent.length - 1].opts?.quoted).toBeUndefined();
+      expect(sock.sent.at(-1)?.opts?.quoted).toBeUndefined();
     } finally {
       await client.disconnect();
       cleanup();
@@ -133,10 +134,10 @@ describe('WA-016 bounded transport identity map', () => {
       // The first mapping must have been evicted by the bound: sending to its phone
       // now routes directly (no cached transport JID) instead of to the LID.
       await client.sendMessage('201000001000@s.whatsapp.net', 'ping', { simulatedDelayMs: 0 });
-      expect(sock.sent[sock.sent.length - 1].jid).toBe('201000001000@s.whatsapp.net');
+      expect(sock.sent.at(-1)?.jid).toBe('201000001000@s.whatsapp.net');
       // A recent mapping still routes through the cached transport identity.
       await client.sendMessage('201000001599@s.whatsapp.net', 'ping', { simulatedDelayMs: 0 });
-      expect(sock.sent[sock.sent.length - 1].jid).toBe('lid599@lid');
+      expect(sock.sent.at(-1)?.jid).toBe('lid599@lid');
     } finally {
       await client.disconnect();
       cleanup();

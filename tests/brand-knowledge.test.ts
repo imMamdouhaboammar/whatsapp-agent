@@ -18,9 +18,12 @@ test('brand knowledge preserves version lineage, rejects stale hits, isolates te
   store.close();
 });
 
+async function stubEmbed(t: string): Promise<number[]> {
+  return t.includes('delivery') || t.includes('shipping') ? [1, 0] : [0, 1];
+}
+
 test('hybrid retrieval can surface semantic match while preserving citations and scope', async () => {
-  const embed = async (t: string) => t.includes('delivery') || t.includes('shipping') ? [1,0] : [0,1];
-  const store = new BrandKnowledgeStore({dbPath: ':memory:',embed});
+  const store = new BrandKnowledgeStore({ dbPath: ':memory:', embed: stubEmbed });
   await store.ingest({brandId:'a',type:'text',locator:'delivery',content:'delivery in 2 business days',authority:'official'});
   await store.ingest({brandId:'a',type:'text',locator:'return',content:'returns after 5 days',authority:'official'});
   const hit = await store.retrieve({brandId:'a',question:'shipping',limit:1});
@@ -46,7 +49,7 @@ test('A01 source conflicts preserve evidence and clear after authoritative updat
   const official=await store.ingest({brandId:'brand-a',type:'faq',locator:'return-official',content:'سياسة الإرجاع خلال 14 يوم',authority:'official'});
   const conflicts=store.listConflicts('brand-a');
   expect(conflicts.length).toBe(1);
-  expect(conflicts[0].sourceIds.sort()).toEqual([old.sourceId,official.sourceId].sort());
+  expect(conflicts[0]?.sourceIds.toSorted()).toEqual([old.sourceId,official.sourceId].toSorted());
   expect(store.listConflicts('brand-b')).toHaveLength(0);
   await store.ingest({brandId:'brand-a',type:'faq',locator:'return-old',content:'سياسة الإرجاع خلال 14 يوم',authority:'working'});
   expect(store.listConflicts('brand-a')).toHaveLength(0);

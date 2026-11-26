@@ -1,9 +1,17 @@
 import {describe,expect,it} from 'bun:test';
 import {WebScout,shouldUseWebScout} from '../src/agent/web-scout';
+import type {ChatContent, GeminiGenerateOptions} from '../src/ai/gemini-client';
 
-const makeModel=(response:any)=>{
-  const calls:any[]=[];
-  return {calls,generateContent:async (_contents:any,options:any)=>{calls.push(options);return response;}};
+interface GroundedResponse {
+  text: string;
+  groundingMetadata?: {
+    groundingChunks?: Array<{ web?: { uri?: string; title?: string } }>;
+  };
+}
+
+const makeModel=(response:GroundedResponse)=>{
+  const calls:GeminiGenerateOptions[]=[];
+  return {calls,generateContent:async (_contents:ChatContent[],options:GeminiGenerateOptions)=>{calls.push(options);return response;}};
 };
 
 describe('A03 Web Scout grounding and provenance',()=>{
@@ -13,15 +21,15 @@ describe('A03 Web Scout grounding and provenance',()=>{
       {web:{uri:'http://localhost/admin',title:'unsafe'}},
       {web:{uri:'https://www.spa.gov.sa/story',title:'duplicate'}}
     ]}});
-    const scout=new WebScout(model as any,()=>1700000000000);
+    const scout=new WebScout(model,()=>1700000000000);
     const answer=await scout.search({question:'ما آخر تعليمات حكومية اليوم؟',freshnessNeed:'current',maxSources:5});
-    expect(model.calls[0].googleSearch).toBe(true);
+    expect(model.calls[0]?.googleSearch).toBe(true);
     expect(answer.status).toBe('grounded');
     expect(answer.sources).toEqual([expect.objectContaining({url:'https://www.spa.gov.sa/story',title:'Official update',observedAt:1700000000000})]);
     expect(answer.answer).toBe('المعلومة متاحة');
   });
   it('refuses to assert a source-free model response',async()=>{
-    const scout=new WebScout(makeModel({text:'بالطبع هذه حقيقة مؤكدة'}) as any);
+    const scout=new WebScout(makeModel({text:'بالطبع هذه حقيقة مؤكدة'}));
     const result=await scout.search({question:'قرار جديد اليوم',freshnessNeed:'current'});
     expect(result.status).toBe('insufficient_evidence');
     expect(result.answer).not.toContain('مؤكدة');
@@ -36,9 +44,9 @@ describe('A03 Web Scout grounding and provenance',()=>{
       {web:{uri:'https://example.com:8080/data',title:'custom port'}},
       {web:{uri:'https://clean.gov.sa/report',title:'valid'}}
     ]}});
-    const scout=new WebScout(model as any);
+    const scout=new WebScout(model);
     const answer=await scout.search({question:'أخبار اليوم',freshnessNeed:'current'});
     expect(answer.sources).toHaveLength(1);
-    expect(answer.sources[0].url).toBe('https://clean.gov.sa/report');
+    expect(answer.sources[0]?.url).toBe('https://clean.gov.sa/report');
   });
 });

@@ -6,15 +6,25 @@ const ok = { model: 'jev-latest', answers: {
   action_risk: { type: 'choice', choice: 'routine', confidence: 0.96, probabilities: { routine: 0.96, consequential: 0.04 } } } };
 
 async function outgoingState(message: string): Promise<string> {
-  let body: any = {};
+  let state: unknown;
   await routeTurnModel({
     message, apiKey: ['synthetic', 'test', 'key'].join('-'), enabled: true, externalRoutingAllowed: true,
-    fetchFn: (async (_u: string | URL | Request, init?: RequestInit) => {
-      body = JSON.parse(String(init?.body));
-      return new Response(JSON.stringify(ok), { status: 200 });
-    }) as unknown as typeof fetch
+    baseUrl: 'https://router.example.test',
+    fetchFn: Object.assign(
+      async (_url: string | URL | Request, init?: RequestInit) => {
+        if (typeof init?.body !== 'string') throw new Error('Expected a JSON routing body');
+        const body: unknown = JSON.parse(init.body);
+        if (typeof body !== 'object' || body === null || !('state' in body)) {
+          throw new Error('Expected state in the routing body');
+        }
+        state = body.state;
+        return Response.json(ok);
+      },
+      { preconnect: () => { throw new Error('Unexpected router preconnect'); } }
+    )
   });
-  return body.state as string;
+  if (typeof state !== 'string') throw new Error('Expected the router to send a string state');
+  return state;
 }
 
 describe('router phone scrub with Arabic digits', () => {

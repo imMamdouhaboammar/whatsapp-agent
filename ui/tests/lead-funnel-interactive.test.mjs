@@ -32,7 +32,7 @@ const testCtx = {
   freeDownloadUrl: 'https://github.com/imMamdouhaboammar/whatsapp-agent',
 };
 
-test('Interactive Funnel Analytics: emits structured events to onEvent, clarity, and dataLayer', () => {
+await test('Interactive Funnel Analytics: emits structured events to onEvent, clarity, and dataLayer', () => {
   const events = [];
   const clarityCalls = [];
   const dataLayer = [];
@@ -118,8 +118,8 @@ test('Interactive Funnel Analytics: emits structured events to onEvent, clarity,
   delete globalThis.window;
 });
 
-test('Interactive Funnel Keyboard & Shortcut mapping Simulation', () => {
-  let session = createInitialSession('medical');
+await test('Interactive Funnel Keyboard & Shortcut mapping Simulation', () => {
+  const session = createInitialSession('medical');
   const rendered = renderCurrentNode(testCtx, session);
 
   // Assert keyboard numbers 1..N map directly to option indices
@@ -130,7 +130,7 @@ test('Interactive Funnel Keyboard & Shortcut mapping Simulation', () => {
   });
 });
 
-test('Loader transition and final blueprint generation produces complete specs', () => {
+await test('Loader transition and final blueprint generation produces complete specs', () => {
   let session = createInitialSession('medical');
   session.currentNodeId = 'loader_15';
   session.tags = ['vol_high', 'vertex_eligible'];

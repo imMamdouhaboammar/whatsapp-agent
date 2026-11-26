@@ -2,6 +2,7 @@ import { SQL } from 'bun';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { LearningPersistenceStore } from '../../domain/learning-memory';
 import type { ModerationFeedbackEvent } from '../../ai/reflection-engine';
+import { readPgInteger, readPgText, readSqlRows } from './sql-values';
 
 export interface PostgresReflectionRunRecord {
   id?: string;
@@ -12,25 +13,36 @@ export interface PostgresReflectionRunRecord {
   selfCorrectionsCount?: number;
   rulesAdded?: number;
   factsAdded?: number;
-  summary?: string;
+  summary?: string | null;
   rawEvaluationJson?: Record<string, unknown>;
   createdAt?: number;
 }
 
-export class PostgresLearningStore implements LearningPersistenceStore {
-  private sql?: SQL;
-  private supabase?: SupabaseClient;
+type LearningSql = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown>;
 
-  constructor(options: { sql?: SQL; supabase?: SupabaseClient; databaseUrl?: string }) {
+function readOptionalText(value: unknown, column: string): string | undefined {
+  return value === null ? undefined : readPgText(value, column);
+}
+
+function readFeedbackType(value: unknown): ModerationFeedbackEvent['feedbackType'] {
+  if (value === 'approved' || value === 'rejected' || value === 'edited' || value === 'manual_override') {
+    return value;
+  }
+  throw new Error('Invalid PostgreSQL feedback_type');
+}
+
+export class PostgresLearningStore implements LearningPersistenceStore {
+  private sql?: LearningSql;
+
+  constructor(options: { sql?: LearningSql; supabase?: SupabaseClient; databaseUrl?: string }) {
     if (options.sql) {
       this.sql = options.sql;
     } else if (options.databaseUrl) {
       this.sql = new SQL(options.databaseUrl, { max: 2, idleTimeout: 5 });
     }
-    this.supabase = options.supabase;
   }
 
-  private getSql(): SQL {
+  private getSql(): LearningSql {
     if (this.sql) return this.sql;
     const dbUrl = process.env.DATABASE_URL;
     if (dbUrl) {
@@ -72,12 +84,12 @@ export class PostgresLearningStore implements LearningPersistenceStore {
       LIMIT 1;
     `;
 
-    if (!rows || rows.length === 0) return undefined;
-    const row = rows[0] as { content: string; version: number; updated_at: number };
+    const [row] = readSqlRows(rows);
+    if (!row) return undefined;
     return {
-      content: String(row.content),
-      version: Number(row.version),
-      updatedAt: Number(row.updated_at)
+      content: readPgText(row.content, 'content'),
+      version: readPgInteger(row.version === null ? 0 : row.version, 'version'),
+      updatedAt: readPgInteger(row.updated_at, 'updated_at')
     };
   }
 
@@ -108,7 +120,7 @@ export class PostgresLearningStore implements LearningPersistenceStore {
    */
   async getReflectionRuns(chatId?: string, limit = 20): Promise<PostgresReflectionRunRecord[]> {
     const sql = this.getSql();
-    let rows: any[];
+    let rows: unknown;
 
     if (chatId) {
       rows = await sql`
@@ -129,17 +141,17 @@ export class PostgresLearningStore implements LearningPersistenceStore {
       `;
     }
 
-    return rows.map((r) => ({
-      id: r.id,
-      brandId: r.brand_id,
-      chatId: r.chat_id,
-      triggerReason: r.trigger_reason,
-      inputMessageCount: Number(r.input_message_count),
-      selfCorrectionsCount: Number(r.self_corrections_count),
-      rulesAdded: Number(r.rules_added),
-      factsAdded: Number(r.facts_added),
-      summary: r.summary,
-      createdAt: Number(r.created_at)
+    return readSqlRows(rows).map((r) => ({
+      id: readPgText(r.id, 'id'),
+      brandId: readPgText(r.brand_id, 'brand_id'),
+      chatId: readPgText(r.chat_id, 'chat_id'),
+      triggerReason: readPgText(r.trigger_reason, 'trigger_reason'),
+      inputMessageCount: readPgInteger(r.input_message_count, 'input_message_count'),
+      selfCorrectionsCount: readPgInteger(r.self_corrections_count === null ? 0 : r.self_corrections_count, 'self_corrections_count'),
+      rulesAdded: readPgInteger(r.rules_added === null ? 0 : r.rules_added, 'rules_added'),
+      factsAdded: readPgInteger(r.facts_added === null ? 0 : r.facts_added, 'facts_added'),
+      summary: r.summary === null ? null : readPgText(r.summary, 'summary'),
+      createdAt: readPgInteger(r.created_at, 'created_at')
     }));
   }
 
@@ -168,7 +180,7 @@ export class PostgresLearningStore implements LearningPersistenceStore {
    */
   async getUnreflectedFeedback(chatId?: string, brandId?: string): Promise<ModerationFeedbackEvent[]> {
     const sql = this.getSql();
-    let rows: any[];
+    let rows: unknown;
 
     if (chatId) {
       rows = await sql`
@@ -187,13 +199,13 @@ export class PostgresLearningStore implements LearningPersistenceStore {
       `;
     }
 
-    return rows.map((r) => ({
-      chatId: r.chat_id,
-      draftId: r.draft_id ?? undefined,
-      feedbackType: r.feedback_type as ModerationFeedbackEvent['feedbackType'],
-      originalReply: r.original_reply ?? undefined,
-      revisedReply: r.revised_reply ?? undefined,
-      humanNote: r.human_note ?? undefined
+    return readSqlRows(rows).map((r) => ({
+      chatId: readPgText(r.chat_id, 'chat_id'),
+      draftId: readOptionalText(r.draft_id, 'draft_id'),
+      feedbackType: readFeedbackType(r.feedback_type),
+      originalReply: readOptionalText(r.original_reply, 'original_reply'),
+      revisedReply: readOptionalText(r.revised_reply, 'revised_reply'),
+      humanNote: readOptionalText(r.human_note, 'human_note')
     }));
   }
 
@@ -245,7 +257,7 @@ export class PostgresLearningStore implements LearningPersistenceStore {
       LIMIT ${limit};
     `;
 
-    return rows.map((r: any) => String(r.chat_id));
+    return readSqlRows(rows).map(row => readPgText(row.chat_id, 'chat_id'));
   }
 
   /**

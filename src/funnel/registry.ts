@@ -56,7 +56,7 @@ export class FunnelRegistry {
   getActiveTargets(methodName: string): FunnelTarget[] {
     const config = this.getMethod(methodName);
     if (!config) return [];
-    return config.targets.filter((t) => t.enabled !== false);
+    return config.targets.filter((t) => !Object.is(t.enabled, false));
   }
 
   addApiKey(key: string): void {

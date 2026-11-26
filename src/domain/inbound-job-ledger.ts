@@ -1,6 +1,7 @@
-import { Database } from 'bun:sqlite';
+import type { Database } from 'bun:sqlite';
 import { randomUUID } from 'node:crypto';
-import type { ChatMessage } from './types';
+import type { ChatMessage, QuotedMessageInfo } from './types';
+import { isRecord, isStringArray, readChoice, sqliteTransaction, readSqliteRow, readSqliteText, readSqliteNumber, readNullableSqliteNumber, readNullableSqliteText } from './sqlite-values';
 
 export type InboundJobState = 'pending' | 'claimed' | 'completed' | 'failed';
 
@@ -26,6 +27,130 @@ export interface InboundJobEvent {
   toState: InboundJobState;
   reason: string;
   createdAt: number;
+}
+
+interface InboundJobRow {
+  id: string;
+  chat_id: string;
+  message_id: string;
+  payload_json: string;
+  state: string;
+  attempt_count: number;
+  next_attempt_at: number;
+  lease_expires_at: number | null;
+  lease_owner: string | null;
+  last_error: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+function readInboundJobRow(value: unknown): InboundJobRow {
+  const row = readSqliteRow(value);
+  return {
+    id: readSqliteText(row, 'id'),
+    chat_id: readSqliteText(row, 'chat_id'),
+    message_id: readSqliteText(row, 'message_id'),
+    payload_json: readSqliteText(row, 'payload_json'),
+    state: readSqliteText(row, 'state'),
+    attempt_count: readSqliteNumber(row, 'attempt_count'),
+    next_attempt_at: readSqliteNumber(row, 'next_attempt_at'),
+    lease_expires_at: readNullableSqliteNumber(row, 'lease_expires_at'),
+    lease_owner: readNullableSqliteText(row, 'lease_owner'),
+    last_error: readNullableSqliteText(row, 'last_error'),
+    created_at: readSqliteNumber(row, 'created_at'),
+    updated_at: readSqliteNumber(row, 'updated_at'),
+  };
+}
+
+interface InboundEventRow {
+  id: string;
+  job_id: string;
+  from_state: string | null;
+  to_state: string;
+  reason: string;
+  created_at: number;
+}
+
+function readInboundEventRow(value: unknown): InboundEventRow {
+  const row = readSqliteRow(value);
+  return {
+    id: readSqliteText(row, 'id'),
+    job_id: readSqliteText(row, 'job_id'),
+    from_state: readNullableSqliteText(row, 'from_state'),
+    to_state: readSqliteText(row, 'to_state'),
+    reason: readSqliteText(row, 'reason'),
+    created_at: readSqliteNumber(row, 'created_at'),
+  };
+}
+
+function decodeState(value: unknown): InboundJobState {
+  return readChoice(value, ['pending', 'claimed', 'completed', 'failed'], 'inbound job state');
+}
+
+function isQuotedMessage(value: unknown): value is QuotedMessageInfo {
+  return isRecord(value) && typeof value.id === 'string' && typeof value.sender === 'string'
+    && typeof value.text === 'string' && (value.senderName === undefined || typeof value.senderName === 'string')
+    && (value.type === undefined || typeof value.type === 'string');
+}
+
+function isByte(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 255;
+}
+
+function decodeMedia(value: unknown): Uint8Array | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new Error('Invalid inbound job payload media');
+  if (value.type === 'Buffer' && Array.isArray(value.data) && value.data.every(isByte)) {
+    return Buffer.from(value.data);
+  }
+  // JSON.stringify represents Uint8Array as an object with contiguous numeric keys.
+  const entries = Object.entries(value);
+  return Uint8Array.from(entries.map(([key, byte], index) => {
+    if (key !== String(index) || !isByte(byte)) throw new Error('Invalid inbound job payload media');
+    return byte;
+  }));
+}
+
+function decodePayload(raw: string, row: InboundJobRow): ChatMessage {
+  const value: unknown = JSON.parse(raw);
+  if (!isRecord(value) || value.id !== row.message_id || value.chatId !== row.chat_id
+      || typeof value.sender !== 'string' || typeof value.text !== 'string'
+      || typeof value.timestamp !== 'number' || !Number.isFinite(value.timestamp)
+      || typeof value.isFromMe !== 'boolean') throw new Error('Invalid inbound job payload');
+
+  const optionalText = (key: string): string | undefined => {
+    const field = value[key];
+    if (field === undefined || typeof field === 'string') return field;
+    throw new Error(`Invalid inbound job payload ${key}`);
+  };
+  const { quotedMessage, reactions, lastAttemptAt } = value;
+  if ((quotedMessage !== undefined && !isQuotedMessage(quotedMessage))
+      || (reactions !== undefined && !isStringArray(reactions))
+      || (lastAttemptAt !== undefined && (typeof lastAttemptAt !== 'number' || !Number.isFinite(lastAttemptAt)))) {
+    throw new Error('Invalid inbound job payload fields');
+  }
+  return {
+    id: row.message_id,
+    chatId: row.chat_id,
+    sender: value.sender,
+    senderName: optionalText('senderName'),
+    text: value.text,
+    timestamp: value.timestamp,
+    isFromMe: value.isFromMe,
+    type: readChoice(value.type, ['text', 'audio', 'image', 'video', 'document', 'other'], 'inbound job payload type'),
+    mediaUrl: optionalText('mediaUrl'),
+    mediaBuffer: decodeMedia(value.mediaBuffer),
+    transcription: optionalText('transcription'),
+    replyToId: optionalText('replyToId'),
+    quotedMessage,
+    reactions,
+    status: value.status === undefined ? undefined : readChoice(value.status, ['pending', 'sent', 'delivered', 'read'], 'inbound job payload status'),
+    sendIntentId: optionalText('sendIntentId'),
+    deliveryState: value.deliveryState === undefined ? undefined
+      : readChoice(value.deliveryState, ['queued', 'attempting', 'uncertain', 'failed'], 'inbound job payload delivery state'),
+    lastAttemptAt,
+    nativeMessageId: optionalText('nativeMessageId'),
+  };
 }
 
 export interface FailAttemptOptions {
@@ -77,8 +202,7 @@ export class InboundJobLedger {
   }
 
   private atomic<T>(work: () => T): T {
-    // Bun's declared transaction.immediate return is void, but runtime returns the callback result.
-    return this.db.transaction(work).immediate() as unknown as T;
+    return sqliteTransaction(this.db, 'immediate', work);
   }
 
   private event(jobId: string, from: InboundJobState | undefined, to: InboundJobState, reason: string, at: number) {
@@ -88,13 +212,14 @@ export class InboundJobLedger {
     `).run(randomUUID(), jobId, from ?? null, to, reason, at);
   }
 
-  private rowToJob(row: any): InboundJob {
+  private rowToJob(value: unknown): InboundJob {
+    const row = readInboundJobRow(value);
     return {
       id: row.id,
       chatId: row.chat_id,
       messageId: row.message_id,
-      payload: JSON.parse(row.payload_json) as ChatMessage,
-      state: row.state,
+      payload: decodePayload(row.payload_json, row),
+      state: decodeState(row.state),
       attemptCount: row.attempt_count,
       nextAttemptAt: row.next_attempt_at,
       leaseExpiresAt: row.lease_expires_at ?? undefined,
@@ -111,7 +236,7 @@ export class InboundJobLedger {
   }
 
   getJob(id: string): InboundJob | undefined {
-    const row = this.db.prepare('SELECT * FROM inbound_jobs WHERE id=?').get(id) as any;
+    const row = this.db.prepare<unknown, [string]>('SELECT * FROM inbound_jobs WHERE id=?').get(id);
     return row ? this.rowToJob(row) : undefined;
   }
 
@@ -130,7 +255,9 @@ export class InboundJobLedger {
         ) VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)
       `).run(id, message.chatId, message.id, JSON.stringify(message), now, now);
       this.event(id, undefined, 'pending', 'job_created', now);
-      return { job: this.getJob(id)!, created: true };
+      const createdJob = this.getJob(id);
+      if (!createdJob) throw new Error(`Failed to load created inbound job ${id}`);
+      return { job: createdJob, created: true };
     });
   }
 
@@ -145,7 +272,9 @@ export class InboundJobLedger {
       ) VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)
     `).run(id, message.chatId, message.id, JSON.stringify(message), now, now);
     this.event(id, undefined, 'pending', 'job_created', now);
-    return { job: this.getJob(id)!, created: true };
+    const createdJob = this.getJob(id);
+    if (!createdJob) throw new Error(`Failed to load created inbound job ${id}`);
+    return { job: createdJob, created: true };
   }
 
   claim(id: string, owner: string, now = Date.now(), leaseMs = 30_000): InboundJob | undefined {
@@ -195,10 +324,11 @@ export class InboundJobLedger {
   /** Returns expired claims to pending; the owner process is presumed dead. */
   recoverExpiredLeases(now = Date.now(), limit = 1_000): number {
     return this.atomic(() => {
-      const rows = this.db.prepare(`
+      const rows = this.db.prepare<unknown, [number, number]>(`
         SELECT id FROM inbound_jobs WHERE state='claimed' AND lease_expires_at <= ? LIMIT ?
-      `).all(now, limit) as Array<{ id: string }>;
-      for (const { id } of rows) {
+      `).all(now, limit);
+      for (const value of rows) {
+        const id = readSqliteText(readSqliteRow(value), 'id');
         const changed = this.db.prepare(`
           UPDATE inbound_jobs SET state='pending', lease_expires_at=NULL, lease_owner=NULL, updated_at=?
           WHERE id=? AND state='claimed'
@@ -210,18 +340,21 @@ export class InboundJobLedger {
   }
 
   due(now = Date.now(), limit = 100): InboundJob[] {
-    const rows = this.db.prepare(`
+    const rows = this.db.prepare<unknown, [number, number]>(`
       SELECT * FROM inbound_jobs WHERE state='pending' AND next_attempt_at <= ?
       ORDER BY created_at ASC LIMIT ?
-    `).all(now, limit) as any[];
+    `).all(now, limit);
     return rows.map((r) => this.rowToJob(r));
   }
 
   getEvents(id: string): InboundJobEvent[] {
-    const rows = this.db.prepare('SELECT * FROM (SELECT *, rowid AS event_order FROM inbound_job_events WHERE job_id=? ORDER BY created_at DESC, rowid DESC LIMIT 100) ORDER BY created_at ASC, event_order ASC').all(id) as any[];
-    return rows.map((r) => ({
-      id: r.id, jobId: r.job_id, fromState: r.from_state ?? undefined,
-      toState: r.to_state, reason: r.reason, createdAt: r.created_at
-    }));
+    const rows = this.db.prepare<unknown, [string]>('SELECT * FROM (SELECT *, rowid AS event_order FROM inbound_job_events WHERE job_id=? ORDER BY created_at DESC, rowid DESC LIMIT 100) ORDER BY created_at ASC, event_order ASC').all(id);
+    return rows.map(value => {
+      const row = readInboundEventRow(value);
+      return {
+        id: row.id, jobId: row.job_id, fromState: row.from_state === null ? undefined : decodeState(row.from_state),
+        toState: decodeState(row.to_state), reason: row.reason, createdAt: row.created_at
+      };
+    });
   }
 }

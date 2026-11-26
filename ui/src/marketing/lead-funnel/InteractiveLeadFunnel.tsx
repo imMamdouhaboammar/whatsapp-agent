@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   advanceFromLoader,
   buildFinalBlueprint,
@@ -76,10 +76,9 @@ export const InteractiveLeadFunnel: React.FC<InteractiveLeadFunnelProps> = ({
       }
 
       if (typeof window !== 'undefined') {
-        const win = window as any;
-        if (typeof win.clarity === 'function') {
+        if ('clarity' in window && typeof window.clarity === 'function') {
           try {
-            win.clarity('event', fullEvent.event, {
+            window.clarity('event', fullEvent.event, {
               nodeId: fullEvent.nodeId,
               industryId: fullEvent.industryId,
               painScore: fullEvent.painScore,
@@ -89,9 +88,9 @@ export const InteractiveLeadFunnel: React.FC<InteractiveLeadFunnelProps> = ({
             // ignore clarity failure
           }
         }
-        if (Array.isArray(win.dataLayer)) {
+        if ('dataLayer' in window && Array.isArray(window.dataLayer)) {
           try {
-            win.dataLayer.push({
+            window.dataLayer.push({
               event: fullEvent.event,
               funnel_session_id: fullEvent.sessionId,
               funnel_node_id: fullEvent.nodeId,
@@ -109,28 +108,31 @@ export const InteractiveLeadFunnel: React.FC<InteractiveLeadFunnelProps> = ({
   );
 
   // Fire initial start event once
+  const startedRef = useRef(false);
   useEffect(() => {
+    if (startedRef.current) return;
+    startedRef.current = true;
     emit({
       event: 'funnel_started',
       industryId: initialIndustry ?? null,
       nodeId: initialIndustry ? 'q02_ops_mode' : 'q01_industry',
       painScore: 0,
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [emit, initialIndustry]);
 
   const isResultScreen = session.currentNodeId === 'result_blueprint';
 
-  const renderedNode = useMemo(() => {
-    if (isResultScreen) return null;
+  const renderedResult = useMemo(() => {
+    if (isResultScreen) return { node: null, error: null as string | null };
     try {
-      return renderCurrentNode(engineCtx, session);
+      return { node: renderCurrentNode(engineCtx, session), error: null as string | null };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unexpected funnel error';
-      setEngineError(message);
-      return null;
+      return { node: null, error: message };
     }
   }, [engineCtx, session, isResultScreen]);
+  const renderedNode = renderedResult.node;
+  const activeEngineError = engineError ?? renderedResult.error;
 
   const blueprint = useMemo(() => {
     if (!isResultScreen) return null;
@@ -140,10 +142,10 @@ export const InteractiveLeadFunnel: React.FC<InteractiveLeadFunnelProps> = ({
   // Animate 3-step loader and transition to final blueprint
   useEffect(() => {
     if (session.currentNodeId !== 'loader_15' || typeof window === 'undefined') {
-      setLoaderStep(0);
-      return;
+      return undefined;
     }
 
+    const t0 = window.setTimeout(() => setLoaderStep(0), 0);
     const t1 = window.setTimeout(() => setLoaderStep(1), 850);
     const t2 = window.setTimeout(() => setLoaderStep(2), 1700);
     const t3 = window.setTimeout(() => {
@@ -160,6 +162,7 @@ export const InteractiveLeadFunnel: React.FC<InteractiveLeadFunnelProps> = ({
     }, 2600);
 
     return () => {
+      window.clearTimeout(t0);
       window.clearTimeout(t1);
       window.clearTimeout(t2);
       window.clearTimeout(t3);
@@ -240,7 +243,7 @@ export const InteractiveLeadFunnel: React.FC<InteractiveLeadFunnelProps> = ({
 
   // Keyboard shortcuts (1-6 to pick option, Escape to go back)
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    if (typeof window === 'undefined') return undefined;
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (!renderedNode || renderedNode.type === 'loader') return;
@@ -251,8 +254,9 @@ export const InteractiveLeadFunnel: React.FC<InteractiveLeadFunnelProps> = ({
       }
 
       const idx = Number(e.key) - 1;
-      if (idx >= 0 && idx < renderedNode.options.length) {
-        handleSelectOption(renderedNode.options[idx].id);
+      const targetOption = idx >= 0 ? renderedNode.options[idx] : undefined;
+      if (targetOption) {
+        handleSelectOption(targetOption.id);
       }
     };
 
@@ -261,14 +265,14 @@ export const InteractiveLeadFunnel: React.FC<InteractiveLeadFunnelProps> = ({
   }, [renderedNode, handleGoBack, handleSelectOption]);
 
   // Error fallback UI
-  if (engineError) {
+  if (activeEngineError) {
     return (
       <div
         dir="rtl"
         className="mx-auto max-w-2xl rounded-3xl border border-red-500/40 bg-slate-900 p-8 text-center text-slate-100 space-y-4"
       >
         <p className="text-lg font-bold text-red-400">حصل خطأ غير متوقع في تحميل الخطوة</p>
-        <p className="text-sm text-slate-400">{engineError}</p>
+        <p className="text-sm text-slate-400">{activeEngineError}</p>
         <button
           type="button"
           onClick={handleRestart}
@@ -350,9 +354,9 @@ export const InteractiveLeadFunnel: React.FC<InteractiveLeadFunnelProps> = ({
           </div>
 
           <div className="space-y-3">
-            {blueprint.sampleConversation.map((msg, i) => (
+            {blueprint.sampleConversation.map((msg) => (
               <div
-                key={`${msg.sender}-${i}`}
+                key={JSON.stringify([msg.sender, msg.text])}
                 className={`flex ${
                   msg.sender === 'customer' ? 'justify-start' : 'justify-end'
                 }`}
@@ -484,19 +488,15 @@ export const InteractiveLeadFunnel: React.FC<InteractiveLeadFunnelProps> = ({
           <span>{renderedNode.progressPercent}%</span>
         </div>
 
-        <div
-          role="progressbar"
+        <progress
           aria-valuenow={renderedNode.progressPercent}
           aria-valuemin={0}
           aria-valuemax={100}
+          value={renderedNode.progressPercent}
+          max={100}
           aria-label="Funnel progress"
-          className="h-2 w-full overflow-hidden rounded-full bg-slate-900"
-        >
-          <div
-            className="h-full rounded-full bg-emerald-500 transition-all duration-300 ease-out"
-            style={{ width: `${renderedNode.progressPercent}%` }}
-          />
-        </div>
+          className="block h-2 w-full overflow-hidden rounded-full appearance-none bg-slate-900 [&::-webkit-progress-bar]:bg-slate-900 [&::-webkit-progress-value]:rounded-full [&::-webkit-progress-value]:bg-emerald-500 [&::-webkit-progress-value]:transition-all [&::-moz-progress-bar]:rounded-full [&::-moz-progress-bar]:bg-emerald-500"
+        />
       </div>
 
       {/* Prompt Title & Body */}

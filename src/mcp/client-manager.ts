@@ -3,9 +3,11 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { CircuitBreaker } from '../funnel/circuit-breaker';
 import { describeError } from '../observability/safe-log';
+import { isRecord, isStringRecord } from './records';
 
 export type McpTransportType = 'stdio' | 'sse' | 'streamable-http' | 'http';
 export type McpToolRisk = 'readOnly' | 'mutating';
@@ -39,6 +41,27 @@ export interface McpServerConfig {
 
 export interface McpClientsConfig {
   servers: McpServerConfig[];
+}
+
+function isToolPolicy(value: unknown): value is McpToolPolicyOverride {
+  return isRecord(value)
+    && (value.risk === undefined || value.risk === 'readOnly' || value.risk === 'mutating')
+    && (value.requiresHumanApproval === undefined || typeof value.requiresHumanApproval === 'boolean');
+}
+
+function isServerConfig(value: unknown): value is McpServerConfig {
+  if (!isRecord(value)) return false;
+  const { name, transport, enabled, brandId, timeoutMs, connectTimeoutMs, defaultRisk, command, args, env, cwd, url, headers, tools } = value;
+  return typeof name === 'string' && name.trim().length > 0
+    && (transport === 'stdio' || transport === 'sse' || transport === 'streamable-http' || transport === 'http')
+    && (enabled === undefined || typeof enabled === 'boolean')
+    && [brandId, command, cwd, url].every((field) => field === undefined || typeof field === 'string')
+    && [timeoutMs, connectTimeoutMs].every((field) => field === undefined || typeof field === 'number')
+    && (defaultRisk === undefined || defaultRisk === 'readOnly' || defaultRisk === 'mutating')
+    && (args === undefined || (Array.isArray(args) && args.every((arg: unknown) => typeof arg === 'string')))
+    && (env === undefined || isStringRecord(env))
+    && (headers === undefined || isStringRecord(headers))
+    && (tools === undefined || (isRecord(tools) && Object.values(tools).every(isToolPolicy)));
 }
 
 export interface DiscoveredMcpTool {
@@ -203,7 +226,15 @@ export class McpClientManager {
     this.defaultConnectTimeoutMs = options.defaultConnectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
     this.clientFactory =
       options.clientFactory ??
-      (() => new Client({ name: 'fable-whatsapp-agent-client', version: '1.2.0' }, { capabilities: {} }) as unknown as McpClientLike);
+      (() => {
+        const client = new Client({ name: 'fable-whatsapp-agent-client', version: '1.2.0' }, { capabilities: {} });
+        return {
+          connect: (transport) => client.connect(transport),
+          listTools: () => client.listTools(),
+          callTool: async (params) => CallToolResultSchema.parse(await client.callTool(params)),
+          close: () => client.close()
+        };
+      });
     this.transportFactory = options.transportFactory;
     this.log =
       options.log ??
@@ -220,14 +251,19 @@ export class McpClientManager {
 
     try {
       const raw = readFileSync(this.configPath, 'utf8');
-      const parsed = JSON.parse(raw) as Partial<McpClientsConfig>;
-      if (!parsed || !Array.isArray(parsed.servers)) {
+      const parsed: unknown = JSON.parse(raw);
+      if (!isRecord(parsed) || !Array.isArray(parsed.servers)) {
         this.log('warn', `[McpClientManager] Invalid MCP config at ${this.configPath}: missing servers array`);
         return { servers: [] };
       }
-      return { servers: parsed.servers };
-    } catch (err: any) {
-      if (err?.code === 'ENOENT') {
+      const entries: unknown[] = parsed.servers;
+      const servers = entries.filter(isServerConfig);
+      if (servers.length !== entries.length) {
+        this.log('warn', '[McpClientManager] Ignoring invalid MCP server entries');
+      }
+      return { servers };
+    } catch (err: unknown) {
+      if (err && typeof err === 'object' && 'code' in err && err.code === 'ENOENT') {
         return { servers: [] };
       }
       this.log('warn', `[McpClientManager] Failed to load MCP config (${this.configPath}): ${describeError(err)}`);
@@ -248,10 +284,18 @@ export class McpClientManager {
       if (!server.command) {
         throw new Error(`stdio MCP server '${server.name}' requires 'command'`);
       }
+      let env: Record<string, string> | undefined;
+      if (server.env) {
+        env = {};
+        for (const [key, value] of Object.entries(process.env)) {
+          if (value !== undefined) env[key] = value;
+        }
+        env = { ...env, ...server.env };
+      }
       return new StdioClientTransport({
         command: server.command,
         args: server.args,
-        env: server.env ? ({ ...process.env, ...server.env } as Record<string, string>) : undefined,
+        env,
         cwd: server.cwd
       });
     }
@@ -317,7 +361,7 @@ export class McpClientManager {
                   serverName: server.name,
                   rawToolName: t.name,
                   description: t.description?.trim() || `External MCP tool ${t.name} from ${server.name}`,
-                  inputSchema: (t.inputSchema as Record<string, unknown>) ?? { type: 'object', properties: {} },
+                  inputSchema: t.inputSchema ?? { type: 'object', properties: {} },
                   risk,
                   requiresHumanApproval
                 };
@@ -328,7 +372,7 @@ export class McpClientManager {
               }
               conn.status = 'connected';
             })(),
-            new Promise<never>((_, reject) => {
+            new Promise<never>((_resolve, reject) => {
               timer = setTimeout(() => reject(new Error(`Connection timed out after ${connectTimeout}ms`)), connectTimeout);
             })
           ]);
@@ -409,7 +453,7 @@ export class McpClientManager {
         try {
           return await Promise.race([
             client.callTool({ name: tool.rawToolName, arguments: args }),
-            new Promise<never>((_, reject) => {
+            new Promise<never>((_resolve, reject) => {
               timer = setTimeout(() => reject(new Error(`MCP tool '${namespacedName}' timed out after ${timeoutMs}ms`)), timeoutMs);
             })
           ]);

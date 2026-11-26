@@ -37,8 +37,8 @@ export interface ProactiveTemplateIntentCommand extends ProactiveIntentIdentity 
 export interface ProactiveEligibility extends FollowUpEvaluation {
   contactJid: string;
   optedInAtMs: number;
-  template: { name: string; languageCode: string; components?: ProactiveTemplateComponent[] };
-  relevance: {
+  template?: { name: string; languageCode: string; components?: ProactiveTemplateComponent[] };
+  relevance?: {
     relevant: boolean;
     sourceWorkflowId: string;
     verifiedAtMs: number;
@@ -89,6 +89,8 @@ export class ProactiveEngagementScheduler {
   }
 
   private command(trigger: FollowUpTrigger, eligibility: ProactiveEligibility): ProactiveTemplateIntentCommand {
+    const { template, relevance } = eligibility;
+    if (!template || !relevance) throw new Error('Missing follow-up authorization evidence');
     return {
       ...this.identity(trigger),
       actionKind: 'template',
@@ -97,10 +99,10 @@ export class ProactiveEngagementScheduler {
       consentRef: trigger.consentRef ?? '',
       optedInAtMs: eligibility.optedInAtMs,
       templateRef: trigger.templateRef ?? '',
-      template: eligibility.template,
+      template,
       contactJid: eligibility.contactJid,
-      expiresAtMs: eligibility.relevance.expiresAtMs,
-      relevanceVerifiedAtMs: eligibility.relevance.verifiedAtMs,
+      expiresAtMs: relevance.expiresAtMs,
+      relevanceVerifiedAtMs: relevance.verifiedAtMs,
       quietHours: {
         from: eligibility.quietHours.from,
         to: eligibility.quietHours.to,
@@ -125,7 +127,7 @@ export class ProactiveEngagementScheduler {
     const evidence = eligibility.relevance;
     if (!evidence) return 'missing_relevance_evidence';
     if (evidence.sourceWorkflowId !== trigger.sourceWorkflowId) return 'source_mismatch';
-    if (evidence.relevant !== true) return 'no_longer_relevant';
+    if (!Object.is(evidence.relevant, true)) return 'no_longer_relevant';
     if (!Number.isSafeInteger(evidence.verifiedAtMs) || !Number.isSafeInteger(evidence.expiresAtMs) ||
         evidence.verifiedAtMs > now || evidence.expiresAtMs < evidence.verifiedAtMs) {
       return 'invalid_relevance_evidence';

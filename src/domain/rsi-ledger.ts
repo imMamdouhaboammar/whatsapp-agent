@@ -2,7 +2,117 @@ import { Database } from 'bun:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { scrubCredentials } from './learning-memory';
-import type { FactorWeightDelta, OpfDiagnostics, WorldTransitionRecord } from '../ai/jepa-world-model';
+import { isRecord, readChoice, readSqliteRow, readSqliteNumber, readNullableSqliteNumber, readSqliteText, readNullableSqliteText } from './sqlite-values';
+import type { FactorWeightDelta, OpfDiagnostics, OpfFactorVector, WorldTransitionRecord } from '../ai/jepa-world-model';
+
+interface TransitionRow {
+  id: string;
+  chat_id: string;
+  intent: string;
+  action: string;
+  state_before_json: string;
+  predicted_state_json: string;
+  observed_state_json: string;
+  prediction_error: number;
+  surprise: number;
+  feedback_type: string;
+  created_at: number;
+}
+
+function readTransitionRow(value: unknown): TransitionRow {
+  const row = readSqliteRow(value);
+  return {
+    id: readSqliteText(row, 'id'),
+    chat_id: readSqliteText(row, 'chat_id'),
+    intent: readSqliteText(row, 'intent'),
+    action: readSqliteText(row, 'action'),
+    state_before_json: readSqliteText(row, 'state_before_json'),
+    predicted_state_json: readSqliteText(row, 'predicted_state_json'),
+    observed_state_json: readSqliteText(row, 'observed_state_json'),
+    prediction_error: readSqliteNumber(row, 'prediction_error'),
+    surprise: readSqliteNumber(row, 'surprise'),
+    feedback_type: readSqliteText(row, 'feedback_type'),
+    created_at: readSqliteNumber(row, 'created_at'),
+  };
+}
+
+interface WeightRow {
+  transition_key: string;
+  delta_json: string;
+  override_prob: number;
+  sample_count: number;
+}
+
+function readWeightRow(value: unknown): WeightRow {
+  const row = readSqliteRow(value);
+  return {
+    transition_key: readSqliteText(row, 'transition_key'),
+    delta_json: readSqliteText(row, 'delta_json'),
+    override_prob: readSqliteNumber(row, 'override_prob'),
+    sample_count: readSqliteNumber(row, 'sample_count'),
+  };
+}
+
+interface RsiGenerationRow {
+  generation_id: number;
+  parent_generation_id: number | null;
+  brand_id: string;
+  status: string;
+  mutation_summary: string;
+  predicted_gain: number;
+  observed_pass_rate: number;
+  baseline_pass_rate: number;
+  prediction_error_before: number;
+  prediction_error_after: number;
+  opf_diagnostics_json?: string | null;
+  created_at: number;
+}
+
+function readRsiGenerationRow(value: unknown): RsiGenerationRow {
+  const row = readSqliteRow(value);
+  return {
+    generation_id: readSqliteNumber(row, 'generation_id'),
+    parent_generation_id: readNullableSqliteNumber(row, 'parent_generation_id'),
+    brand_id: readSqliteText(row, 'brand_id'),
+    status: readSqliteText(row, 'status'),
+    mutation_summary: readSqliteText(row, 'mutation_summary'),
+    predicted_gain: readSqliteNumber(row, 'predicted_gain'),
+    observed_pass_rate: readSqliteNumber(row, 'observed_pass_rate'),
+    baseline_pass_rate: readSqliteNumber(row, 'baseline_pass_rate'),
+    prediction_error_before: readSqliteNumber(row, 'prediction_error_before'),
+    prediction_error_after: readSqliteNumber(row, 'prediction_error_after'),
+    opf_diagnostics_json: row.opf_diagnostics_json === undefined ? undefined : readNullableSqliteText(row, 'opf_diagnostics_json'),
+    created_at: readSqliteNumber(row, 'created_at'),
+  };
+}
+
+const isFiniteNumber = (value: unknown): value is number => {
+  return typeof value === 'number' && Number.isFinite(value);
+};
+
+function decodeFactors(value: unknown): OpfFactorVector {
+  if (!Array.isArray(value) || value.length !== 4) throw new Error('Invalid RSI factor vector');
+  const [a, b, c, d] = value;
+  if (!isFiniteNumber(a) || !isFiniteNumber(b) || !isFiniteNumber(c) || !isFiniteNumber(d)) {
+    throw new Error('Invalid RSI factor vector');
+  }
+  return [a, b, c, d];
+}
+
+function decodeDiagnostics(raw: string): OpfDiagnostics {
+  const value: unknown = JSON.parse(raw);
+  if (!isRecord(value)) throw new Error('Invalid RSI diagnostics');
+  const { sampleCount, meanPredictionError, meanSurprise, coordinateVariances,
+    hasCollapsedCoordinate, maxOffDiagonalCorrelation } = value;
+  if (!isFiniteNumber(sampleCount) || !isFiniteNumber(meanPredictionError) || !isFiniteNumber(meanSurprise)
+      || typeof hasCollapsedCoordinate !== 'boolean' || !isFiniteNumber(maxOffDiagonalCorrelation)) {
+    throw new Error('Invalid RSI diagnostics');
+  }
+  return {
+    sampleCount, meanPredictionError, meanSurprise, hasCollapsedCoordinate, maxOffDiagonalCorrelation,
+    coordinateVariances: decodeFactors(coordinateVariances),
+  };
+}
 
 export interface RsiGenerationRecord {
   generationId: number;
@@ -107,38 +217,27 @@ export class RsiLedger {
 
   getRecentTransitions(brandId: string, limit = 100): WorldTransitionRecord[] {
     const safeLimit = Math.max(1, Math.min(500, limit));
-    const rows = this.db.query(`
+    const rows = this.db.query<unknown, [string, number]>(`
       SELECT id, chat_id, intent, action, state_before_json, predicted_state_json,
              observed_state_json, prediction_error, surprise, feedback_type, created_at
       FROM rsi_transitions
       WHERE brand_id = ?
       ORDER BY created_at DESC
       LIMIT ?
-    `).all(brandId, safeLimit) as Array<{
-      id: string;
-      chat_id: string;
-      intent: string;
-      action: WorldTransitionRecord['action'];
-      state_before_json: string;
-      predicted_state_json: string;
-      observed_state_json: string;
-      prediction_error: number;
-      surprise: number;
-      feedback_type: WorldTransitionRecord['feedbackType'];
-      created_at: number;
-    }>;
+    `).all(brandId, safeLimit);
 
-    return rows.map((r) => ({
+    return rows.map(readTransitionRow).map((r) => ({
       id: r.id,
       chatId: r.chat_id,
       intent: r.intent,
-      action: r.action,
-      stateBefore: JSON.parse(r.state_before_json),
-      predictedState: JSON.parse(r.predicted_state_json),
-      observedState: JSON.parse(r.observed_state_json),
+      action: readChoice(r.action, ['reply', 'draft', 'ignore', 'human', 'act'], 'RSI action'),
+      stateBefore: decodeFactors(JSON.parse(r.state_before_json)),
+      predictedState: decodeFactors(JSON.parse(r.predicted_state_json)),
+      observedState: decodeFactors(JSON.parse(r.observed_state_json)),
       predictionError: r.prediction_error,
       surprise: r.surprise,
-      feedbackType: r.feedback_type,
+      feedbackType: readChoice(r.feedback_type,
+        ['approved', 'edited', 'rejected', 'manual_override', 'resolved', 'unresolved'], 'RSI feedback type'),
       createdAt: r.created_at
     }));
   }
@@ -159,22 +258,18 @@ export class RsiLedger {
   }
 
   loadWorldWeights(brandId: string): Record<string, FactorWeightDelta> {
-    const rows = this.db.query(`
+    const rows = this.db.query<unknown, [string]>(`
       SELECT transition_key, delta_json, override_prob, sample_count
       FROM rsi_world_weights
       WHERE brand_id = ?
       LIMIT 500
-    `).all(brandId) as Array<{
-      transition_key: string;
-      delta_json: string;
-      override_prob: number;
-      sample_count: number;
-    }>;
+    `).all(brandId);
 
     const out: Record<string, FactorWeightDelta> = {};
-    for (const r of rows) {
+    for (const value of rows) {
+      const r = readWeightRow(value);
       out[r.transition_key] = {
-        delta: JSON.parse(r.delta_json),
+        delta: decodeFactors(JSON.parse(r.delta_json)),
         overrideProb: r.override_prob,
         count: r.sample_count
       };
@@ -212,39 +307,40 @@ export class RsiLedger {
   }
 
   getLatestPromotedGeneration(brandId: string): RsiGenerationRecord | null {
-    const row = this.db.query(`
+    const row = this.db.query<unknown, [string]>(`
       SELECT * FROM rsi_generations
       WHERE brand_id = ? AND status = 'promoted'
       ORDER BY generation_id DESC
       LIMIT 1
-    `).get(brandId) as Record<string, any> | null;
+    `).get(brandId);
     return row ? this.mapGenerationRow(row) : null;
   }
 
   getRecentGenerations(brandId: string, limit = 20): RsiGenerationRecord[] {
     const safeLimit = Math.max(1, Math.min(200, limit));
-    const rows = this.db.query(`
+    const rows = this.db.query<unknown, [string, number]>(`
       SELECT * FROM rsi_generations
       WHERE brand_id = ?
       ORDER BY generation_id DESC
       LIMIT ?
-    `).all(brandId, safeLimit) as Record<string, any>[];
+    `).all(brandId, safeLimit);
     return rows.map((r) => this.mapGenerationRow(r));
   }
 
-  private mapGenerationRow(r: Record<string, any>): RsiGenerationRecord {
+  private mapGenerationRow(value: unknown): RsiGenerationRecord {
+    const r = readRsiGenerationRow(value);
     return {
       generationId: r.generation_id,
       parentGenerationId: r.parent_generation_id ?? null,
       brandId: r.brand_id,
-      status: r.status,
+      status: readChoice(r.status, ['promoted', 'rejected'], 'RSI generation status'),
       mutationSummary: r.mutation_summary,
       predictedGain: r.predicted_gain,
       observedPassRate: r.observed_pass_rate,
       baselinePassRate: r.baseline_pass_rate,
       predictionErrorBefore: r.prediction_error_before,
       predictionErrorAfter: r.prediction_error_after,
-      opfDiagnostics: r.opf_diagnostics_json ? JSON.parse(r.opf_diagnostics_json) : undefined,
+      opfDiagnostics: r.opf_diagnostics_json ? decodeDiagnostics(r.opf_diagnostics_json) : undefined,
       createdAt: r.created_at
     };
   }
