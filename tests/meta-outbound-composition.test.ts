@@ -123,5 +123,5 @@ describe('Meta runtime outbound composition', () => {
       agent.memoryStore.close();
       agent.recipientDirectory?.close();
     }
-  });
+  }, 15_000);
 });

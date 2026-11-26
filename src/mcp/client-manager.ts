@@ -227,7 +227,7 @@ export class McpClientManager {
     this.clientFactory =
       options.clientFactory ??
       (() => {
-        const client = new Client({ name: 'fable-whatsapp-agent-client', version: '1.2.0' }, { capabilities: {} });
+        const client = new Client({ name: 'fable-whatsapp-agent-client', version: '1.3.0' }, { capabilities: {} });
         return {
           connect: (transport) => client.connect(transport),
           listTools: () => client.listTools(),

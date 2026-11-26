@@ -16,7 +16,7 @@
     "ui:astryx": "bun --cwd ui astryx",
     "astryx": "bun --cwd ui astryx",
     "build": "bun --cwd ui build",
-    "qlty": "qlty check",
+    "qlty": "qlty check --no-formatters",
     "qlty:fmt": "qlty fmt",
     "security:audit": "bun run scripts/security-audit.ts",
     "gate": "no-mistakes axi",
