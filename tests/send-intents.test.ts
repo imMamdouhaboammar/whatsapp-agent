@@ -462,25 +462,33 @@ describe('S01 native transport acceptance boundary', () => {
 });
 
 it('rejects an invalid persisted inbound payload before claiming work', () => {
-  using db = new Database(':memory:');
-  const ledger = new InboundJobLedger(db);
-  const { job } = ledger.createJob({
-    id: 'inbound-1', chatId: input().chatId, sender: input().chatId,
-    text: 'Hello', timestamp: 100, isFromMe: false, type: 'text',
-  });
-  db.run('UPDATE inbound_jobs SET payload_json = ? WHERE id = ?', ['{"type":"unknown"}', job.id]);
-  expect(() => ledger.claim(job.id, 'worker')).toThrow(/inbound job payload/i);
-  expect(db.query('SELECT state FROM inbound_jobs WHERE id = ?').get(job.id)).toEqual({ state: 'pending' });
+  const db = new Database(':memory:');
+  try {
+    const ledger = new InboundJobLedger(db);
+    const { job } = ledger.createJob({
+      id: 'inbound-1', chatId: input().chatId, sender: input().chatId,
+      text: 'Hello', timestamp: 100, isFromMe: false, type: 'text',
+    });
+    db.run('UPDATE inbound_jobs SET payload_json = ? WHERE id = ?', ['{"type":"unknown"}', job.id]);
+    expect(() => ledger.claim(job.id, 'worker')).toThrow(/inbound job payload/i);
+    expect(db.query('SELECT state FROM inbound_jobs WHERE id = ?').get(job.id)).toEqual({ state: 'pending' });
+  } finally {
+    db.close();
+  }
 });
 
 it('rejects invalid persisted broadcast delivery states', () => {
-  using db = new Database(':memory:');
-  const store = new BroadcastStore(db);
-  const [recipient] = store.addRecipients('campaign-1', [{
-    chatId: input().chatId, contactName: 'Test Contact', personalizedText: 'Hello',
-    richContent: { kind: 'text', messageGoal: 'Hello' }, status: 'queued',
-  }]);
-  if (!recipient) throw new Error('Expected a recipient');
-  db.run('UPDATE broadcast_recipients SET status = ? WHERE id = ?', ['unknown', recipient.id]);
-  expect(() => store.getRecipient(recipient.id)).toThrow(/recipient status/i);
+  const db = new Database(':memory:');
+  try {
+    const store = new BroadcastStore(db);
+    const [recipient] = store.addRecipients('campaign-1', [{
+      chatId: input().chatId, contactName: 'Test Contact', personalizedText: 'Hello',
+      richContent: { kind: 'text', messageGoal: 'Hello' }, status: 'queued',
+    }]);
+    if (!recipient) throw new Error('Expected a recipient');
+    db.run('UPDATE broadcast_recipients SET status = ? WHERE id = ?', ['unknown', recipient.id]);
+    expect(() => store.getRecipient(recipient.id)).toThrow(/recipient status/i);
+  } finally {
+    db.close();
+  }
 });
