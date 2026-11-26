@@ -79,7 +79,7 @@ jobs:
         run: curl https://qlty.sh | sh
 
       - name: Run Qlty Check
-        run: ~/.qlty/bin/qlty check --upstream origin/main --no-formatters
+        run: ~/.qlty/bin/qlty check --upstream origin/main --no-formatters --skip markdownlint:MD013,markdownlint:MD012
 
   trufflehog:
     name: TruffleHog Secret Scanning

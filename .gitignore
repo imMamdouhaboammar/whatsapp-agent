@@ -35,6 +35,9 @@ env-vault
 id_rsa*
 credentials.json
 service-account*.json
+service-accounts.json
+*.token
+*.jwt
 
 # Databases & Runtime SQLite Persistence
 /data/
@@ -49,6 +52,7 @@ supabase/.temp/
 # WhatsApp Auth Sessions & Temporary Media
 auth_info/
 auth_info_baileys/
+baileys_store*.json
 session/
 sessions/
 *.qr.png
@@ -83,6 +87,8 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 test-results/
+playwright-report/
+blob-report/
 ui/tests/artifacts/
 
 # Operating System & Editors
