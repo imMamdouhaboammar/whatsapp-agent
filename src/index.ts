@@ -4,6 +4,9 @@ import { createCapabilities, registerCapabilityRoutes } from './agent/capabiliti
 import { AgentTurnCoordinator } from './agent/turn-coordinator';
 import { createInboundPlanner } from './agent/inbound-planner';
 import { ProactiveEngagementScheduler, type ProactiveEligibility, type ProactiveTemplateIntentCommand } from './agent/proactive-scheduler';
+import { BroadcastComposer } from './agent/broadcast-composer';
+import { BroadcastOrchestrator } from './agent/broadcast-orchestrator';
+import { registerBroadcastTools } from './agent/broadcast-tools';
 import type { FollowUpTrigger } from './agent/follow-ups';
 import { AudioTranscriber } from './ai/audio-transcriber';
 import { GeminiClient } from './ai/gemini-client';
@@ -105,10 +108,10 @@ export async function createFableWhatsAppAgent(options: {
     reason: mirrorResolution.reason
   };
   let postgresLearningStore: PostgresLearningStore | undefined;
-  if (mirrorResolution.mode === 'mirror') {
+  if (mirrorResolution.mode === 'mirror' && mirrorResolution.databaseUrl) {
     try {
-      postgresLearningStore = new PostgresLearningStore({ databaseUrl: mirrorResolution.databaseUrl! });
-    } catch (err: any) {
+      postgresLearningStore = new PostgresLearningStore({ databaseUrl: mirrorResolution.databaseUrl });
+    } catch (err: unknown) {
       learningMirror.degraded = err instanceof Error ? err.message : String(err);
       console.warn('⚠️ [Fable Agentic WhatsApp] Learning mirror degraded:', learningMirror.degraded);
     }
@@ -185,8 +188,11 @@ export async function createFableWhatsAppAgent(options: {
   });
 
   let whatsappClient: WhatsAppSocketClient | undefined;
-  let sendIntents: SendIntentService;
   let proactiveScheduler: ProactiveEngagementScheduler | undefined;
+  const deferredServices: {
+    sendIntents?: SendIntentService;
+    broadcastOrchestrator?: BroadcastOrchestrator;
+  } = {};
 
   // Burst Accumulator: fuses multi-line rapid messages before calling Gemini
   const burstAccumulator = new BurstAccumulator({
@@ -243,6 +249,9 @@ export async function createFableWhatsAppAgent(options: {
             }
 
             // 2. Decide between Voice Note (PTT) vs Split Text Bubbles
+            const sendIntents = deferredServices.sendIntents;
+            if (!sendIntents) throw new Error('SendIntentService not initialized');
+            const replyText = result.decision.replyText ?? '';
             if (result.decision.sendAsVoiceNote && transportMode === 'baileys') {
               const voiceResult = await sendIntents.sendVoice({
                 sourceKind: 'autopilot',
@@ -250,7 +259,7 @@ export async function createFableWhatsAppAgent(options: {
                 sourceRevision: 1,
                 actionKind: 'voice',
                 chatId: fusedMsg.chatId,
-                text: result.decision.replyText!,
+                text: replyText,
                 replyToMessageId: fusedMsg.id,
                 policyRevision: moderatorAgent.getPolicy().version
               });
@@ -262,7 +271,7 @@ export async function createFableWhatsAppAgent(options: {
             }
 
             // Natural multi-bubble human splitting for text replies
-            const bubbles = messageSplitter.split(result.decision.replyText!);
+            const bubbles = messageSplitter.split(replyText);
             console.log(`🤖 [Agent Auto-Reply] Replying in ${bubbles.length} natural bubble(s)...`);
 
             // WA-015: commit every bubble durably as one batch BEFORE the first dispatch.
@@ -304,7 +313,7 @@ export async function createFableWhatsAppAgent(options: {
             memoryStore.getInboundJobLedger().complete(jobId);
           }
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         logEvent('error', 'agent_processing_error', { error: describeError(err) });
         for (const m of burst.messages) {
           memoryStore.getInboundJobLedger().failAttempt(
@@ -325,6 +334,10 @@ export async function createFableWhatsAppAgent(options: {
   const handleInboundMessage = async (msg: ChatMessage, delivery?: { historical: boolean }): Promise<void> => {
     if (!msg.text?.trim() && msg.type === 'text') return;
     if (msg.text === '[رسالة]') return;
+
+    if (!msg.isFromMe && !delivery?.historical) {
+      deferredServices.broadcastOrchestrator?.onInboundMessage(msg.chatId, msg.text ?? '');
+    }
 
     if (!msg.isFromMe && recipientDirectory && brandId) {
       const identity = recipientDirectory.observeAlias({ brandId, jid: msg.chatId });
@@ -351,10 +364,10 @@ export async function createFableWhatsAppAgent(options: {
       sse.broadcast('chat_updated', { chatId: msg.chatId });
     }
 
-    if (!eligible || !persisted.created) return;
+    if (!eligible || !persisted.created || !persisted.job) return;
     // Claim before pushing: if the process dies while the message sits in the
     // RAM burst buffer, the lease expires and the recovery sweep re-drives it.
-    const claimed = memoryStore.getInboundJobLedger().claim(persisted.job!.id, inboundOwner);
+    const claimed = memoryStore.getInboundJobLedger().claim(persisted.job.id, inboundOwner);
     if (claimed) burstAccumulator.push(msg);
     // A rejected push (intake stopped) is safe: the durable job's lease
     // expires and recovery re-drives the work on this or the next process.
@@ -394,6 +407,7 @@ export async function createFableWhatsAppAgent(options: {
     },
     onMessageStatus: ({ chatId, messageId, status }) => {
       if (status !== 'pending') sendIntents?.receipt(chatId, messageId, status);
+      if (status === 'delivered' || status === 'read') broadcastOrchestrator?.onMessageReceipt(messageId, status);
       const persistedStatus = memoryStore.updateMessageStatus(chatId, messageId, status);
       if (persistedStatus) sse.broadcast('message_status', { chatId, messageId, status: persistedStatus });
     },
@@ -432,6 +446,9 @@ export async function createFableWhatsAppAgent(options: {
     }
     if (event.kind === 'receipt') {
       sendIntents.receipt(event.chatId, event.nativeMessageId, event.status);
+      if (event.status === 'delivered' || event.status === 'read') {
+        broadcastOrchestrator?.onMessageReceipt(event.nativeMessageId, event.status);
+      }
       const persistedStatus = memoryStore.updateMessageStatus(
         event.chatId, event.nativeMessageId, event.status
       );
@@ -470,27 +487,32 @@ export async function createFableWhatsAppAgent(options: {
         !recipientDirectory || !brandId || !intent.template || !intent.templateEligibility) {
       throw new Error('Trusted proactive template authorization is unavailable');
     }
-    const trigger = capabilities.followups.get(source[1]!);
+    const triggerId = source[1];
+    if (!triggerId) {
+      throw new Error('Trusted proactive template authorization is unavailable');
+    }
+    const trigger = capabilities.followups.get(triggerId);
     const alias = recipientDirectory.resolve({ brandId, jid: intent.chatId });
     if (!trigger || trigger.status !== 'attempting' || trigger.brandId !== brandId ||
         !alias || alias.kind !== 'direct' || alias.contactId !== trigger.contactId ||
+        !trigger.consentRef ||
         trigger.consentRef !== intent.templateEligibility.consentRef ||
         trigger.sourceWorkflowId !== intent.templateEligibility.sourceWorkflowId ||
         trigger.templateRef !== intent.template.name) {
       throw new Error('Proactive source or recipient identity changed');
     }
     const live = await options.proactiveEligibility(trigger, now);
-    if (live.channel !== 'meta-cloud' || live.optIn !== true ||
-        live.templateApproved !== true || live.contactJid !== intent.chatId ||
+    if (live.channel !== 'meta-cloud' || !Object.is(live.optIn, true) ||
+        !Object.is(live.templateApproved, true) || live.contactJid !== intent.chatId ||
         live.optedInAtMs !== intent.templateEligibility.optedInAtMs ||
         live.template?.name !== intent.template.name ||
         live.template?.languageCode !== intent.template.languageCode ||
-        live.relevance?.relevant !== true ||
+        !live.relevance || !Object.is(live.relevance.relevant, true) ||
         live.relevance.sourceWorkflowId !== trigger.sourceWorkflowId) {
       throw new Error('Proactive consent, recipient or template authorization revoked');
     }
     return {
-      consentRef: trigger.consentRef!,
+      consentRef: trigger.consentRef,
       optedInAtMs: live.optedInAtMs,
       approvedTemplate: {
         name: live.template.name,
@@ -508,7 +530,7 @@ export async function createFableWhatsAppAgent(options: {
     };
   };
 
-  sendIntents = new SendIntentService({
+  const sendIntents = new SendIntentService({
     memoryStore,
     diagnostics,
     brandId: recipientDirectory ? brandId : undefined,
@@ -537,6 +559,7 @@ export async function createFableWhatsAppAgent(options: {
       : undefined,
     publish: (event, data) => sse.broadcast(event, data)
   });
+  deferredServices.sendIntents = sendIntents;
 
   // Proactive delivery is opt-in at runtime: a trusted source must provide live
   // consent, template approval and workflow relevance for every actual send.
@@ -601,6 +624,32 @@ export async function createFableWhatsAppAgent(options: {
     });
   }
 
+  // Initialize Smart Broadcast Orchestrator
+  const broadcastStore = memoryStore.getBroadcastStore();
+  const broadcastOrchestrator = new BroadcastOrchestrator({
+    store: broadcastStore,
+    memoryStore,
+    composer: new BroadcastComposer({
+      gemini: geminiClient,
+      brandName: moderatorAgent.getPersona().name,
+    }),
+    whatsappClient,
+    metaClient,
+    voiceSynthesizer,
+    voiceName: () => moderatorAgent.getPersona().voiceName,
+    defaultTransport: transportMode,
+    publish: (event, data) => sse.broadcast(event, data),
+  });
+  deferredServices.broadcastOrchestrator = broadcastOrchestrator;
+  registerBroadcastTools(capabilities.registry, brandId || 'default', {
+    store: broadcastStore,
+    orchestrator: broadcastOrchestrator,
+  });
+  const broadcastFollowUpTimer = setInterval(() => {
+    void broadcastOrchestrator?.tickFollowUps().catch((err) => console.warn('[Broadcast] Follow-up tick failed:', describeError(err)));
+  }, 60_000);
+  broadcastFollowUpTimer.unref();
+
   // Initialize Scatter-Gather Funnel Engine (WA-023: only when the profile enables it)
   const funnelEngine = runtimeProfile.funnelEnabled ? createDefaultFunnelEngine({ port }) : undefined;
 
@@ -626,7 +675,8 @@ export async function createFableWhatsAppAgent(options: {
     runtimeProfile: runtimeProfile.name,
     capabilityMatrix: capabilityMatrix(runtimeProfile, transportMode),
     funnelDisabled: !runtimeProfile.funnelEnabled,
-    mcpClientManager
+    mcpClientManager,
+    broadcastOrchestrator
   });
 
   registerCapabilityRoutes(app, capabilities, options.capabilityToken ?? process.env.AGENT_CAPABILITIES_OWNER_TOKEN ?? '');
@@ -643,6 +693,9 @@ export async function createFableWhatsAppAgent(options: {
       c.header('Cache-Control', 'public, max-age=31536000, immutable');
     }
   });
+
+  // Never let unknown /api/* routes fall through to the SPA HTML fallback.
+  app.all('/api/*', (c) => c.json({ error: 'API endpoint not found' }, 404));
 
   // Serve static UI assets if built
   app.use('/*', serveStatic({ root: './ui/dist' }));
@@ -672,6 +725,7 @@ export async function createFableWhatsAppAgent(options: {
   const shutdown = async () => {
     if (deliveryRetryTimer) clearInterval(deliveryRetryTimer);
     clearInterval(inboundRecoveryTimer);
+    clearInterval(broadcastFollowUpTimer);
     await reflectionWorker?.stopPeriodicSweep();
     proactiveAbort?.abort();
     // WA-008: drain and retry outstanding learning-state writes before closing stores.
@@ -696,6 +750,7 @@ export async function createFableWhatsAppAgent(options: {
 
   const unregSchedulers = defaultLifecycle.register('schedulers', 'stop_ingestion', async () => {
     if (deliveryRetryTimer) clearInterval(deliveryRetryTimer);
+    clearInterval(broadcastFollowUpTimer);
     await reflectionWorker?.stopPeriodicSweep();
     proactiveAbort?.abort();
   });
@@ -767,7 +822,5 @@ if (import.meta.main) {
     port: agent.port,
     hostname: host
   });
-  defaultLifecycle.register('http_server', 'stop_ingestion', () => {
-    server.stop(true);
-  });
+  defaultLifecycle.registerHttpServer(server);
 }

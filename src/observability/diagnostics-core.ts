@@ -89,7 +89,6 @@ const WORKER_STATES: readonly WorkerState[] = ["healthy", "degraded", "crashed"]
 const RECEIPTS: readonly ReceiptState[] = ["accepted", "delivered", "read"];
 const RECEIPT_RANK: Record<ReceiptState, number> = { accepted: 1, delivered: 2, read: 3 };
 const TRACE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const INCIDENT_OUTCOMES = new Set<DiagnosticOutcome>(["failed", "timeout", "rejected", "uncertain"]);
 
 function permitted<T extends string>(value: T, values: readonly T[], label: string): void {
   if (!values.includes(value)) throw new TypeError(`Unsupported ${label}`);
@@ -206,7 +205,7 @@ export class DiagnosticsCore {
   getTrace(traceId: string): DiagnosticEvent[] {
     const canonicalId = this.normalizedTraceId(traceId);
     this.purgeExpired();
-    return (this.traces.get(canonicalId)?.events ?? []).map((event) => ({ ...event }));
+    return (this.traces.get(canonicalId)?.events ?? []).map((event) => Object.assign({}, event));
   }
 
   /** A conversation deletion is reflected in trace metadata immediately. */
@@ -237,7 +236,8 @@ export class DiagnosticsCore {
       }
     }
     for (let index = this.incidentHistory.length - 1; index >= 0; index--) {
-      if (now - this.incidentHistory[index]!.at > this.retentionMs) {
+      const incident = this.incidentHistory[index];
+      if (incident && now - incident.at > this.retentionMs) {
         this.incidentHistory.splice(index, 1);
       }
     }
@@ -343,12 +343,12 @@ export class DiagnosticsCore {
       trace.uncertainAt = undefined;
       if (!trace.receipt) trace.receipt = "accepted";
     }
-    if (INCIDENT_OUTCOMES.has(outcome)) {
+    if (outcome === "failed" || outcome === "timeout" || outcome === "rejected" || outcome === "uncertain") {
       this.incidentHistory.push({
         at,
         traceId: canonicalId,
         stage,
-        outcome: outcome as DiagnosticIncident["outcome"],
+        outcome,
         conversationDigest: trace.conversationDigest,
       });
       if (this.incidentHistory.length > this.maxIncidents) {

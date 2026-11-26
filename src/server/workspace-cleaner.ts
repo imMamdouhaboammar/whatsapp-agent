@@ -7,6 +7,10 @@ export interface WorkspaceCleanResult {
   cleanedItems: string[];
 }
 
+function isMissingFile(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
+}
+
 function calculateDirSize(dirPath: string, depth = 0): number {
   if (depth > 5) return 0;
   let total = 0;
@@ -21,13 +25,13 @@ function calculateDirSize(dirPath: string, depth = 0): number {
           total += statSync(fullPath).size;
         }
       } catch (err: unknown) {
-        if ((err as { code?: string })?.code !== 'ENOENT') {
+        if (!isMissingFile(err)) {
           console.warn(`[WorkspaceCleaner] Error inspecting ${fullPath}:`, err);
         }
       }
     }
   } catch (err: unknown) {
-    if ((err as { code?: string })?.code !== 'ENOENT') {
+    if (!isMissingFile(err)) {
       console.warn(`[WorkspaceCleaner] Error reading dir ${dirPath}:`, err);
     }
   }
@@ -60,14 +64,14 @@ export function cleanWorkspaceData(dataDir = './data'): WorkspaceCleanResult {
           cleanedItems.push(name);
           freedBytes += itemSize;
         } catch (err: unknown) {
-          if ((err as { code?: string })?.code !== 'ENOENT') {
+          if (!isMissingFile(err)) {
             console.warn(`[WorkspaceCleaner] Failed to remove ${fullPath}:`, err);
           }
         }
       }
     }
   } catch (err: unknown) {
-    if ((err as { code?: string })?.code !== 'ENOENT') {
+    if (!isMissingFile(err)) {
       console.warn(`[WorkspaceCleaner] Failed to clean workspace data in ${dataDir}:`, err);
     }
     return { success: false, freedBytes, cleanedItems };

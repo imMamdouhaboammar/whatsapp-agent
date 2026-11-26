@@ -65,13 +65,14 @@ export async function testDatabaseConnection() {
     try {
       const dbClient = getPostgresClient();
       const rows = await dbClient`SELECT version(), current_database(), current_user`;
-      if (rows && rows.length > 0) {
+      const firstRow: unknown = rows?.[0];
+      if (typeof firstRow === 'object' && firstRow !== null && 'version' in firstRow && typeof firstRow.version === 'string' && firstRow.version.trim()) {
         results.postgresWire = true;
-        const firstRow = rows[0] as Record<string, unknown>;
-        results.postgresVersion = String(firstRow.version || '');
+        results.postgresVersion = firstRow.version;
         results.error = null;
         break;
       }
+      throw new Error('Postgres returned an invalid version response');
     } catch (err: unknown) {
       results.error = `Postgres Wire error: ${err instanceof Error ? err.message : String(err)}`;
       if (attempt < 3) {

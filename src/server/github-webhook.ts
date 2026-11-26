@@ -21,11 +21,11 @@ export function verifyGitHubWebhookSignature(
   }
 
   const parts = signatureHeader.split('=');
-  if (parts.length !== 2 || parts[0] !== 'sha256' || !/^[0-9a-f]{64}$/i.test(parts[1])) {
+  const expectedSignatureHex = parts[1];
+  if (parts.length !== 2 || parts[0] !== 'sha256' || !expectedSignatureHex || !/^[0-9a-f]{64}$/i.test(expectedSignatureHex)) {
     return false;
   }
 
-  const expectedSignatureHex = parts[1];
   const hmac = crypto.createHmac('sha256', secret);
   hmac.update(typeof rawBody === 'string' ? Buffer.from(rawBody, 'utf-8') : rawBody);
   const calculatedDigest = hmac.digest('hex');

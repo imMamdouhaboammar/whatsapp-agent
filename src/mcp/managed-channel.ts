@@ -31,13 +31,13 @@ export async function startManagedChannel<C extends ManagedChannelClient>(
 ): Promise<ManagedChannel<C>> {
   const log = options.log ?? ((m: string) => console.error(m));
   const timeoutMs = options.connectTimeoutMs ?? 20_000;
-  let markConnected: () => void = () => {};
+  let resolveConnected: ((value: true) => void) | undefined;
   const connectedSignal = new Promise<true>((resolve) => {
-    markConnected = () => resolve(true);
+    resolveConnected = resolve;
   });
 
   const client = options.createClient((state) => {
-    if (state.state === 'connected') markConnected();
+    if (state.state === 'connected') resolveConnected?.(true);
     if (state.state === 'qr_ready' || state.state === 'pairing_code_ready') {
       log('[MCP channel] Pairing required: run `bun run cli pair` or pair through the web cockpit first.');
     }

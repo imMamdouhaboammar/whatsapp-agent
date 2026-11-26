@@ -58,13 +58,15 @@ const META_VARS = [
 
 /** Environment text is printed to an operator terminal: drop control characters and cap length. */
 function printable(value: string): string {
-  // eslint-disable-next-line no-control-regex
-  return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, '?').slice(0, 64);
+  return Array.from(value, (ch) => {
+    const code = ch.charCodeAt(0);
+    return code <= 0x1f || (code >= 0x7f && code <= 0x9f) ? '?' : ch;
+  }).join('').slice(0, 64);
 }
 
 function bunAtLeast(version: string): boolean {
   const [major, minor] = version.split('.').map((n) => Number.parseInt(n, 10));
-  return Number.isFinite(major) && (major > MIN_BUN[0] || (major === MIN_BUN[0] && (minor ?? 0) >= MIN_BUN[1]));
+  return major !== undefined && Number.isFinite(major) && (major > MIN_BUN[0] || (major === MIN_BUN[0] && (minor ?? 0) >= MIN_BUN[1]));
 }
 
 /**
@@ -85,7 +87,7 @@ export async function runDoctor(probes: DoctorProbes, options: { preflightOnly?:
     add({ id: 'storage', section: 'preflight', level: 'pass', label: `Local storage opens (${chats} chats indexed)` });
     if (probes.testStorageWrite) {
       // WA-011: a probe that returns false means the write did not commit.
-      const writable = probes.testStorageWrite() === true;
+      const writable = Object.is(probes.testStorageWrite(), true);
       add(writable
         ? { id: 'storage-write', section: 'preflight', level: 'pass', label: 'Local storage is writable (WAL commit verified)' }
         : { id: 'storage-write', section: 'preflight', level: 'fail', label: 'Local storage write probe did not commit', detail: 'The write transaction returned false.' });
