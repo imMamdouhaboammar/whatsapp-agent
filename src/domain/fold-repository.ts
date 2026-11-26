@@ -1,36 +1,68 @@
+import { isRecord } from './sqlite-values';
 import type { Database } from 'bun:sqlite';
 import { scrubCredentials } from './learning-memory';
 import type { ChatMessage, ConversationFold } from './types';
 
-type FoldRow = {
-  id: string; chat_id: string; tier: number; topic: string; summary: string;
-  start_message_id: string; end_message_id: string; direct_message_ids: string;
-  source_fold_ids: string; message_count: number; facts_json: string; created_at: number;
-};
 
-function asFold(row: FoldRow): ConversationFold {
+
+function readStringArray(raw: unknown, field: string): string[] {
+  if (typeof raw !== 'string') throw new Error(`Invalid ${field}`);
+  const value: unknown = JSON.parse(raw);
+  if (!Array.isArray(value) || !value.every(item => typeof item === 'string')) {
+    throw new Error(`Invalid ${field}`);
+  }
+  return value;
+}
+
+function asFold(row: unknown): ConversationFold {
+  if (!isRecord(row)) throw new Error('Invalid conversation fold row');
+  const { id, chat_id, tier, topic, summary, start_message_id, end_message_id,
+    direct_message_ids, source_fold_ids, message_count, facts_json, created_at } = row;
+  if (typeof id !== 'string' || typeof chat_id !== 'string' ||
+      (tier !== 1 && tier !== 2 && tier !== 3) || typeof topic !== 'string' ||
+      typeof summary !== 'string' || typeof start_message_id !== 'string' ||
+      typeof end_message_id !== 'string' || typeof message_count !== 'number' ||
+      typeof created_at !== 'number') throw new Error('Invalid conversation fold row');
   return {
-    id: row.id, chatId: row.chat_id, tier: row.tier as 1 | 2 | 3, topic: row.topic,
-    summary: row.summary, startMessageId: row.start_message_id, endMessageId: row.end_message_id,
-    directMessageIds: JSON.parse(row.direct_message_ids) as string[],
-    sourceFoldIds: JSON.parse(row.source_fold_ids) as string[],
-    messageCount: row.message_count,
-    factsExtracted: JSON.parse(row.facts_json) as string[],
-    createdAt: row.created_at
+    id, chatId: chat_id, tier, topic, summary, startMessageId: start_message_id,
+    endMessageId: end_message_id, directMessageIds: readStringArray(direct_message_ids, 'direct_message_ids'),
+    sourceFoldIds: readStringArray(source_fold_ids, 'source_fold_ids'), messageCount: message_count,
+    factsExtracted: readStringArray(facts_json, 'facts_json'), createdAt: created_at
   };
 }
 
-function readMessage(row: Record<string, unknown>): ChatMessage {
+const isQuote = (value: unknown): value is NonNullable<ChatMessage['quotedMessage']> => {
+  return isRecord(value) && typeof value.id === 'string' && typeof value.sender === 'string' &&
+    typeof value.text === 'string' && (value.senderName === undefined || typeof value.senderName === 'string') &&
+    (value.type === undefined || typeof value.type === 'string');
+};
+
+function readQuote(raw: string): NonNullable<ChatMessage['quotedMessage']> {
+  const value: unknown = JSON.parse(raw);
+  if (!isQuote(value)) throw new Error('Invalid quoted_json');
+  return value;
+}
+
+function readMessage(row: unknown): ChatMessage {
+  if (!isRecord(row)) throw new Error('Invalid fold message row');
+  const { id, chat_id, sender, sender_name, text, timestamp, is_from_me, type,
+    reply_to_id, quoted_json, reactions_json, transcription, status } = row;
+  if (typeof id !== 'string' || typeof chat_id !== 'string' || typeof sender !== 'string' ||
+      typeof text !== 'string' || typeof timestamp !== 'number' || typeof is_from_me !== 'number' ||
+      (type !== 'text' && type !== 'audio' && type !== 'image' && type !== 'video' &&
+        type !== 'document' && type !== 'other') ||
+      (status !== null && status !== 'pending' && status !== 'sent' && status !== 'delivered' && status !== 'read') ||
+      (sender_name !== null && typeof sender_name !== 'string') ||
+      (reply_to_id !== null && typeof reply_to_id !== 'string') ||
+      (quoted_json !== null && typeof quoted_json !== 'string') ||
+      (reactions_json !== null && typeof reactions_json !== 'string') ||
+      (transcription !== null && typeof transcription !== 'string')) throw new Error('Invalid fold message row');
   return {
-    id: row.id as string, chatId: row.chat_id as string, sender: row.sender as string,
-    senderName: (row.sender_name as string | null) ?? undefined, text: row.text as string,
-    timestamp: row.timestamp as number, isFromMe: Boolean(row.is_from_me),
-    type: row.type as ChatMessage['type'],
-    replyToId: (row.reply_to_id as string | null) ?? undefined,
-    quotedMessage: row.quoted_json ? JSON.parse(row.quoted_json as string) : undefined,
-    reactions: row.reactions_json ? JSON.parse(row.reactions_json as string) : undefined,
-    transcription: (row.transcription as string | null) ?? undefined,
-    status: row.status as ChatMessage['status']
+    id, chatId: chat_id, sender, senderName: sender_name ?? undefined, text, timestamp,
+    isFromMe: Boolean(is_from_me), type, replyToId: reply_to_id ?? undefined,
+    quotedMessage: quoted_json ? readQuote(quoted_json) : undefined,
+    reactions: reactions_json ? readStringArray(reactions_json, 'reactions_json') : undefined,
+    transcription: transcription ?? undefined, status: status ?? undefined
   };
 }
 
@@ -93,6 +125,11 @@ export class FoldRepository {
     if (!Number.isSafeInteger(input.createdAt)) throw new Error('Invalid fold timestamp');
 
     this.db.transaction(() => {
+      const firstId = ids[0];
+      const lastId = ids[ids.length - 1];
+      if (!firstId || !lastId) {
+        throw new Error('Fold lineage cannot be empty');
+      }
       // Compare the caller-supplied lineage with the canonical chronological range.
       const matches = this.db.query(`
         SELECT id FROM messages
@@ -100,8 +137,8 @@ export class FoldRepository {
           (SELECT timestamp FROM messages WHERE id = ? AND chat_id = ?)
           AND (SELECT timestamp FROM messages WHERE id = ? AND chat_id = ?)
         ORDER BY timestamp ASC, rowid ASC
-      `).all(input.chatId, ids[0], input.chatId, ids.at(-1)!, input.chatId) as { id: string }[];
-      if (JSON.stringify(matches.map(row => row.id)) !== JSON.stringify(ids)) {
+      `).all(input.chatId, firstId, input.chatId, lastId, input.chatId);
+      if (JSON.stringify(matches.map(row => isRecord(row) ? row.id : undefined)) !== JSON.stringify(ids)) {
         throw new Error('Fold lineage must be contiguous and chat-scoped');
       }
       if (input.tier === 1) {
@@ -118,10 +155,11 @@ export class FoldRepository {
           throw new Error('Tier-two fold requires distinct source folds');
         }
         const sources = input.sourceFoldIds.map(id => this.getFold(id));
-        if (sources.some(source => !source || source.chatId !== input.chatId || source.tier !== 1)) {
+        const validSources = sources.filter((source): source is ConversationFold => Boolean(source && source.chatId === input.chatId && source.tier === 1));
+        if (validSources.length !== sources.length) {
           throw new Error('Tier-two source fold identity mismatch');
         }
-        const expanded = sources.flatMap(source => source!.directMessageIds);
+        const expanded = validSources.flatMap(source => source.directMessageIds);
         if (JSON.stringify(expanded) !== JSON.stringify(ids)) throw new Error('Tier-two lineage mismatch');
         const alreadyCoalesced = this.db.query(`
           SELECT 1 FROM conversation_fold_sources
@@ -133,10 +171,11 @@ export class FoldRepository {
           throw new Error('Tier-three fold requires distinct source folds');
         }
         const sources = input.sourceFoldIds.map(id => this.getFold(id));
-        if (sources.some(source => !source || source.chatId !== input.chatId || source.tier !== 2)) {
+        const validSources = sources.filter((source): source is ConversationFold => Boolean(source && source.chatId === input.chatId && source.tier === 2));
+        if (validSources.length !== sources.length) {
           throw new Error('Tier-three source fold identity mismatch');
         }
-        const expanded = sources.flatMap(source => source!.directMessageIds);
+        const expanded = validSources.flatMap(source => source.directMessageIds);
         if (JSON.stringify(expanded) !== JSON.stringify(ids)) throw new Error('Tier-three lineage mismatch');
         const alreadyCoalesced = this.db.query(`
           SELECT 1 FROM conversation_fold_sources
@@ -174,7 +213,7 @@ export class FoldRepository {
   }
 
   getFold(id: string): ConversationFold | undefined {
-    const row = this.db.query('SELECT * FROM conversation_folds WHERE id = ? LIMIT 1').get(id) as FoldRow | null;
+    const row = this.db.query('SELECT * FROM conversation_folds WHERE id = ? LIMIT 1').get(id);
     return row ? asFold(row) : undefined;
   }
 
@@ -185,7 +224,7 @@ export class FoldRepository {
           ORDER BY created_at DESC, rowid DESC LIMIT ?`).all(chatId, tier, capped)
       : this.db.query(`SELECT * FROM conversation_folds WHERE chat_id = ?
           ORDER BY created_at DESC, rowid DESC LIMIT ?`).all(chatId, capped);
-    return (rows as FoldRow[]).reverse().map(asFold);
+    return rows.toReversed().map(asFold);
   }
 
   getPendingTier1Folds(chatId: string, limit = 5): ConversationFold[] {
@@ -197,7 +236,7 @@ export class FoldRepository {
           SELECT 1 FROM conversation_fold_sources s WHERE s.source_fold_id = f.id
         )
       ORDER BY f.created_at ASC, f.rowid ASC LIMIT ?
-    `).all(chatId, capped) as FoldRow[];
+    `).all(chatId, capped);
     return rows.map(asFold);
   }
 
@@ -210,7 +249,7 @@ export class FoldRepository {
           SELECT 1 FROM conversation_fold_sources s WHERE s.source_fold_id = f.id
         )
       ORDER BY f.created_at ASC, f.rowid ASC LIMIT ?
-    `).all(chatId, capped) as FoldRow[];
+    `).all(chatId, capped);
     return rows.map(asFold);
   }
 
@@ -219,8 +258,8 @@ export class FoldRepository {
     const rows = this.db.query(`
       SELECT * FROM conversation_folds WHERE chat_id = ? AND tier = ?
       ORDER BY created_at DESC, rowid DESC LIMIT ?
-    `).all(chatId, tier, capped) as FoldRow[];
-    return rows.reverse().map(asFold);
+    `).all(chatId, tier, capped);
+    return rows.toReversed().map(asFold);
   }
 
   getFoldMessages(foldId: string): ChatMessage[] {
@@ -228,26 +267,28 @@ export class FoldRepository {
       SELECT m.* FROM conversation_fold_messages f
       INNER JOIN messages m ON m.id = f.message_id AND m.chat_id = f.chat_id
       WHERE f.fold_id = ? ORDER BY f.ordinal LIMIT 512
-    `).all(foldId) as Record<string, unknown>[];
+    `).all(foldId);
     return rows.map(readMessage);
   }
 
   getMessageWindow(chatId: string, messageId: string, radius = 2): ChatMessage[] {
     const boundedRadius = Math.max(0, Math.min(10, Math.floor(radius) || 0));
-    const anchor = this.db.query('SELECT timestamp, rowid FROM messages WHERE chat_id = ? AND id = ? LIMIT 1').get(chatId, messageId) as
-      | { timestamp: number; rowid: number } | null;
+    const anchor = this.db.query('SELECT timestamp, rowid FROM messages WHERE chat_id = ? AND id = ? LIMIT 1').get(chatId, messageId);
     if (!anchor) return [];
+    if (!isRecord(anchor) || typeof anchor.timestamp !== 'number' || typeof anchor.rowid !== 'number') {
+      throw new Error('Invalid fold message anchor');
+    }
     const preceding = this.db.query(`
       SELECT * FROM messages WHERE chat_id = ? AND
         (timestamp < ? OR (timestamp = ? AND rowid < ?))
       ORDER BY timestamp DESC, rowid DESC LIMIT ?
-    `).all(chatId, anchor.timestamp, anchor.timestamp, anchor.rowid, boundedRadius) as Record<string, unknown>[];
+    `).all(chatId, anchor.timestamp, anchor.timestamp, anchor.rowid, boundedRadius);
     const following = this.db.query(`
       SELECT * FROM messages WHERE chat_id = ? AND
         (timestamp > ? OR (timestamp = ? AND rowid >= ?))
       ORDER BY timestamp ASC, rowid ASC LIMIT ?
-    `).all(chatId, anchor.timestamp, anchor.timestamp, anchor.rowid, boundedRadius + 1) as Record<string, unknown>[];
-    return [...preceding.reverse(), ...following].map(readMessage);
+    `).all(chatId, anchor.timestamp, anchor.timestamp, anchor.rowid, boundedRadius + 1);
+    return [...preceding.toReversed(), ...following].map(readMessage);
   }
 
   getUnfoldedMessages(chatId: string, keepRecentCount = 10): ChatMessage[] {
@@ -264,7 +305,7 @@ export class FoldRepository {
           WHERE f.chat_id = m.chat_id AND f.message_id = m.id AND cf.tier = 1
         )
       ORDER BY m.timestamp ASC, m.rowid ASC LIMIT 512
-    `).all(chatId, chatId, tail) as Record<string, unknown>[];
+    `).all(chatId, chatId, tail);
     return rows.map(readMessage);
   }
 
@@ -276,12 +317,12 @@ export class FoldRepository {
     const messages = this.db.query(`
       SELECT * FROM messages WHERE chat_id = ? AND (text LIKE ? ESCAPE '\\' OR transcription LIKE ? ESCAPE '\\')
       ORDER BY timestamp DESC, rowid DESC LIMIT ?
-    `).all(chatId, pattern, pattern, capped) as Record<string, unknown>[];
+    `).all(chatId, pattern, pattern, capped);
     const folds = this.db.query(`
       SELECT * FROM conversation_folds WHERE chat_id = ?
         AND (summary LIKE ? ESCAPE '\\' OR topic LIKE ? ESCAPE '\\')
       ORDER BY created_at DESC LIMIT ?
-    `).all(chatId, pattern, pattern, capped) as FoldRow[];
+    `).all(chatId, pattern, pattern, capped);
     return { messages: messages.map(readMessage), folds: folds.map(asFold) };
   }
 }

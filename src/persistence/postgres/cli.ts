@@ -6,10 +6,11 @@ function option(name: string, maxDepth = 1): string | undefined {
   if (maxDepth < 1) return undefined;
   const i = Bun.argv.indexOf(name);
   if (i === -1) return undefined;
-  if (!Bun.argv[i + 1] || Bun.argv[i + 1].startsWith('--')) {
+  const next = Bun.argv[i + 1];
+  if (!next || next.startsWith('--')) {
     throw new Error(`Missing value for ${name}`);
   }
-  return Bun.argv[i + 1];
+  return next;
 }
 function requireValue(name: string): string {
   const value = option(name);

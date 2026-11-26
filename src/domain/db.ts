@@ -1,9 +1,11 @@
+import { isRecord } from './sqlite-values';
 import { Database } from 'bun:sqlite';
 import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { SendLedger } from './send-ledger';
 import { FoldRepository } from './fold-repository';
 import { InboundJobLedger, type InboundJob } from './inbound-job-ledger';
+import { BroadcastStore } from './broadcast-store';
 import { scrubCredentials } from './learning-memory';
 import type {
   AgentDraft,
@@ -27,13 +29,160 @@ function advancedStatus(current: ChatMessage['status'], next: ChatMessage['statu
   return STATUS_RANK[current] >= STATUS_RANK[next] ? current : next;
 }
 
-function safeJsonParse<T>(raw: string | null | undefined, fallback: T): T {
-  if (!raw) return fallback;
+
+
+function sqliteRow(value: unknown): Record<string, unknown> {
+  if (isRecord(value)) return value;
+  throw new TypeError('Invalid SQLite row');
+}
+
+const invalidColumn = (column: string): never => {
+  throw new TypeError(`Invalid SQLite column: ${column}`);
+};
+
+function textColumn(row: Record<string, unknown>, column: string): string {
+  const value = row[column];
+  return typeof value === 'string' ? value : invalidColumn(column);
+}
+
+const numberColumn = (row: Record<string, unknown>, column: string): number => {
+  const value = row[column];
+  return typeof value === 'number' && Number.isFinite(value) ? value : invalidColumn(column);
+};
+
+function optionalText(row: Record<string, unknown>, column: string): string | undefined {
+  return row[column] === null ? undefined : textColumn(row, column);
+}
+
+function optionalNumber(row: Record<string, unknown>, column: string): number | undefined {
+  return row[column] === null ? undefined : numberColumn(row, column);
+}
+
+function enumColumn<T extends string>(row: Record<string, unknown>, column: string, ...allowed: T[]): T {
+  return allowed.find((value) => value === row[column]) ?? invalidColumn(column);
+}
+
+function parseJson(raw: string | undefined): unknown {
+  if (!raw) return undefined;
   try {
-    return JSON.parse(raw) as T;
+    return JSON.parse(raw);
   } catch {
-    return fallback;
+    return undefined;
   }
+}
+
+function stringArray(value: unknown): string[] | undefined {
+  return Array.isArray(value) && value.every((item: unknown): item is string => typeof item === 'string')
+    ? value
+    : undefined;
+}
+
+function isQuotedMessage(value: unknown): value is NonNullable<ChatMessage['quotedMessage']> {
+  if (!isRecord(value)) return false;
+  const { id, sender, senderName, text, type } = value;
+  return typeof id === 'string' && typeof sender === 'string' && typeof text === 'string'
+    && (senderName === undefined || typeof senderName === 'string')
+    && (type === undefined || typeof type === 'string');
+}
+
+function isPendingToolCall(value: unknown): value is NonNullable<AgentDraft['toolCall']> {
+  if (!isRecord(value)) return false;
+  const { namespacedName, serverName, toolName, args, risk, reason, proposedFollowUp } = value;
+  return typeof namespacedName === 'string' && typeof serverName === 'string' && typeof toolName === 'string'
+    && isRecord(args) && (risk === 'readOnly' || risk === 'mutating')
+    && (reason === undefined || typeof reason === 'string')
+    && (proposedFollowUp === undefined || typeof proposedFollowUp === 'string');
+}
+
+function decodeLegacyChat(value: unknown): ChatSummary | undefined {
+  if (!isRecord(value) || typeof value.id !== 'string' || !value.id.trim() || typeof value.name !== 'string') return undefined;
+  const { unreadCount, lastTimestamp, isGroup, agentMode, phoneNumber, lastMessage, avatarUrl } = value;
+  if (unreadCount !== null && unreadCount !== undefined && (typeof unreadCount !== 'number' || !Number.isSafeInteger(unreadCount) || unreadCount < 0)) return undefined;
+  if (lastTimestamp !== null && lastTimestamp !== undefined && (typeof lastTimestamp !== 'number' || !Number.isFinite(lastTimestamp))) return undefined;
+  if (isGroup !== null && isGroup !== undefined && typeof isGroup !== 'boolean') return undefined;
+  if (agentMode !== null && agentMode !== undefined && agentMode !== 'autopilot' && agentMode !== 'copilot' && agentMode !== 'human') return undefined;
+  if (phoneNumber !== null && phoneNumber !== undefined && typeof phoneNumber !== 'string') return undefined;
+  if (lastMessage !== null && lastMessage !== undefined && typeof lastMessage !== 'string') return undefined;
+  if (avatarUrl !== null && avatarUrl !== undefined && typeof avatarUrl !== 'string') return undefined;
+  return {
+    id: value.id,
+    name: value.name,
+    unreadCount: unreadCount ?? 0,
+    lastTimestamp: lastTimestamp ?? undefined,
+    isGroup: isGroup ?? false,
+    agentMode: agentMode ?? 'autopilot',
+    phoneNumber: phoneNumber ?? undefined,
+    lastMessage: lastMessage ?? undefined,
+    avatarUrl: avatarUrl ?? undefined
+  };
+}
+
+function decodeChat(value: unknown): ChatSummary {
+  const row = sqliteRow(value);
+  return {
+    id: textColumn(row, 'id'),
+    name: textColumn(row, 'name'),
+    phoneNumber: optionalText(row, 'phone_number'),
+    unreadCount: optionalNumber(row, 'unread_count') ?? 0,
+    lastMessage: optionalText(row, 'last_message'),
+    lastTimestamp: optionalNumber(row, 'last_timestamp'),
+    isGroup: Boolean(optionalNumber(row, 'is_group')),
+    agentMode: row.agent_mode === null ? 'autopilot' : enumColumn(row, 'agent_mode', 'autopilot', 'copilot', 'human'),
+    avatarUrl: optionalText(row, 'avatar_url')
+  };
+}
+
+function decodeMessage(value: unknown): ChatMessage {
+  const row = sqliteRow(value);
+  const quote = parseJson(optionalText(row, 'quoted_json'));
+  return {
+    id: textColumn(row, 'id'),
+    chatId: textColumn(row, 'chat_id'),
+    sender: textColumn(row, 'sender'),
+    senderName: optionalText(row, 'sender_name'),
+    text: textColumn(row, 'text'),
+    timestamp: numberColumn(row, 'timestamp'),
+    isFromMe: Boolean(numberColumn(row, 'is_from_me')),
+    type: row.type === null ? 'text' : enumColumn(row, 'type', 'text', 'audio', 'image', 'video', 'document', 'other'),
+    replyToId: optionalText(row, 'reply_to_id'),
+    quotedMessage: isQuotedMessage(quote) ? quote : undefined,
+    reactions: stringArray(parseJson(optionalText(row, 'reactions_json'))),
+    transcription: optionalText(row, 'transcription'),
+    status: row.status === null ? undefined : enumColumn(row, 'status', 'pending', 'sent', 'delivered', 'read')
+  };
+}
+
+function decodeDraft(value: unknown): AgentDraft {
+  const row = sqliteRow(value);
+  const toolCall = parseJson(optionalText(row, 'tool_call'));
+  return {
+    id: textColumn(row, 'id'),
+    chatId: textColumn(row, 'chat_id'),
+    incomingMessageId: textColumn(row, 'incoming_message_id'),
+    incomingText: textColumn(row, 'incoming_text'),
+    proposedReply: textColumn(row, 'proposed_reply'),
+    reasoning: textColumn(row, 'reasoning'),
+    confidence: numberColumn(row, 'confidence'),
+    status: enumColumn(row, 'status', 'pending', 'approved', 'rejected', 'sent'),
+    createdAt: numberColumn(row, 'created_at'),
+    toolCall: isPendingToolCall(toolCall) ? toolCall : undefined
+  };
+}
+
+function decodeReflection(value: unknown) {
+  const row = sqliteRow(value);
+  return {
+    id: textColumn(row, 'id'),
+    brand_id: textColumn(row, 'brand_id'),
+    chat_id: textColumn(row, 'chat_id'),
+    trigger_reason: textColumn(row, 'trigger_reason'),
+    input_message_count: numberColumn(row, 'input_message_count'),
+    self_corrections_count: optionalNumber(row, 'self_corrections_count') ?? 0,
+    rules_added: optionalNumber(row, 'rules_added') ?? 0,
+    facts_added: optionalNumber(row, 'facts_added') ?? 0,
+    summary: optionalText(row, 'summary') ?? null,
+    created_at: numberColumn(row, 'created_at')
+  };
 }
 
 export interface SqliteStoreOptions {
@@ -47,6 +196,7 @@ export class SqliteStore {
   private sendLedger: SendLedger;
   private inboundJobLedger: InboundJobLedger;
   private foldRepository: FoldRepository;
+  private broadcastStore: BroadcastStore;
   private pendingStatuses = new Map<string, NonNullable<ChatMessage['status']>>();
 
   constructor(options: SqliteStoreOptions = {}) {
@@ -63,6 +213,7 @@ export class SqliteStore {
     this.sendLedger = new SendLedger(this.db);
     this.inboundJobLedger = new InboundJobLedger(this.db);
     this.foldRepository = new FoldRepository(this.db);
+    this.broadcastStore = new BroadcastStore(this.db);
 
     if (options.legacyDataDir) {
       this.importLegacyJson(options.legacyDataDir);
@@ -187,18 +338,25 @@ export class SqliteStore {
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_learning_reflections_chat ON learning_reflections(chat_id, created_at);`);
   }
 
+  private countRows(sql: string): number {
+    const row = this.db.query(sql).get();
+    return row === null ? 0 : numberColumn(sqliteRow(row), 'c');
+  }
+
   /**
    * Imports legacy JSON files if they exist and DB is empty
    */
   private importLegacyJson(dir: string) {
     try {
-      const chatsCount = (this.db.query('SELECT COUNT(*) as c FROM chats;').get() as any)?.c || 0;
+      const chatsCount = this.countRows('SELECT COUNT(*) AS c FROM chats;');
       if (chatsCount === 0) {
         try {
-          const raw = JSON.parse(readFileSync(`${dir}/chats.json`, 'utf-8'));
+          const raw: unknown = JSON.parse(readFileSync(`${dir}/chats.json`, 'utf-8'));
           if (Array.isArray(raw)) {
             for (const item of raw) {
-              this.saveChat(item);
+              const chat = decodeLegacyChat(item);
+              if (chat) this.saveChat(chat);
+              else console.warn('[SQLite] Skipped malformed legacy chat record');
             }
           }
         } catch {
@@ -206,7 +364,7 @@ export class SqliteStore {
         }
       }
 
-      const msgsCount = (this.db.query('SELECT COUNT(*) as c FROM messages;').get() as any)?.c || 0;
+      const msgsCount = this.countRows('SELECT COUNT(*) AS c FROM messages;');
       if (msgsCount === 0) {
         try {
           const raw = JSON.parse(readFileSync(`${dir}/messages.json`, 'utf-8'));
@@ -258,34 +416,12 @@ export class SqliteStore {
   }
 
   getChat(id: string): ChatSummary | undefined {
-    const row = this.db.query('SELECT * FROM chats WHERE id = ? LIMIT 1;').get(id) as any;
-    if (!row) return undefined;
-    return {
-      id: row.id,
-      name: row.name,
-      phoneNumber: row.phone_number ?? undefined,
-      unreadCount: row.unread_count,
-      lastMessage: row.last_message ?? undefined,
-      lastTimestamp: row.last_timestamp ?? undefined,
-      isGroup: Boolean(row.is_group),
-      agentMode: row.agent_mode as AgentMode,
-      avatarUrl: row.avatar_url ?? undefined
-    };
+    const row = this.db.query('SELECT * FROM chats WHERE id = ? LIMIT 1;').get(id);
+    return row === null ? undefined : decodeChat(row);
   }
 
   listChats(): ChatSummary[] {
-    const rows = this.db.query('SELECT * FROM chats ORDER BY COALESCE(last_timestamp, 0) DESC;').all() as any[];
-    return rows.map((row) => ({
-      id: row.id,
-      name: row.name,
-      phoneNumber: row.phone_number ?? undefined,
-      unreadCount: row.unread_count,
-      lastMessage: row.last_message ?? undefined,
-      lastTimestamp: row.last_timestamp ?? undefined,
-      isGroup: Boolean(row.is_group),
-      agentMode: row.agent_mode as AgentMode,
-      avatarUrl: row.avatar_url ?? undefined
-    }));
+    return this.db.query('SELECT * FROM chats ORDER BY COALESCE(last_timestamp, 0) DESC;').all().map(decodeChat);
   }
 
   setChatMode(id: string, mode: AgentMode) {
@@ -293,7 +429,7 @@ export class SqliteStore {
       INSERT INTO chats (id, name, unread_count, is_group, agent_mode)
       VALUES (?, ?, 0, 0, ?)
       ON CONFLICT(id) DO UPDATE SET agent_mode = excluded.agent_mode;
-    `, [id, id.split('@')[0], mode]);
+    `, [id, id.split('@')[0] ?? id, mode]);
   }
 
   markChatRead(id: string) {
@@ -344,7 +480,7 @@ export class SqliteStore {
     });
 
     // Automatically update or create chat summary
-    const phoneCandidate = msg.chatId.split('@')[0];
+    const phoneCandidate = msg.chatId.split('@')[0] ?? '';
     const formattedPhone = /^\d+$/.test(phoneCandidate) ? `+${phoneCandidate}` : undefined;
     const existing = this.getChat(msg.chatId);
 
@@ -388,46 +524,13 @@ export class SqliteStore {
   getMessages(chatId: string, limit = 50): ChatMessage[] {
     const rows = this.db.query(
       'SELECT * FROM messages WHERE chat_id = ? ORDER BY timestamp DESC LIMIT ?;'
-    ).all(chatId, limit) as any[];
-
-    return rows.reverse().map((row) => ({
-      id: row.id,
-      chatId: row.chat_id,
-      sender: row.sender,
-      senderName: row.sender_name ?? undefined,
-      text: row.text,
-      timestamp: row.timestamp,
-      isFromMe: Boolean(row.is_from_me),
-      type: row.type as ChatMessage['type'],
-      replyToId: row.reply_to_id ?? undefined,
-      quotedMessage: safeJsonParse(row.quoted_json, undefined),
-      reactions: safeJsonParse(row.reactions_json, undefined),
-      transcription: row.transcription ?? undefined,
-      status: row.status as ChatMessage['status']
-    }));
+    ).all(chatId, limit);
+    return rows.toReversed().map(decodeMessage);
   }
 
   getMessage(chatId: string, messageId: string): ChatMessage | undefined {
-    const row = this.db.query(
-      'SELECT * FROM messages WHERE chat_id = ? AND id = ?;'
-    ).get(chatId, messageId) as any;
-
-    if (!row) return undefined;
-    return {
-      id: row.id,
-      chatId: row.chat_id,
-      sender: row.sender,
-      senderName: row.sender_name ?? undefined,
-      text: row.text,
-      timestamp: row.timestamp,
-      isFromMe: Boolean(row.is_from_me),
-      type: row.type as ChatMessage['type'],
-      replyToId: row.reply_to_id ?? undefined,
-      quotedMessage: safeJsonParse(row.quoted_json, undefined),
-      reactions: safeJsonParse(row.reactions_json, undefined),
-      transcription: row.transcription ?? undefined,
-      status: row.status as ChatMessage['status']
-    };
+    const row = this.db.query('SELECT * FROM messages WHERE chat_id = ? AND id = ?;').get(chatId, messageId);
+    return row === null ? undefined : decodeMessage(row);
   }
 
   addReaction(chatId: string, messageId: string, emoji: string) {
@@ -480,25 +583,26 @@ export class SqliteStore {
   }
 
   getDossier(chatId: string): ContactDossier | undefined {
-    const row = this.db.query('SELECT * FROM contact_dossiers WHERE chat_id = ? LIMIT 1;').get(chatId) as any;
-    if (!row) return undefined;
+    const result = this.db.query('SELECT * FROM contact_dossiers WHERE chat_id = ? LIMIT 1;').get(chatId);
+    if (result === null) return undefined;
+    const row = sqliteRow(result);
     return {
-      chatId: row.chat_id,
-      name: row.name,
-      phone: row.phone ?? undefined,
-      stage: row.stage as ContactDossier['stage'],
-      facts: safeJsonParse<string[]>(row.facts_json, []),
-      commitments: safeJsonParse<string[]>(row.commitments_json, []),
-      preferredTone: row.preferred_tone ?? undefined,
-      notes: row.notes ?? undefined,
-      updatedAt: row.updated_at
+      chatId: textColumn(row, 'chat_id'),
+      name: textColumn(row, 'name'),
+      phone: optionalText(row, 'phone'),
+      stage: row.stage === null ? 'lead' : enumColumn(row, 'stage', 'lead', 'qualified', 'negotiation', 'customer', 'vip', 'archived'),
+      facts: stringArray(parseJson(optionalText(row, 'facts_json'))) ?? [],
+      commitments: stringArray(parseJson(optionalText(row, 'commitments_json'))) ?? [],
+      preferredTone: optionalText(row, 'preferred_tone'),
+      notes: optionalText(row, 'notes'),
+      updatedAt: numberColumn(row, 'updated_at')
     };
   }
 
   addFactToDossier(chatId: string, fact: string) {
-    const existing = this.getDossier(chatId) ?? {
+    const existing: ContactDossier = this.getDossier(chatId) ?? {
       chatId,
-      name: chatId.split('@')[0],
+      name: chatId.split('@')[0] ?? chatId,
       stage: 'lead',
       facts: [],
       commitments: [],
@@ -513,9 +617,9 @@ export class SqliteStore {
   }
 
   addCommitmentToDossier(chatId: string, commitment: string) {
-    const existing = this.getDossier(chatId) ?? {
+    const existing: ContactDossier = this.getDossier(chatId) ?? {
       chatId,
-      name: chatId.split('@')[0],
+      name: chatId.split('@')[0] ?? chatId,
       stage: 'lead',
       facts: [],
       commitments: [],
@@ -530,9 +634,9 @@ export class SqliteStore {
   }
 
   updateDossierExtracts(chatId: string, updates: { facts?: string[]; commitments?: string[]; stage?: ContactStage }) {
-    const existing = this.getDossier(chatId) ?? {
+    const existing: ContactDossier = this.getDossier(chatId) ?? {
       chatId,
-      name: chatId.split('@')[0],
+      name: chatId.split('@')[0] ?? chatId,
       stage: 'lead',
       facts: [],
       commitments: [],
@@ -601,42 +705,15 @@ export class SqliteStore {
   }
 
   getDraft(id: string): AgentDraft | undefined {
-    const row = this.db.query('SELECT * FROM drafts WHERE id = ? LIMIT 1;').get(id) as any;
-    if (!row) return undefined;
-    return {
-      id: row.id,
-      chatId: row.chat_id,
-      incomingMessageId: row.incoming_message_id,
-      incomingText: row.incoming_text,
-      proposedReply: row.proposed_reply,
-      reasoning: row.reasoning,
-      confidence: row.confidence,
-      status: row.status as AgentDraft['status'],
-      createdAt: row.created_at,
-      toolCall: row.tool_call ? safeJsonParse<AgentDraft['toolCall']>(row.tool_call, undefined) : undefined
-    };
+    const row = this.db.query('SELECT * FROM drafts WHERE id = ? LIMIT 1;').get(id);
+    return row === null ? undefined : decodeDraft(row);
   }
 
   getPendingDrafts(chatId?: string): AgentDraft[] {
-    let rows: any[];
-    if (chatId) {
-      rows = this.db.query('SELECT * FROM drafts WHERE status = "pending" AND chat_id = ? ORDER BY created_at DESC;').all(chatId) as any[];
-    } else {
-      rows = this.db.query('SELECT * FROM drafts WHERE status = "pending" ORDER BY created_at DESC;').all() as any[];
-    }
-
-    return rows.map((row) => ({
-      id: row.id,
-      chatId: row.chat_id,
-      incomingMessageId: row.incoming_message_id,
-      incomingText: row.incoming_text,
-      proposedReply: row.proposed_reply,
-      reasoning: row.reasoning,
-      confidence: row.confidence,
-      status: row.status as AgentDraft['status'],
-      createdAt: row.created_at,
-      toolCall: row.tool_call ? safeJsonParse<AgentDraft['toolCall']>(row.tool_call, undefined) : undefined
-    }));
+    const rows = chatId
+      ? this.db.query('SELECT * FROM drafts WHERE status = "pending" AND chat_id = ? ORDER BY created_at DESC;').all(chatId)
+      : this.db.query('SELECT * FROM drafts WHERE status = "pending" ORDER BY created_at DESC;').all();
+    return rows.map(decodeDraft);
   }
 
   updateDraftStatus(id: string, status: AgentDraft['status'], newReply?: string): AgentDraft | undefined {
@@ -661,15 +738,18 @@ export class SqliteStore {
   getContactMemories(brandId: string, jid: string): Array<{ id: string; brand_id: string; jid: string; content: string; created_at: number }> {
     const rows = this.db.query(
       'SELECT * FROM contact_memories WHERE brand_id = ? AND jid = ? ORDER BY created_at ASC;'
-    ).all(brandId, jid) as any[];
+    ).all(brandId, jid);
 
-    return rows.map((r) => ({
-      id: r.id,
-      brand_id: r.brand_id,
-      jid: r.jid,
-      content: r.content,
-      created_at: r.created_at
-    }));
+    return rows.map((value) => {
+      const row = sqliteRow(value);
+      return {
+        id: textColumn(row, 'id'),
+        brand_id: textColumn(row, 'brand_id'),
+        jid: textColumn(row, 'jid'),
+        content: textColumn(row, 'content'),
+        created_at: numberColumn(row, 'created_at')
+      };
+    });
   }
 
   deleteContactMemory(brandId: string, jid: string, memoryId: string): boolean {
@@ -693,8 +773,8 @@ export class SqliteStore {
   saveLearningState(brandId: string, stateType: 'workbook' | 'notebook', content: string): void {
     const id = `${brandId}:${stateType}`;
     const now = Date.now();
-    const existing = this.db.query('SELECT version FROM learning_states WHERE id = ? LIMIT 1').get(id) as any;
-    const version = existing ? Number(existing.version) + 1 : 1;
+    const existing = this.db.query('SELECT version FROM learning_states WHERE id = ? LIMIT 1').get(id);
+    const version = existing === null ? 1 : (optionalNumber(sqliteRow(existing), 'version') ?? 0) + 1;
 
     this.db.prepare(`
       INSERT INTO learning_states (id, brand_id, state_type, content, version, updated_at)
@@ -715,12 +795,13 @@ export class SqliteStore {
 
   getLearningState(brandId: string, stateType: 'workbook' | 'notebook'): { content: string; version: number; updatedAt: number } | undefined {
     const id = `${brandId}:${stateType}`;
-    const row = this.db.query('SELECT content, version, updated_at FROM learning_states WHERE id = ? LIMIT 1').get(id) as any;
-    if (!row) return undefined;
+    const result = this.db.query('SELECT content, version, updated_at FROM learning_states WHERE id = ? LIMIT 1').get(id);
+    if (result === null) return undefined;
+    const row = sqliteRow(result);
     return {
-      content: row.content,
-      version: row.version,
-      updatedAt: row.updated_at
+      content: textColumn(row, 'content'),
+      version: optionalNumber(row, 'version') ?? 1,
+      updatedAt: numberColumn(row, 'updated_at')
     };
   }
 
@@ -770,11 +851,11 @@ export class SqliteStore {
     summary: string | null;
     created_at: number;
   }> {
-    const boundedLimit = Math.max(1, Math.min(100, Math.floor(Number(limit) || 20)));
-    if (chatId) {
-      return this.db.query('SELECT * FROM learning_reflections WHERE chat_id = ? ORDER BY created_at DESC LIMIT ?;').all(chatId, boundedLimit) as any[];
-    }
-    return this.db.query('SELECT * FROM learning_reflections ORDER BY created_at DESC LIMIT ?;').all(boundedLimit) as any[];
+    const boundedLimit = Math.max(1, Math.min(100, Math.floor(limit || 20)));
+    const rows = chatId
+      ? this.db.query('SELECT * FROM learning_reflections WHERE chat_id = ? ORDER BY created_at DESC LIMIT ?;').all(chatId, boundedLimit)
+      : this.db.query('SELECT * FROM learning_reflections ORDER BY created_at DESC LIMIT ?;').all(boundedLimit);
+    return rows.map(decodeReflection);
   }
 
   getFoldRepository(): FoldRepository {
@@ -787,6 +868,10 @@ export class SqliteStore {
 
   getInboundJobLedger(): InboundJobLedger {
     return this.inboundJobLedger;
+  }
+
+  getBroadcastStore(): BroadcastStore {
+    return this.broadcastStore;
   }
 
   /** Read-side handle for the durable inbound work ledger. */
@@ -805,7 +890,7 @@ export class SqliteStore {
     options: { createJob: boolean },
     now = Date.now()
   ): { message?: ChatMessage; job?: InboundJob; created: boolean; isNew: boolean } {
-    return this.db.transaction(() => {
+    const persist = () => {
       // A replayed delivery must not re-run saveMessage (it would bump the
       // chat unread counter and broadcast state the original delivery set).
       const existing = this.getMessage(msg.chatId, msg.id);
@@ -815,7 +900,14 @@ export class SqliteStore {
       if (!options.createJob) return { message, created: false, isNew: !existing };
       const { job, created } = this.inboundJobLedger.createJobInTransaction(message, now);
       return { message, job, created, isNew: !existing };
-    }).immediate() as unknown as { message?: ChatMessage; job?: InboundJob; created: boolean; isNew: boolean };
+    };
+    // Older Bun type declarations omit the return value of immediate().
+    let result: ReturnType<typeof persist> | undefined;
+    this.db.transaction(() => {
+      result = persist();
+    }).immediate();
+    if (result === undefined) throw new Error('Inbound message transaction did not run');
+    return result;
   }
 
   closeForTesting(): void {
@@ -909,11 +1001,11 @@ export class SqliteStore {
     foldsCount: number;
     dbSizeBytes: number;
   } {
-    const chats = (this.db.query('SELECT COUNT(*) as c FROM chats LIMIT 1;').get() as { c?: number })?.c || 0;
-    const messages = (this.db.query('SELECT COUNT(*) as c FROM messages LIMIT 1;').get() as { c?: number })?.c || 0;
-    const drafts = (this.db.query('SELECT COUNT(*) as c FROM drafts LIMIT 1;').get() as { c?: number })?.c || 0;
-    const memories = (this.db.query('SELECT COUNT(*) as c FROM contact_memories LIMIT 1;').get() as { c?: number })?.c || 0;
-    const folds = (this.db.query('SELECT COUNT(*) as c FROM conversation_folds LIMIT 1;').get() as { c?: number })?.c || 0;
+    const chats = this.countRows('SELECT COUNT(*) AS c FROM chats;');
+    const messages = this.countRows('SELECT COUNT(*) AS c FROM messages;');
+    const drafts = this.countRows('SELECT COUNT(*) AS c FROM drafts;');
+    const memories = this.countRows('SELECT COUNT(*) AS c FROM contact_memories;');
+    const folds = this.countRows('SELECT COUNT(*) AS c FROM conversation_folds;');
 
     let dbSizeBytes = 0;
     try {
@@ -922,7 +1014,7 @@ export class SqliteStore {
         dbSizeBytes = stats.size;
       }
     } catch (err: unknown) {
-      if ((err as { code?: string })?.code !== 'ENOENT') {
+      if (!isRecord(err) || err.code !== 'ENOENT') {
         console.warn('[SqliteStore] Could not determine database file size:', err);
       }
     }
@@ -949,8 +1041,7 @@ export class SqliteStore {
     try {
       this.db.run('DELETE FROM doctor_write_probe;');
       this.db.run('INSERT INTO doctor_write_probe (probe) VALUES (?);', [String(Date.now())]);
-      const row = this.db.query('SELECT COUNT(*) AS n FROM doctor_write_probe;').get() as { n: number } | null;
-      return row?.n === 1;
+      return this.countRows('SELECT COUNT(*) AS c FROM doctor_write_probe;') === 1;
     } finally {
       this.db.run('DROP TABLE IF EXISTS doctor_write_probe;');
     }
@@ -962,7 +1053,7 @@ export class SqliteStore {
       this.db.run('PRAGMA wal_checkpoint(TRUNCATE);');
       this.db.run('VACUUM;');
     } catch (err: unknown) {
-      if ((err as { code?: string })?.code !== 'SQLITE_IOERR_VNODE') {
+      if (!isRecord(err) || err.code !== 'SQLITE_IOERR_VNODE') {
         console.warn('[SqliteStore] Error during checkpoint and vacuum:', err);
       }
     }

@@ -60,10 +60,12 @@ export class ContextFoldEngine {
 
   private candidates(chatId: string): ChatMessage[] {
     const pending = this.options.memoryStore.getUnfoldedMessages(chatId, this.keepRecentCount);
-    if (!pending.length) return [];
-    const window: ChatMessage[] = [pending[0]!];
+    const first = pending[0];
+    if (!first) return [];
+    const window: ChatMessage[] = [first];
     for (const item of pending.slice(1, 32)) {
-      if (item.timestamp - window.at(-1)!.timestamp > this.idleThresholdMs) break;
+      const tail = window.at(-1);
+      if (tail && item.timestamp - tail.timestamp > this.idleThresholdMs) break;
       window.push(item);
     }
     return window;
@@ -71,10 +73,11 @@ export class ContextFoldEngine {
 
   async shouldFold(chatId: string): Promise<boolean> {
     const all = this.candidates(chatId);
-    if (!all.length) return false;
+    const tail = all.at(-1);
+    if (!tail) return false;
     const pendingCount = this.options.memoryStore.getUnfoldedMessages(chatId, this.keepRecentCount).length;
     return pendingCount >= this.minRawCount - this.keepRecentCount ||
-      all.at(-1)!.timestamp + this.idleThresholdMs < this.now();
+      tail.timestamp + this.idleThresholdMs < this.now();
   }
 
   getContextBudgetStatus(chatId: string, modelName?: string): ContextBudgetStatus {
@@ -113,13 +116,16 @@ export class ContextFoldEngine {
       .filter(fact => fact && !fact.includes('[REDACTED_CREDENTIAL]') &&
         redacted.some(message => message.text.includes(fact) || message.transcription?.includes(fact)))
       .slice(0, 20);
+    const firstMessage = messages[0];
+    const lastMessage = messages.at(-1);
+    if (!firstMessage || !lastMessage) return null;
     const fold: ConversationFold = {
       id: randomUUID(),
       chatId, tier: 1,
       topic: result.topic,
       summary: scrubCredentials(result.summary),
-      startMessageId: messages[0]!.id,
-      endMessageId: messages.at(-1)!.id,
+      startMessageId: firstMessage.id,
+      endMessageId: lastMessage.id,
       directMessageIds: messages.map(message => message.id),
       sourceFoldIds: [],
       messageCount: messages.length,
@@ -128,7 +134,7 @@ export class ContextFoldEngine {
     };
     try {
       this.options.memoryStore.saveFold(fold);
-      return this.options.memoryStore.getFold(fold.id)!;
+      return this.options.memoryStore.getFold(fold.id) ?? fold;
     } catch (err: unknown) {
       if (err instanceof Error && err.message.includes('already coalesced')) {
         return null;
@@ -152,11 +158,14 @@ export class ContextFoldEngine {
     const byOrder = pending.map(item => ({
       fold: item,
       timestamp: this.options.memoryStore.getMessage(chatId, item.startMessageId)?.timestamp
-    })).filter(item => item.timestamp !== undefined)
-      .sort((a, b) => a.timestamp! - b.timestamp!);
+    })).filter((item): item is { fold: ConversationFold; timestamp: number } => item.timestamp !== undefined)
+      .toSorted((a, b) => a.timestamp - b.timestamp);
     const selected = byOrder.slice(0, this.tier2Threshold).map(item => item.fold);
     if (selected.length !== this.tier2Threshold) return null;
     const ids = selected.flatMap(item => item.directMessageIds);
+    const firstId = ids[0];
+    const lastId = ids.at(-1);
+    if (!firstId || !lastId) return null;
     // Both generated facts and summaries are treated as untrusted, non-authoritative context.
     const redactedFolds = selected.map(item => ({
       ...item,
@@ -169,7 +178,7 @@ export class ContextFoldEngine {
       id: randomUUID(), chatId, tier: 2,
       topic: result.topic,
       summary: scrubCredentials(result.summary),
-      startMessageId: ids[0]!, endMessageId: ids.at(-1)!,
+      startMessageId: firstId, endMessageId: lastId,
       directMessageIds: ids, sourceFoldIds: selected.map(item => item.id),
       messageCount: ids.length,
       // Tier-two model outputs may synthesize details: retain only validated tier-one facts.
@@ -178,7 +187,7 @@ export class ContextFoldEngine {
     };
     try {
       this.options.memoryStore.saveFold(fold);
-      return this.options.memoryStore.getFold(fold.id)!;
+      return this.options.memoryStore.getFold(fold.id) ?? fold;
     } catch (err: unknown) {
       if (err instanceof Error && err.message.includes('already coalesced')) {
         return null;
@@ -201,11 +210,14 @@ export class ContextFoldEngine {
     const byOrder = pending.map(item => ({
       fold: item,
       timestamp: this.options.memoryStore.getMessage(chatId, item.startMessageId)?.timestamp
-    })).filter(item => item.timestamp !== undefined)
-      .sort((a, b) => a.timestamp! - b.timestamp!);
+    })).filter((item): item is { fold: ConversationFold; timestamp: number } => item.timestamp !== undefined)
+      .toSorted((a, b) => a.timestamp - b.timestamp);
     const selected = byOrder.slice(0, this.tier3Threshold).map(item => item.fold);
     if (selected.length !== this.tier3Threshold) return null;
     const ids = selected.flatMap(item => item.directMessageIds);
+    const firstId = ids[0];
+    const lastId = ids.at(-1);
+    if (!firstId || !lastId) return null;
     const redactedFolds = selected.map(item => ({
       ...item,
       summary: scrubCredentials(item.summary),
@@ -217,7 +229,7 @@ export class ContextFoldEngine {
       id: randomUUID(), chatId, tier: 3,
       topic: result.topic,
       summary: scrubCredentials(result.summary),
-      startMessageId: ids[0]!, endMessageId: ids.at(-1)!,
+      startMessageId: firstId, endMessageId: lastId,
       directMessageIds: ids, sourceFoldIds: selected.map(item => item.id),
       messageCount: ids.length,
       factsExtracted: [...new Set(selected.flatMap(item => item.factsExtracted))].slice(0, 20),
@@ -225,7 +237,7 @@ export class ContextFoldEngine {
     };
     try {
       this.options.memoryStore.saveFold(fold);
-      return this.options.memoryStore.getFold(fold.id)!;
+      return this.options.memoryStore.getFold(fold.id) ?? fold;
     } catch (err: unknown) {
       if (err instanceof Error && err.message.includes('already coalesced')) {
         return null;
@@ -248,7 +260,9 @@ export class ContextFoldEngine {
 
   private drain(): void {
     while (this.activeJobs < this.maxConcurrentJobs && this.queue.length) {
-      const { chatId, resolve } = this.queue.shift()!;
+      const job = this.queue.shift();
+      if (!job) break;
+      const { chatId, resolve } = job;
       this.activeJobs++;
       void (async () => {
         try {

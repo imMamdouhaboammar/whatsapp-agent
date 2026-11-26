@@ -37,11 +37,11 @@ const SENSITIVE_CREDENTIAL_PATTERN =
   /(?:^|[^\p{L}\p{N}])(?:password|passwd|kata\s+sandi|كلمة\s+السر|الباسورد|باسورد|كلمة\s+المرور|otp|pin|cvv|api[_-]?key|secret|token|bearer|credit[_-]?card)(?:$|[^\p{L}\p{N}])/iu;
 
 export function containsSensitiveCredentials(text: string): boolean {
-  return SENSITIVE_CREDENTIAL_PATTERN.test(String(text || ""));
+  return SENSITIVE_CREDENTIAL_PATTERN.test((text || ""));
 }
 
 export function parseMemoryCommand(text: string): MemoryCommand | null {
-  const clean = String(text || "").trim();
+  const clean = (text || "").trim();
   if (!clean) return null;
 
   // 1. Clear / Forget everything commands
@@ -72,11 +72,11 @@ export function parseMemoryCommand(text: string): MemoryCommand | null {
 
   // 4. Save commands
   const saveEn = clean.match(/^(?:remember(?:\s+that)?|note(?:\s+that)?|save(?:\s+that)?|keep in mind(?:\s+that)?)\s+(.+)$/i);
-  if (saveEn) {
+  if (saveEn?.[1]) {
     return { action: "save", content: saveEn[1].trim() };
   }
   const saveAr = clean.match(/^(?:افتكر|سجل عندك|احفظ عندك|خليك فاكر|متنساش)\s+(?:انني|إنني|إني|اني|ان|إن|انو|أن)?\s*(.+)$/i);
-  if (saveAr) {
+  if (saveAr?.[1]) {
     return { action: "save", content: saveAr[1].trim() };
   }
 
@@ -139,6 +139,12 @@ export class UserMemoryManager {
         };
       }
       const targetMemory = memories[targetIdx];
+      if (!targetMemory) {
+        return {
+          status: "not_found",
+          message: `Memory #${cmd.index} does not exist.`,
+        };
+      }
       const deleted = this.store.deleteContactMemory(brandId, jid, targetMemory.id);
       return {
         status: deleted ? "deleted" : "not_found",

@@ -109,6 +109,24 @@ export interface ExternalToolTrace {
   durationMs?: number;
 }
 
+export interface TemporalEnvelopeTrace {
+  observedAt: string;
+  timezone: string;
+  localTime: string;
+  freshnessClass: 'STATIC' | 'VERSIONED' | 'VOLATILE' | 'LIVE';
+  evidenceRequired: boolean;
+  detectedDomains: string[];
+  isHighRisk: boolean;
+}
+
+export interface TemporalAuditTrace {
+  pass: boolean;
+  severity: 'pass' | 'warn' | 'block';
+  reasons: string[];
+  staleYearDetected: boolean;
+  spoofedEvidence: boolean;
+}
+
 export interface AgentDecision {
   action: AutonomyAction;
   intent: string;
@@ -124,6 +142,8 @@ export interface AgentDecision {
   modelRouting?: ModelRoutingTrace;
   worldPrediction?: WorldPredictionTrace;
   externalToolCalls?: ExternalToolTrace[];
+  temporalEnvelope?: TemporalEnvelopeTrace;
+  temporalAudit?: TemporalAuditTrace;
 }
 
 export interface PolicyRule {
@@ -143,7 +163,7 @@ export interface PolicyConfig {
 
 export interface ModeratorPersona {
   name: string;
-  language: 'ar-EG' | 'ar-SA' | 'en' | string;
+  language: string;
   tone: string;
   systemPrompt: string;
   rules: string[];

@@ -18,12 +18,10 @@ export interface MemoryStoreOptions {
 
 export class MemoryStore {
   private dataDir: string;
-  private maxHistoryPerChat: number;
   private sqlite: SqliteStore;
 
   constructor(options: MemoryStoreOptions = {}) {
     this.dataDir = options.dataDir ?? './data';
-    this.maxHistoryPerChat = options.maxHistoryPerChat ?? 50;
 
     const dbPath = options.dbPath ?? (
       this.dataDir === ':memory:'
@@ -230,6 +228,10 @@ export class MemoryStore {
 
   getInboundJobLedger() {
     return this.sqlite.getInboundJobLedger();
+  }
+
+  getBroadcastStore() {
+    return this.sqlite.getBroadcastStore();
   }
 
   saveInboundMessageWithJob(msg: ChatMessage, options: { createJob: boolean }) {

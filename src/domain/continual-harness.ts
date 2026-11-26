@@ -1,4 +1,4 @@
-import { scrubCredentials } from './learning-memory';
+import { scrubCredentials } from './credential-scrubber';
 
 export type HarnessScope = 'local' | 'global';
 export type HarnessEntryKind = 'rule' | 'best_practice' | 'tactic' | 'memory';
@@ -171,10 +171,14 @@ export class ContinualHarnessStore {
    * refinements can be rolled back atomically.
    */
   takeSnapshot(generationId: string): HarnessSnapshot {
+    const entries: ContinualHarnessEntry[] = [];
+    for (const e of this.entries.values()) {
+      entries.push({ ...e, tags: [...e.tags] });
+    }
     const snapshot: HarnessSnapshot = {
       generationId,
       createdAt: Date.now(),
-      entries: Array.from(this.entries.values()).map((e) => ({ ...e, tags: [...e.tags] }))
+      entries
     };
     this.snapshots.push(snapshot);
     if (this.snapshots.length > ContinualHarnessStore.MAX_SNAPSHOTS) {
@@ -187,6 +191,7 @@ export class ContinualHarnessStore {
     const idx = this.snapshots.findIndex((s) => s.generationId === generationId);
     if (idx === -1) return false;
     const snap = this.snapshots[idx];
+    if (!snap) return false;
     this.entries.clear();
     for (const entry of snap.entries) {
       this.entries.set(entry.id, { ...entry, tags: [...entry.tags] });
@@ -204,10 +209,10 @@ export class ContinualHarnessStore {
 
     const now = Date.now();
     if (edit.action === 'delete') {
-      if (!edit.id || !this.entries.has(edit.id)) {
+      const existing = edit.id ? this.entries.get(edit.id) : undefined;
+      if (!edit.id || !existing) {
         return { applied: false, reason: 'Target entry not found for delete' };
       }
-      const existing = this.entries.get(edit.id)!;
       if (existing.scope !== edit.scope || (edit.scope === 'local' && existing.chatId !== edit.chatId)) {
         return { applied: false, reason: 'Scope/chatId mismatch on delete' };
       }
@@ -223,10 +228,10 @@ export class ContinualHarnessStore {
     }
 
     if (edit.action === 'update') {
-      if (!edit.id || !this.entries.has(edit.id)) {
+      const existing = edit.id ? this.entries.get(edit.id) : undefined;
+      if (!edit.id || !existing) {
         return { applied: false, reason: 'Target entry not found for update' };
       }
-      const existing = this.entries.get(edit.id)!;
       if (existing.scope !== edit.scope || (edit.scope === 'local' && existing.chatId !== edit.chatId)) {
         return { applied: false, reason: 'Scope/chatId mismatch on update' };
       }

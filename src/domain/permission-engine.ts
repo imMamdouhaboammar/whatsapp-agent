@@ -39,7 +39,7 @@ export function evaluatePermission(
   decision: Pick<AgentDecision, 'intent' | 'confidence'> & { requestedAction?: AutonomyAction }
 ): PermissionEvaluationResult {
   const minConfidence = policy.minConfidence ?? 0.75;
-  const confidence = Number(decision.confidence ?? 0);
+  const confidence = decision.confidence ?? 0;
 
   if (confidence < minConfidence) {
     return {
@@ -58,7 +58,7 @@ export function evaluatePermission(
     const defaultAction = policy.defaultAction ?? 'human';
     return {
       action: defaultAction,
-      allowed: defaultAction !== 'deny' as any,
+      allowed: (defaultAction as string) !== 'deny',
       reason: 'no_matching_rule',
       matchedRuleId: null,
       downgraded: false

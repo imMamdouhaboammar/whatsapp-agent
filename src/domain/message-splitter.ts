@@ -9,16 +9,12 @@ export interface MessageSplitterOptions {
 
 export class MessageSplitter {
   private minLengthToSplit: number;
-  private maxBubbleLength: number;
-  private minBubbleLength: number;
   private charsPerSecond: number;
   private minBubbleDelayMs: number;
   private maxBubbleDelayMs: number;
 
   constructor(options: MessageSplitterOptions = {}) {
     this.minLengthToSplit = options.minLengthToSplit ?? 75;
-    this.maxBubbleLength = options.maxBubbleLength ?? 260;
-    this.minBubbleLength = options.minBubbleLength ?? 20;
     this.charsPerSecond = options.charsPerSecond ?? 28;
     this.minBubbleDelayMs = options.minBubbleDelayMs ?? 1000;
     this.maxBubbleDelayMs = options.maxBubbleDelayMs ?? 4000;

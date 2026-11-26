@@ -80,7 +80,7 @@ export class HumanRateLimiter {
     const previous = this.sendQueues.get(chatId) ?? Promise.resolve();
 
     let result!: T;
-    let actionError: any = null;
+    let actionError: unknown = null;
 
     const next = previous
       .catch((err) => {
@@ -106,6 +106,7 @@ export class HumanRateLimiter {
         } catch (err) {
           actionError = err;
         }
+        return undefined;
       })
       .finally(() => {
         if (this.sendQueues.get(chatId) === next) {

@@ -62,24 +62,34 @@ function convertMarkdownTables(text: string): string {
 
   while (i < lines.length) {
     const line = lines[i];
+    if (line === undefined) {
+      i++;
+      continue;
+    }
 
     // Detect if this line looks like a table row: starts and ends with | or contains multiple |
     if (line.trim().startsWith("|") && line.trim().endsWith("|")) {
       const tableLines: string[] = [];
-      while (i < lines.length && lines[i].trim().startsWith("|") && lines[i].trim().endsWith("|")) {
-        tableLines.push(lines[i].trim());
+      while (i < lines.length) {
+        const currentLine = lines[i];
+        if (currentLine === undefined) break;
+        const trimmedLine = currentLine.trim();
+        if (!trimmedLine.startsWith("|") || !trimmedLine.endsWith("|")) break;
+        tableLines.push(trimmedLine);
         i++;
       }
 
       // Check if table has a header and separator
       if (tableLines.length >= 2) {
-        const headerRow = parseCells(tableLines[0]);
-        const separatorCells = parseCells(tableLines[1]);
+        const headerRow = parseCells(tableLines[0] ?? "");
+        const separatorCells = parseCells(tableLines[1] ?? "");
         const isSeparator = separatorCells.length > 0 && separatorCells.every((c) => /^:?-+:?$/.test(c.trim()));
         const startRow = isSeparator ? 2 : 1;
 
         for (let r = startRow; r < tableLines.length; r++) {
-          const cells = parseCells(tableLines[r]);
+          const rowLine = tableLines[r];
+          if (rowLine === undefined) continue;
+          const cells = parseCells(rowLine);
           if (cells.some((c) => c.length > 0)) {
             const rowParts: string[] = [];
             for (let c = 0; c < cells.length; c++) {

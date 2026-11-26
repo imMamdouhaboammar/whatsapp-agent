@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createPgClient, migratePostgres, type PgClient, type PgTransaction } from './migrate';
+import { isSqlRow, readPgInteger, readSqlRow } from './sql-values';
 
 interface TableSpec {
   databaseFile: string;
@@ -59,7 +60,11 @@ export interface ImportManifest {
 export interface ImportResult { applied: boolean; fingerprint: string; manifest: ImportManifest }
 
 function requireBrand(brand: string): void {
-  if (!brand || brand.length > 128 || /[\x00-\x1f\x7f]/.test(brand) || brand.trim() !== brand) {
+  const hasControlChar = Array.from(brand).some((ch) => {
+    const code = ch.charCodeAt(0);
+    return code <= 0x1f || code === 0x7f;
+  });
+  if (!brand || brand.length > 128 || hasControlChar || brand.trim() !== brand) {
     throw new Error('Explicit valid --legacy-brand is required for legacy conversations');
   }
 }
@@ -124,14 +129,14 @@ function hashRow(hash: ReturnType<typeof createHash>, values: unknown[]): void {
 function sourceValues(spec: TableSpec, row: Record<string, unknown>, brand: string): unknown[] {
   return columnNames(spec).map(col => col === 'brand_id' && spec.addLegacyBrand ? brand : numericSafe(row[col]));
 }
-function getSourceRows(db: Database, spec: TableSpec): Iterable<Record<string, unknown>> {
+function* getSourceRows(db: Database, spec: TableSpec): Iterable<Record<string, unknown>> {
   if (!ALLOWED_TABLES.has(spec.table)) {
     throw new Error(`Table not allowed: ${spec.table}`);
   }
   const columns = spec.columns.map(quoted).join(', ');
   const keys = spec.primaryKey.map(quoted).join(', ');
   const selectQuery = `SELECT ${columns} FROM ${quoted(spec.table)} ORDER BY ${keys}`;
-  return db.query(selectQuery).iterate() as Iterable<Record<string, unknown>>;
+  for (const row of db.query(selectQuery).iterate()) yield readSqlRow(row);
 }
 function sourceTableDigest(db: Database, spec: TableSpec, brand: string): { count: number; sha256: string } {
   const hash = createHash('sha256');
@@ -148,8 +153,8 @@ function openReadonly(dataDir: string, filename: string): Database {
     throw new Error(`SQLite source disappeared: ${filename}`);
   }
   const db = new Database(sourcePath, { readonly: true });
-  const check = db.query('PRAGMA quick_check').get() as Record<string, unknown> | null;
-  if (!check || Object.values(check)[0] !== 'ok') {
+  const check = db.query('PRAGMA quick_check').get();
+  if (!isSqlRow(check) || Object.values(check)[0] !== 'ok') {
     db.close();
     throw new Error(`SQLite integrity check failed: ${filename}`);
   }
@@ -161,9 +166,12 @@ function openReadonly(dataDir: string, filename: string): Database {
   return db;
 }
 function assertSourceTables(db: Database, filename: string): void {
-  const found = new Set(
-    (db.query("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{name: string}>).map(r => r.name)
-  );
+  const names = db.query("SELECT name FROM sqlite_master WHERE type='table'").all();
+  const found = new Set(names.map(value => {
+    const { name } = readSqlRow(value);
+    if (typeof name !== 'string') throw new Error(`Invalid SQLite table name in ${filename}`);
+    return name;
+  }));
   const known = new Set(SQLITE_TABLES.filter(t => t.databaseFile === filename).map(t => t.table));
   for (const expected of known) {
     if (!found.has(expected)) throw new Error(`Missing expected SQLite table ${filename} / ${expected}`);
@@ -177,7 +185,7 @@ function assertSourceTables(db: Database, filename: string): void {
       (name === 'knowledge_fts' || name.startsWith('knowledge_fts_')))
   );
   if (unknown.length) {
-    throw new Error(`Unaccounted SQLite tables in ${filename}: ${unknown.sort().join(', ')}; extend the PostgreSQL schema and importer before migration`);
+    throw new Error(`Unaccounted SQLite tables in ${filename}: ${unknown.toSorted().join(', ')}; extend the PostgreSQL schema and importer before migration`);
   }
 }
 const SOURCE_ALIASES: Record<string, string> = {
@@ -191,7 +199,8 @@ function resolveSource(dataDir: string, file: string): ImportManifest['sources']
   if (canonicalExists && aliasExists) {
     throw new Error(`Ambiguous SQLite sources: both ${file} and ${alias} exist; inspect and consolidate them before migration`);
   }
-  return {file, actualFile: aliasExists ? alias : file, exists: canonicalExists || aliasExists};
+  const actualFile = alias && aliasExists ? alias : file;
+  return {file, actualFile, exists: canonicalExists || aliasExists};
 }
 export function inspectSqliteSources({ dataDir, legacyBrand }: {dataDir: string; legacyBrand: string}): ImportManifest {
   requireBrand(legacyBrand);
@@ -202,7 +211,7 @@ export function inspectSqliteSources({ dataDir, legacyBrand }: {dataDir: string;
     /\.(?:db|sqlite)$/i.test(filename) && !knownFilenames.has(filename)
   );
   if (unknownFiles.length) {
-    throw new Error(`Unaccounted SQLite source files: ${unknownFiles.sort().join(', ')}; extend the importer before migration`);
+    throw new Error(`Unaccounted SQLite source files: ${unknownFiles.toSorted().join(', ')}; extend the importer before migration`);
   }
   const sources = files.map(file => resolveSource(directory, file));
   if (!sources.some(source => source.exists)) throw new Error('No existing SQLite source databases found');
@@ -266,7 +275,9 @@ async function targetDigest(tx: PgTransaction, spec: TableSpec): Promise<{count:
       count++;
     }
     if (rows.length < PAGE) break;
-    cursor = keys.map(key => rows[rows.length - 1][key]);
+    const lastRow = rows[rows.length - 1];
+    if (!lastRow) break;
+    cursor = keys.map(key => lastRow[key]);
   }
   return { count, sha256: hash.digest('hex') };
 }
@@ -319,7 +330,7 @@ export async function importSqliteToPostgres(options: {
       if (previous.length) throw new Error('Target already contains a data import; refusing to overwrite');
       for (const spec of SQLITE_TABLES) {
         const rows = await tx.unsafe(`SELECT COUNT(*) AS count FROM wa_agent.${quoted(spec.table)}`);
-        if (Number(rows[0]?.count ?? 0) !== 0) {
+        if (readPgInteger(rows[0]?.count, 'count') !== 0) {
           throw new Error(`Target table ${spec.table} is not empty; refusing to overwrite`);
         }
       }
@@ -336,7 +347,8 @@ export async function importSqliteToPostgres(options: {
         throw new Error('SQLite sources changed during import; stop all writers and retry');
       }
       for (const expected of manifest.tables) {
-        const spec = SQLITE_TABLES.find(t => t.table === expected.table)!;
+        const spec = SQLITE_TABLES.find(t => t.table === expected.table);
+        if (!spec) throw new Error(`Unknown SQLite table spec: ${expected.table}`);
         const actual = await targetDigest(tx, spec);
         if (actual.count !== expected.count || actual.sha256 !== expected.sha256) {
           throw new Error(`PostgreSQL verification mismatch for ${expected.table}`);
