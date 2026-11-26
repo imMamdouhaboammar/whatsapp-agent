@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.0](https://github.com/imMamdouhaboammar/whatsapp-agent/compare/v1.3.0...v1.4.0) (2026-11-26)
+
+
+### Features
+
+* **funnel:** enhance scatter-gather circuit breaker and interactive funnel page ([a848d4e](https://github.com/imMamdouhaboammar/whatsapp-agent/commit/a848d4ec1acb35c9a88104a5f9566818cfe819d1))
+* **funnel:** enhance scatter-gather circuit breaker and interactive funnel page ([9e193b6](https://github.com/imMamdouhaboammar/whatsapp-agent/commit/9e193b6044442a1b7c7ce0f1ac03383f94a6d8bc))
+* **ui:** refine cockpit modal shells, sticker delivery, and progressive web app manifest ([311c151](https://github.com/imMamdouhaboammar/whatsapp-agent/commit/311c1516cb0502eb9b35201f59b89914c4e25cbd))
+* **ui:** refine cockpit modal shells, sticker delivery, and progressive web app manifest ([1939704](https://github.com/imMamdouhaboammar/whatsapp-agent/commit/193970451bcb381c6dd9b61fd9a58d32716f0a14))
+
 ## [1.3.0](https://github.com/imMamdouhaboammar/whatsapp-agent/compare/v1.2.0...v1.3.0) (2026-11-26)
 
 
