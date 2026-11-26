@@ -20,3 +20,8 @@ describe('default funnel engine', () => {
     expect(a.registry).not.toBe(b.registry);
   });
 });
+
+it('does not dispatch to the nonexistent built-in inventory endpoint before configuration', () => {
+  const engine = createDefaultFunnelEngine({ port: 4123 });
+  expect(engine.registry.getActiveTargets('INVENTORY_DISPATCH')).toEqual([]);
+});

@@ -1,0 +1,112 @@
+.wa-funnel-page {
+  flex: 1; min-height: 0; min-width: 0; overflow-y: auto; overscroll-behavior: contain;
+  background: var(--wa-shell); color: var(--wa-ink); font-size: 14px; line-height: 1.55;
+}
+.wa-funnel-inner { width: min(100%, 1240px); margin-inline: auto; padding: 28px 30px 40px; display: flex; flex-direction: column; gap: 20px; }
+.wa-funnel-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
+.wa-funnel-header > div { min-width: 0; }
+.wa-funnel-header h1 { font-size: 26px; font-weight: 750; line-height: 1.35; margin: 8px 0 5px; }
+.wa-funnel-header p, .wa-funnel-section-heading p { margin: 0; color: var(--wa-muted); font-size: 13px; }
+.wa-funnel-back { display: inline-flex; align-items: center; gap: 7px; padding: 6px 0; border: 0; background: transparent; color: var(--wa-green-dark); font-weight: 650; font-size: 13px; }
+.wa-funnel-button { display: inline-flex; justify-content: center; align-items: center; gap: 7px; padding: 9px 14px; min-height: 42px; border: 1px solid #aebeb8; background: var(--wa-surface); color: var(--wa-ink); border-radius: 8px; font-size: 13px; font-weight: 650; line-height: 1.4; }
+.wa-funnel-button svg { flex-shrink: 0; }
+.wa-funnel-button:hover:not(:disabled) { background: var(--wa-green-soft); }
+.wa-funnel-button.is-primary { color: #fff; background: var(--wa-green-dark); border-color: var(--wa-green-dark); }
+.wa-funnel-button.is-primary:hover:not(:disabled) { background: #005344; }
+.wa-funnel-button.is-danger { color: #922b2b; border-color: #ca9292; }
+.wa-funnel-button.is-danger:hover:not(:disabled) { background: #fff1f0; }
+.wa-funnel-overview { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); background: var(--wa-surface); border: 1px solid var(--wa-line); border-radius: 10px; }
+.wa-funnel-overview > span { display: flex; align-items: center; gap: 12px; padding: 15px 20px; font-size: 13px; color: var(--wa-muted); }
+.wa-funnel-overview > span + span { border-inline-start: 1px solid var(--wa-line); }
+.wa-funnel-overview strong { font-size: 23px; color: var(--wa-ink); font-weight: 700; font-variant-numeric: tabular-nums; }
+.wa-funnel-panel { min-width: 0; background: var(--wa-surface); border: 1px solid var(--wa-line); border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+.wa-funnel-section-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
+.wa-funnel-section-heading h2 { margin: 0 0 3px; font-size: 17px; line-height: 1.4; font-weight: 700; }
+.wa-funnel-note { margin: 0; font-size: 12px; color: var(--wa-muted); line-height: 1.65; }
+.wa-funnel-method-list { display: flex; flex-direction: column; gap: 7px; }
+.wa-funnel-method { width: 100%; display: grid; grid-template-columns: minmax(0,2.2fr) minmax(0,1fr) minmax(0,.7fr) minmax(0,.55fr); align-items: center; gap: 16px; text-align: start; padding: 13px 14px; border: 1px solid var(--wa-line); border-radius: 8px; background: var(--wa-surface); color: var(--wa-ink); font-size: 13px; }
+.wa-funnel-method[aria-pressed=true] { border-color: var(--wa-green-dark); background: #eef7f2; }
+.wa-funnel-method:hover:not(:disabled) { border-color: var(--wa-green-dark); }
+.wa-funnel-method-name, .wa-funnel-method-count { min-width: 0; display: flex; flex-direction: column; gap: 3px; overflow-wrap: anywhere; }
+.wa-funnel-method small { color: var(--wa-muted); font-size: 12px; }
+.wa-funnel-method-name code, .wa-funnel-selected { font-weight: 650; color: var(--wa-green-dark); }
+.wa-funnel-page code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
+.wa-funnel-workspace { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1.1fr); gap: 20px; align-items: stretch; }
+.wa-funnel-form { display: flex; flex-direction: column; gap: 11px; min-width: 0; }
+.wa-funnel-field { min-width: 0; display: flex; flex-direction: column; gap: 7px; font-weight: 650; font-size: 13px; }
+.wa-funnel-field input, .wa-funnel-field textarea { min-width: 0; width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid #aebeb8; border-radius: 8px; color: var(--wa-ink); background: var(--wa-surface); font-size: 14px; font-weight: 400; }
+.wa-funnel-field textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px; background: #f8faf9; line-height: 1.55; tab-size: 2; }
+.wa-funnel-field input::placeholder, .wa-funnel-field textarea::placeholder { color: var(--wa-muted); }
+.wa-funnel-targets { display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid var(--wa-line); background: #fafcfb; border-radius: 8px; font-size: 12px; }
+.wa-funnel-targets > div { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.wa-funnel-query, .wa-funnel-raw { border-top: 1px solid var(--wa-line); padding-top: 10px; }
+.wa-funnel-query summary, .wa-funnel-raw summary { cursor: pointer; font-size: 13px; font-weight: 650; color: var(--wa-green-dark); padding-block: 4px; }
+.wa-funnel-query .wa-funnel-field { margin-top: 8px; }
+.wa-funnel-request-footer { display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--wa-line); padding-top: 12px; }
+.wa-funnel-request-footer .wa-funnel-button { align-self: flex-end; }
+.wa-funnel-empty { flex: 1; min-height: 220px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; padding: 24px; background: #f8faf9; border: 1px dashed #c4d0cb; border-radius: 8px; color: var(--wa-muted); }
+.wa-funnel-empty strong { color: var(--wa-ink); font-size: 15px; font-weight: 650; }
+.wa-funnel-empty p { margin: 0; font-size: 13px; max-width: 35ch; }
+.wa-funnel-receipt-body { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.wa-funnel-metrics { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); margin: 0; background: #f8faf9; border: 1px solid var(--wa-line); border-radius: 8px; }
+.wa-funnel-metrics > div { padding: 12px; min-width: 0; }
+.wa-funnel-metrics > div + div { border-inline-start: 1px solid var(--wa-line); }
+.wa-funnel-metrics dt { font-size: 12px; color: var(--wa-muted); overflow-wrap: anywhere; }
+.wa-funnel-metrics dd { margin: 3px 0 0; font-size: 21px; font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.wa-funnel-metrics dd small { font-size: 12px; color: var(--wa-muted); }
+.wa-funnel-trace { display: grid; grid-template-columns: auto minmax(0,1fr); gap: 6px 12px; font-size: 12px; }
+.wa-funnel-result { border: 1px solid var(--wa-line); border-radius: 8px; padding: 12px; min-width: 0; }
+.wa-funnel-result summary { display: flex; align-items: center; justify-content: space-between; gap: 9px; cursor: pointer; }
+.wa-funnel-result summary > span:first-child { min-width: 0; overflow-wrap: anywhere; display: flex; flex-direction: column; }
+.wa-funnel-result summary strong { font-size: 13px; }
+.wa-funnel-result summary small { color: var(--wa-green-dark); font-size: 12px; }
+.wa-funnel-result-meta { display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
+.wa-funnel-page pre { max-width: 100%; max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 10px 0 0; padding: 12px; background: #f3f6f5; border-radius: 6px; font-size: 12px; line-height: 1.6; text-align: start; }
+.wa-funnel-state { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 650; line-height: 1.45; }
+.wa-funnel-state.is-good { color: var(--wa-green-dark); }
+.wa-funnel-state.is-bad { color: #a52c2c; }
+.wa-funnel-state.is-warn { color: #865100; }
+.wa-funnel-error, .wa-funnel-notice { margin: 0; padding: 11px 13px; border-radius: 8px; font-size: 13px; overflow-wrap: anywhere; }
+.wa-funnel-error { color: #922b2b; background: #fff1f0; border: 1px solid #ebc9c6; }
+.wa-funnel-notice { color: var(--wa-green-dark); background: var(--wa-green-soft); }
+.wa-funnel-table-wrap { min-width: 0; overflow-x: auto; }
+.wa-funnel-table { width: 100%; border-collapse: collapse; text-align: start; font-size: 13px; min-width: 580px; }
+.wa-funnel-table th, .wa-funnel-table td { text-align: start; padding: 11px 10px; vertical-align: middle; border-bottom: 1px solid var(--wa-line); font-variant-numeric: tabular-nums; }
+.wa-funnel-table thead th { font-size: 12px; color: var(--wa-muted); font-weight: 650; background: #f8faf9; }
+.wa-funnel-table tbody th { font-weight: 600; max-width: 210px; overflow-wrap: anywhere; }
+.wa-funnel-table td small { display: block; }
+.wa-funnel-confirm { display: flex; flex-wrap: wrap; gap: 7px; max-width: 240px; align-items: center; }
+.wa-funnel-confirm span { flex-basis: 100%; font-size: 12px; }
+@media (max-width: 850px) {
+  .wa-funnel-inner { padding: 20px 16px 30px; }
+  .wa-funnel-workspace { grid-template-columns: minmax(0,1fr); }
+  .wa-funnel-method { grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 8px 14px; }
+}
+@media (max-width: 480px) {
+  .wa-funnel-inner { padding: 15px 12px 24px; gap: 14px; }
+  .wa-funnel-header { flex-wrap: wrap; align-items: flex-start; }
+  .wa-funnel-header h1 { font-size: 21px; }
+  .wa-funnel-overview > span { flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px; font-size: 12px; }
+  .wa-funnel-overview strong { font-size: 20px; }
+  .wa-funnel-panel { padding: 14px; }
+  .wa-funnel-method { padding: 11px; grid-template-columns: minmax(0,1fr) auto auto; gap: 8px; }
+  .wa-funnel-method-name { grid-column: 1 / -1; }
+  .wa-funnel-method-count { grid-column: 2; text-align: center; }
+  .wa-funnel-method > code { grid-column: 3; }
+  .wa-funnel-request-footer .wa-funnel-button { width: 100%; }
+  .wa-funnel-metrics > div { padding: 9px; }
+  .wa-funnel-metrics dd { font-size: 18px; }
+  .wa-funnel-result summary { flex-wrap: wrap; }
+}
+.wa-funnel-mobile-label { display: none; }
+@media (max-width: 600px) {
+  .wa-funnel-table-wrap { overflow: visible; }
+  .wa-funnel-table { min-width: 0; display: block; }
+  .wa-funnel-table thead { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .wa-funnel-table tbody { display: flex; flex-direction: column; }
+  .wa-funnel-table tr { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); padding-block: 12px; gap: 9px 12px; border-bottom: 1px solid var(--wa-line); }
+  .wa-funnel-table tbody th, .wa-funnel-table td { padding: 0; border: 0; max-width: none; min-width: 0; overflow-wrap: anywhere; }
+  .wa-funnel-table tbody th, .wa-funnel-table td:nth-child(2), .wa-funnel-table-action { grid-column: 1 / -1; }
+  .wa-funnel-mobile-label { display: block; font-size: 12px; color: var(--wa-muted); }
+  .wa-funnel-table-action:empty { display: none; }
+}

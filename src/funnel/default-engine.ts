@@ -12,11 +12,11 @@ export function createDefaultFunnelEngine(options: { port?: number } = {}): Fabl
       initialMethods: [
         {
           method: 'INVENTORY_DISPATCH',
-          description: 'Scatter-gather stock lookup across warehouse systems',
+          description: 'Stock lookup across configured warehouse systems',
           mode: 'ALL_SETTLED',
           timeoutMs: 2500,
           targets: [
-            { id: 'internal-stock', name: 'Internal DB Inventory', url: `http://127.0.0.1:${port}/api/brand/stock`, enabled: true }
+            { id: 'internal-stock', name: 'Internal DB Inventory', url: `http://127.0.0.1:${port}/api/brand/stock`, enabled: false }
           ]
         },
         {
