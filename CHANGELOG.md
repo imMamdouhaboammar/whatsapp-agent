@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.5.0](https://github.com/imMamdouhaboammar/whatsapp-agent/compare/v1.4.0...v1.5.0) (2026-11-27)
+
+
+### Features
+
+* **agent:** add brand source retirement and atomic multi-query workspace loader ([d2f2417](https://github.com/imMamdouhaboammar/whatsapp-agent/commit/d2f241730ffff91f6eb39f22d83eb33dd458144f))
+* **agent:** add brand source retirement and atomic multi-query workspace loader ([59a12ac](https://github.com/imMamdouhaboammar/whatsapp-agent/commit/59a12ac5a52e5b5aecd4a14e1af00dfae6771a1c))
+* **agent:** enhance broadcast studio orchestration with multi-step campaign builder ([464d932](https://github.com/imMamdouhaboammar/whatsapp-agent/commit/464d932ba23f93879e486192512db4acb45e1edc))
+* **agent:** enhance broadcast studio orchestration with multi-step campaign builder ([55938f7](https://github.com/imMamdouhaboammar/whatsapp-agent/commit/55938f70d17d52e87e17e2d1940d825825dc43b3))
+* **domain:** add persistent assistant settings store and accessible bilingual persona editor ([a067900](https://github.com/imMamdouhaboammar/whatsapp-agent/commit/a067900353f09b777f00115f3b94a3b990bc7860))
+* **domain:** add persistent assistant settings store and accessible bilingual persona editor ([defb183](https://github.com/imMamdouhaboammar/whatsapp-agent/commit/defb18312577611cc53436d202eaf7dd814ab08d))
+
+
+### Bug Fixes
+
+* **agent:** address sourcery feedback on atomic ingest and locator preservation ([9f4a66a](https://github.com/imMamdouhaboammar/whatsapp-agent/commit/9f4a66a2068ae776c6ed9cf6e3ef14daf8de1a2f))
+
 ## [1.4.0](https://github.com/imMamdouhaboammar/whatsapp-agent/compare/v1.3.0...v1.4.0) (2026-11-26)
 
 
