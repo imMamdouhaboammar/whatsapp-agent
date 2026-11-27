@@ -188,6 +188,7 @@ function decodeReflection(value: unknown) {
 export interface SqliteStoreOptions {
   dbPath?: string;
   legacyDataDir?: string;
+  brandId?: string;
 }
 
 export class SqliteStore {
@@ -213,7 +214,7 @@ export class SqliteStore {
     this.sendLedger = new SendLedger(this.db);
     this.inboundJobLedger = new InboundJobLedger(this.db);
     this.foldRepository = new FoldRepository(this.db);
-    this.broadcastStore = new BroadcastStore(this.db);
+    this.broadcastStore = new BroadcastStore(this.db, options.brandId);
 
     if (options.legacyDataDir) {
       this.importLegacyJson(options.legacyDataDir);

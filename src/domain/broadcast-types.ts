@@ -41,6 +41,9 @@ export interface BroadcastRichContent {
   kind: BroadcastRichKind;
   /** Prompt or base template message used by the AI agent to personalize per contact. */
   messageGoal: string;
+  compositionMode?: "conversation" | "template";
+  brief?: { cta: string; tone: string; constraints: string; useBrandKnowledge: boolean };
+  personalization?: { nameSource: string; historyCount: number; brandSources: number; nameConfidence?: number; lastSnippet?: string };
   /** Optional media URL (used by Meta Cloud or fetched for Baileys if buffer not supplied). */
   mediaUrl?: string;
   /** Optional base64-encoded media payload (used for Baileys uploads from Dashboard/API). */
@@ -60,8 +63,10 @@ export interface BroadcastAudienceFilter {
   query?: string;
   /** Dossier stages to include (e.g. ['lead', 'qualified', 'customer']). */
   stages?: string[];
+  chatMode?: "autopilot" | "copilot" | "human";
   /** Minimum number of prior messages required to qualify as a previous connection. */
   minMessages?: number;
+  skipActiveHours?: number;
   /** Only include contacts active within the last N days. */
   activeWithinDays?: number;
   /** Only include contacts inactive for at least N days (re-engagement). */
@@ -88,6 +93,7 @@ export interface BroadcastFollowUpConfig {
 
 export interface BroadcastPacingConfig {
   minDelayMs: number;
+  maxWindowMinutes?: number;
   maxDelayMs: number;
   quietHours?: {
     from: number;
@@ -95,6 +101,8 @@ export interface BroadcastPacingConfig {
     timeZone: string;
   };
 }
+
+export interface BroadcastHistoryEntry { role: "customer" | "business"; text: string }
 
 export interface EligibleContact {
   chatId: string;
@@ -106,6 +114,9 @@ export interface EligibleContact {
   notes?: string;
   memories: string[];
   messageCount: number;
+  nameSource?: "inferred_from_chat" | "contact" | "unknown";
+  lastSnippet?: string;
+  nameConfidence?: number;
   lastMessageAtMs?: number;
   lastInboundAtMs?: number;
 }

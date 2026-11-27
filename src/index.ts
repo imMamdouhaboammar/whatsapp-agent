@@ -87,7 +87,7 @@ export async function createFableWhatsAppAgent(options: {
   console.log('🚀 [Fable Agentic WhatsApp] Initializing supervisor & agent engine...');
 
   const sse = new SSEBroadcaster();
-  const memoryStore = new MemoryStore({ dataDir });
+  const memoryStore = new MemoryStore({ dataDir, brandId });
   const diagnostics = new DiagnosticsCore();
   const geminiClient = new GeminiClient();
   const capabilities = createCapabilities(dataDir, options.capabilityModel ?? geminiClient);
@@ -635,6 +635,10 @@ export async function createFableWhatsAppAgent(options: {
     composer: new BroadcastComposer({
       gemini: geminiClient,
       brandName: moderatorAgent.getPersona().name,
+      brandContext: async (goal) => {
+        const result = await capabilities.knowledge.retrieve({brandId: brandId || 'default', question: goal, limit: 5});
+        return result.evidence.filter(item => item.authority === 'official').map(item => item.text);
+      },
     }),
     whatsappClient,
     metaClient,

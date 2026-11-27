@@ -280,3 +280,122 @@ describe('Smart Agentic Broadcast System', () => {
     memoryStore.close();
   });
 });
+
+test('excludes outbound-only and timestamp-only chats and treats an empty selection as empty', () => {
+  const memory = new MemoryStore({dataDir:':memory:',dbPath:':memory:'});
+  try {
+    const now=Date.now();
+    seedConnectedChat(memory,'111@s.whatsapp.net','Genuine',now);
+    memory.saveChat({id:'222@s.whatsapp.net',name:'Imported',isGroup:false,unreadCount:0,lastTimestamp:now,agentMode:'autopilot'});
+    memory.saveChat({id:'333@s.whatsapp.net',name:'Outbound',isGroup:false,unreadCount:0,lastTimestamp:now,agentMode:'autopilot'});
+    memory.addMessage({id:'outbound-only',chatId:'333@s.whatsapp.net',sender:'me',text:'Hello',timestamp:now,isFromMe:true,type:'text'});
+    const store=memory.getBroadcastStore();
+    expect(store.findEligibleAudience().map(c=>c.chatId)).toEqual(['111@s.whatsapp.net']);
+    expect(store.findEligibleAudience({chatIds:[]})).toEqual([]);
+  } finally {memory.close();}
+});
+
+test('personalization uses only the selected contact history and explicit self-introduction', async () => {
+  const memory=new MemoryStore({dataDir:':memory:',dbPath:':memory:'});
+  try {
+    const now=Date.now();
+    seedConnectedChat(memory,'111@s.whatsapp.net','111',now-1000);
+    seedConnectedChat(memory,'222@s.whatsapp.net','Other',now-2000);
+    memory.addMessage({id:'intro',chatId:'111@s.whatsapp.net',sender:'111',text:'My name is Layla. Interested in the blue backpack.',timestamp:now,isFromMe:false,type:'text'});
+    memory.addMessage({id:'other-context',chatId:'222@s.whatsapp.net',sender:'222',text:'Interested in the red jacket.',timestamp:now,isFromMe:false,type:'text'});
+    let prompt='';
+    const composer=new BroadcastComposer({gemini:{generateContent:async contents=>{
+      prompt=JSON.stringify(contents);
+      return {text:'Hi Layla, the new backpack collection is available.',functionCalls:[]};
+    }}});
+    const orchestrator=new BroadcastOrchestrator({store:memory.getBroadcastStore(),memoryStore:memory,composer});
+    const result=await orchestrator.createCampaign({name:'New collection',goal:'Announce the new collection',audienceFilter:{chatIds:['111@s.whatsapp.net']},richContent:{kind:'text',messageGoal:'Announce the new collection'}});
+    expect(prompt).toContain('blue backpack');
+    expect(prompt).not.toContain('red jacket');
+    expect(result.recipients.map(r=>[r.contactName,r.personalizedText])).toEqual([['Layla','Hi Layla, the new backpack collection is available.']]);
+  } finally {memory.close();}
+});
+
+test('studio requires permission and individual approval; regenerating resets approval', async () => {
+  const memory = new MemoryStore({dataDir:':memory:'});
+  const store = memory.getBroadcastStore();
+  const now = Date.now();
+  seedConnectedChat(memory, '111@s.whatsapp.net', '111', now-172800000);
+  memory.addMessage({id:'name',chatId:'111@s.whatsapp.net',sender:'111',text:'اسمي سارة',timestamp:now-172800000,isFromMe:false,type:'text'});
+  const sends: string[] = [];
+  const composer = new BroadcastComposer({gemini:{generateContent:async()=>({text:'Thank you for your previous inquiry.'})}});
+  const orchestrator = new BroadcastOrchestrator({store,memoryStore:memory,composer,whatsappClient:{
+    getState:()=>({state:'connected',updatedAt:now}),sendMessage:async(id,text)=>{sends.push(id+':'+text);return {messageId:'studio-msg'};},
+    sendRichMedia:async()=>({messageId:'media'}),sendVoiceNote:async()=>({messageId:'voice'}),
+  },sleep:async()=>{}});
+  const app = new Hono();
+  registerBroadcastRoutes(app,{store,orchestrator});
+  const body = {name:'Test',goal:'Offer',approvalMode:'preview_approve',audienceFilter:{chatIds:['111@s.whatsapp.net'],skipActiveHours:24},
+    richContent:{kind:'text',messageGoal:'Offer',compositionMode:'conversation',brief:{cta:'Reply',tone:'adaptive',constraints:'No invented claims',useBrandKnowledge:false}},
+    pacing:{minDelayMs:0,maxDelayMs:0,maxWindowMinutes:60}};
+  const request=(path:string,payload:unknown)=>app.request(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  try {
+    expect((await request('/api/broadcasts',body)).status).toBe(422);
+    expect(store.listCampaigns()).toHaveLength(0);
+    expect((await request('/api/broadcasts',{...body,permissionConfirmed:true})).status).toBe(201);
+    const campaign=store.listCampaigns()[0];
+    if(!campaign)throw new Error('No campaign');
+    const recipient=store.listRecipients(campaign.id)[0];
+    if(!recipient)throw new Error('No recipient');
+    expect(recipient.contactName).toBe('سارة');
+    expect(orchestrator.approveCampaign(campaign.id)).toBeNull();
+    expect(sends).toHaveLength(0);
+    expect(store.updateRecipientDraft(recipient.id,{status:'approved'})?.status).toBe('approved');
+    const regenerated=await orchestrator.regenerateDraft(campaign.id,recipient.id,'Sara');
+    expect(regenerated).toMatchObject({status:'draft',contactName:'Sara',richContent:{personalization:{nameSource:'operator'}}});
+    expect(orchestrator.approveCampaign(campaign.id)).toBeNull();
+    expect(store.updateRecipientDraft(recipient.id,{status:'approved',personalizedText:'Hello Sara, here is the approved offer.'})?.status).toBe('approved');
+    expect(orchestrator.approveCampaign(campaign.id)?.status).toBe('approved');
+    await orchestrator.startDispatchInBackground(campaign.id);
+    expect(sends).toEqual(['111@s.whatsapp.net:Hello Sara, here is the approved offer.']);
+    expect(store.getRecipient(recipient.id)?.status).toBe('sent');
+    await orchestrator.startDispatchInBackground(campaign.id);
+    expect(sends).toHaveLength(1);
+    expect(store.updateRecipientDraft(recipient.id,{personalizedText:'changed'})).toBeNull();
+  } finally { memory.close(); }
+});
+
+test('studio eligibility rechecks active chats and excludes later opt-outs before dispatch', async()=>{
+  const memory=new MemoryStore({dataDir:':memory:'});
+  const store=memory.getBroadcastStore();
+  const now=Date.now();
+  seedConnectedChat(memory,'111@s.whatsapp.net','Ahmed',now-172800000);
+  seedConnectedChat(memory,'222@s.whatsapp.net','Sara',now-172800000);
+  seedConnectedChat(memory,'333@s.whatsapp.net','Recent',now-1000);
+  const sent:string[]=[];
+  const orchestrator=new BroadcastOrchestrator({store,memoryStore:memory,composer:new BroadcastComposer({gemini:{generateContent:async()=>({text:'Approved offer'})}}),
+    whatsappClient:{getState:()=>({state:'connected',updatedAt:now}),sendMessage:async(id)=>{sent.push(id);return {messageId:'sent'};},sendVoiceNote:async()=>({messageId:'voice'}),sendRichMedia:async()=>({messageId:'media'})},sleep:async()=>{}});
+  try {
+    expect(store.findEligibleAudience({skipActiveHours:24}).map(c=>c.chatId).toSorted()).toEqual(['111@s.whatsapp.net','222@s.whatsapp.net']);
+    const {campaign,recipients}=await orchestrator.createCampaign({name:'Warm',goal:'Offer',permissionConfirmed:true,audienceFilter:{chatIds:['111@s.whatsapp.net','222@s.whatsapp.net'],skipActiveHours:24},richContent:{kind:'text',messageGoal:'Offer',compositionMode:'conversation'}});
+    for(const r of recipients)store.updateRecipientDraft(r.id,{status:'approved'});
+    memory.addMessage({id:'new-inbound',chatId:'111@s.whatsapp.net',sender:'111',text:'A new question',timestamp:now,isFromMe:false,type:'text'});
+    store.markOptOut('222@s.whatsapp.net','stop',now);
+    orchestrator.approveCampaign(campaign.id);
+    await orchestrator.startDispatchInBackground(campaign.id);
+    expect(sent).toEqual([]);
+    expect(store.listRecipients(campaign.id).map(r=>r.status).toSorted()).toEqual(['opted_out','skipped']);
+  }finally{memory.close();}
+});
+
+test('studio fails closed when model unavailable and does not persist a partial campaign',async()=>{
+  const memory=new MemoryStore({dataDir:':memory:'});
+  const store=memory.getBroadcastStore();
+  seedConnectedChat(memory,'111@s.whatsapp.net','111',Date.now());
+  try{
+    const orchestrator=new BroadcastOrchestrator({store,memoryStore:memory,composer:new BroadcastComposer()});
+    let error: unknown;
+    try { await orchestrator.createCampaign({name:'Offer',goal:'Offer',permissionConfirmed:true,audienceFilter:{chatIds:['111@s.whatsapp.net']},richContent:{kind:'text',messageGoal:'Offer',compositionMode:'conversation'}}); } catch (err) { error=err; }
+    expect(error).toBeInstanceOf(Error);
+    expect(error instanceof Error ? error.message : '').toContain('configured model');
+    expect(store.listCampaigns()).toHaveLength(0);
+    const contact=store.findEligibleAudience()[0];
+    if(!contact)throw new Error('No contact');
+    expect(await new BroadcastComposer().personalizeForContact(contact,'Hello {{name}}, here is the offer.',{templateOnly:true})).not.toContain('{{');
+  }finally{memory.close();}
+});

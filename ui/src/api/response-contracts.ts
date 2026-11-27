@@ -153,6 +153,9 @@ const contextBudget = fields({
 
 const broadcastContent = fields({
   kind: oneOf('text', 'image', 'video', 'document', 'voice_note', 'template'), messageGoal: string,
+  compositionMode: optional(oneOf('conversation','template')),
+  brief: optional(fields({cta:string,tone:string,constraints:string,useBrandKnowledge:boolean})),
+  personalization: optional(fields({nameSource:string,historyCount:number,brandSources:number,nameConfidence:optionalNumber,lastSnippet:optionalString})),
   mediaUrl: optionalString, mediaBase64: optionalString, mimeType: optionalString, fileName: optionalString,
   templateName: optionalString, templateLanguage: optionalString,
   templateHeaderMediaType: optional(oneOf('image', 'video', 'document')), templateHeaderMediaUrl: optionalString,
@@ -177,10 +180,10 @@ const broadcastRecipient = fields({
   id: string, campaignId: string, chatId: string, contactName: string, phoneNumber: optionalString,
   transportUsed: optional(oneOf('baileys', 'meta-cloud')), personalizedText: string, followUpCount: number,
   status: oneOf('draft', 'approved', 'queued', 'sent', 'delivered', 'read', 'replied', 'followed_up', 'skipped', 'failed', 'opted_out'),
-  error: optionalString,
+  error: optionalString, richContent: optional(broadcastContent), sentAt: optionalNumber, deliveredAt: optionalNumber, readAt: optionalNumber, repliedAt: optionalNumber,
 });
 const eligibleBroadcastContact = fields({
-  chatId: string, name: string, phoneNumber: optionalString, stage: string, messageCount: number, lastMessageAtMs: optionalNumber,
+  chatId: string, name: string, phoneNumber: optionalString, stage: string, messageCount: number, lastMessageAtMs: optionalNumber, nameSource: optional(oneOf("inferred_from_chat","contact","unknown")), nameConfidence: optionalNumber, lastSnippet: optionalString,
 });
 
 export const responseContracts = {
@@ -234,7 +237,7 @@ export const responseContracts = {
   }),
   decompressedFold: fields({ foldId: string, chatId: string, total: number, messages: array(chatMessage) }),
   broadcasts: fields({ campaigns: array(broadcastCampaign) }),
-  broadcastAudience: fields({ contacts: array(eligibleBroadcastContact) }),
+  broadcastAudience: fields({ contacts: array(eligibleBroadcastContact), excludedNoInbound: optionalNumber }),
   broadcastDetails: fields({ campaign: broadcastCampaign, recipients: array(broadcastRecipient) }),
   broadcastRecipient: fields({ recipient: broadcastRecipient }),
   broadcastCampaign: fields({ campaign: broadcastCampaign }),

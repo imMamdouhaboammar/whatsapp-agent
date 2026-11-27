@@ -59,7 +59,7 @@ await test('cockpit no longer offers assistant preview', () => {
 await test('broadcast page uses a responsive workspace with named composer and campaign history', () => {
   for (const language of ['ar', 'en']) {
     const html = render(language, BroadcastPage, { onClose: noop });
-    assert.match(html, /class="wa-broadcast-layout"/);
+    assert.match(html, /wa-broadcast-layout/);
     assert.match(html, /aria-labelledby="broadcast-compose-title"/);
     assert.match(html, /aria-labelledby="broadcast-history-title"/);
   }

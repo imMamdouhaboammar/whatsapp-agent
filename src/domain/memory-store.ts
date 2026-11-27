@@ -15,6 +15,7 @@ export interface MemoryStoreOptions {
   dataDir?: string;
   maxHistoryPerChat?: number;
   dbPath?: string;
+  brandId?: string;
 }
 
 export class MemoryStore {
@@ -34,6 +35,7 @@ export class MemoryStore {
     this.assistantSettings = new AssistantSettingsStore(dbPath === ':memory:' ? undefined : join(dirname(dbPath),'assistant-config'));
     this.sqlite = new SqliteStore({
       dbPath,
+      brandId: options.brandId,
       legacyDataDir: this.dataDir !== ':memory:' ? this.dataDir : undefined
     });
   }
