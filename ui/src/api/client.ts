@@ -252,13 +252,13 @@ export const api = {
     return handleResponse(res, 'Failed to fetch persona', responseContracts.persona);
   },
 
-  async updatePersona(persona: Partial<ModeratorPersona>, policy?: Partial<PolicyConfig>): Promise<{ success: boolean }> {
+  async updatePersona(persona: Partial<ModeratorPersona>, policy?: Partial<PolicyConfig>): Promise<{ success: boolean; persona: ModeratorPersona; policy: PolicyConfig }> {
     const res = await fetch(`${BASE_URL}/persona`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ persona, policy })
     });
-    return handleResponse(res, 'Failed to update persona', responseContracts.success);
+    return handleResponse(res, 'Failed to update persona', responseContracts.personaUpdate);
   },
 
   async simulate(text: string, senderName?: string): Promise<SimulationResult> {

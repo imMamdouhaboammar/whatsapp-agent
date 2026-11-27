@@ -1,3 +1,4 @@
+import { decodeAssistantSettings } from '../domain/assistant-settings';
 import { unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -742,9 +743,12 @@ export function createApiServer(deps: ApiDependencies): Hono {
   });
 
   app.put('/api/persona', async (c) => {
-    const body = await c.req.json();
-    if (body.persona) deps.moderatorAgent.updatePersona(body.persona);
-    if (body.policy) deps.moderatorAgent.updatePolicy(body.policy);
+    const body: unknown = await c.req.json().catch(() => null);
+    const updates = decodeAssistantSettings(body);
+    if (!updates) return c.json({error:'Invalid assistant settings'},400);
+    const current = deps.moderatorAgent.getPersona();
+    if ((updates.persona?.minTypingDelayMs ?? current.minTypingDelayMs) > (updates.persona?.maxTypingDelayMs ?? current.maxTypingDelayMs)) return c.json({error:'Minimum response delay exceeds maximum'},400);
+    deps.moderatorAgent.updateSettings(updates);
     return c.json({
       success: true,
       persona: deps.moderatorAgent.getPersona(),

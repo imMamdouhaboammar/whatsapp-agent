@@ -287,3 +287,15 @@ await test('Owner can explicitly sign out in Arabic and English when access prot
   assert.match(en, /Sign out/);
   assert.match(en, /type="button"/);
 });
+
+await test('assistant editor exposes saved rules in both languages without placeholder sections', () => {
+  const persona={name:'Support',language:'ar-EG',tone:'Natural',systemPrompt:'Help',rules:['Confirm availability'],model:'gemini-4-argon',temperature:0.7,minConfidence:0.8,simulateTypingDelay:false,minTypingDelayMs:200,maxTypingDelayMs:600};
+  const props={initialPersona:persona,onClose:()=>{},onSave:async()=>persona};
+  for (const locale of ['en','ar']) {
+    const html=render(locale,React.createElement(PersonaSettingsPage,props));
+    assert.match(html,/Confirm availability/);
+    assert.match(html,locale==='en'?/Conversation rules/:/قواعد التعامل/);
+    assert.match(html,locale==='en'?/Add rule/:/إضافة قاعدة/);
+    assert.doesNotMatch(html,/wa-ps-nav-link is-future|bg-slate-900/);
+  }
+});

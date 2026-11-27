@@ -1,4 +1,5 @@
 import { isRecord, isStringArray } from './response-validation';
+import { decodeAssistantSettings } from '../domain/assistant-settings';
 import { evaluatePermission } from '../domain/permission-engine';
 import { HumanRateLimiter } from '../domain/rate-limiter';
 import type { MemoryStore } from '../domain/memory-store';
@@ -105,12 +106,16 @@ export class ModeratorAgent {
       timezone?: string;
     } = {}
   ) {
-    this.persona = { ...DEFAULT_MODERATOR_PERSONA, ...options.persona };
-    this.policy = { ...DEFAULT_POLICY_CONFIG, ...options.policy };
+    const stored = memoryStore.loadAssistantSettings(options.brandId ?? 'default');
+    const config = stored === undefined ? undefined : decodeAssistantSettings(stored);
+    if (stored !== undefined && !config) throw new Error('Invalid persisted assistant settings');
+    this.persona = { ...DEFAULT_MODERATOR_PERSONA, ...options.persona, ...config?.persona };
+    this.policy = { ...DEFAULT_POLICY_CONFIG, ...options.policy, ...config?.policy };
     this.rateLimiter = options.rateLimiter ?? new HumanRateLimiter({
       minDelayMs: this.persona.minTypingDelayMs,
       maxDelayMs: this.persona.maxTypingDelayMs
     });
+    this.rateLimiter.setTypingDelayRange(this.persona.minTypingDelayMs,this.persona.maxTypingDelayMs);
     this.dualMemoryManager = options.dualMemoryManager;
     this.router = options.router ?? routeTurnModel;
     this.worldModel = options.worldModel;
@@ -149,11 +154,11 @@ export class ModeratorAgent {
   }
 
   getPersona(): ModeratorPersona {
-    return { ...this.persona };
+    return { ...this.persona, rules:[...this.persona.rules] };
   }
 
   updatePersona(updates: Partial<ModeratorPersona>) {
-    this.persona = { ...this.persona, ...updates };
+    this.updateSettings({persona:updates});
   }
 
   getPolicy(): PolicyConfig {
@@ -161,7 +166,19 @@ export class ModeratorAgent {
   }
 
   updatePolicy(updates: Partial<PolicyConfig>) {
-    this.policy = { ...this.policy, ...updates };
+    this.updateSettings({policy:updates});
+  }
+
+  updateSettings(input: unknown): void {
+    const updates = decodeAssistantSettings(input);
+    if (!updates) throw new TypeError('Invalid assistant settings');
+    const persona = {...this.persona,...updates.persona};
+    const policy = {...this.policy,...updates.policy};
+    if (persona.minTypingDelayMs > persona.maxTypingDelayMs) throw new TypeError('Invalid response delay range');
+    this.memoryStore.saveAssistantSettings(this.brandId ?? 'default',{persona,policy});
+    this.persona = persona;
+    this.policy = policy;
+    this.rateLimiter.setTypingDelayRange(persona.minTypingDelayMs,persona.maxTypingDelayMs);
   }
 
   /**
@@ -342,7 +359,7 @@ ${dynamicsPrompt}
   "contactStage": "lead | qualified | negotiation | customer | vip"
 }`;
 
-    const systemInstruction = `${this.persona.systemPrompt}\nالنبرة المطلوبة: ${this.persona.tone}\n${styleDirective}\n\n${humanRealismLayer}\n\nالقواعد:\n${this.persona.rules.map((r) => `- ${r}`).join('\n')}${workbookRulesPrompt}`;
+    const systemInstruction = `${this.persona.systemPrompt}\nDefault response language (adapt to explicit customer language requests): ${this.persona.language}\nالنبرة المطلوبة: ${this.persona.tone}\n${styleDirective}\n\n${humanRealismLayer}\n\nالقواعد:\n${this.persona.rules.map((r) => `- ${r}`).join('\n')}${workbookRulesPrompt}`;
 
     let parsedDecision: AgentDecision;
 
@@ -635,7 +652,7 @@ ${dynamicsPrompt}
     }
 
     // 3. Evaluate through Deterministic Permission Policy
-    const evalResult = evaluatePermission(this.policy, {
+    const evalResult = evaluatePermission({...this.policy,minConfidence:Math.max(this.policy.minConfidence,this.persona.minConfidence)}, {
       intent: parsedDecision.intent,
       confidence: parsedDecision.confidence,
       requestedAction: parsedDecision.action

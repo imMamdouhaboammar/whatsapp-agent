@@ -1,10 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  Activity, AlertTriangle, ArrowLeft, ArrowRight, BookOpen, Bot, CheckCircle2, ChevronDown,
-  CircleHelp, Database, HardDrive, Headphones, LockKeyhole, LogOut, MessageCircle,
-  Mic2, Puzzle, RefreshCw, RotateCcw, Save, Settings2, ShieldCheck,
-  SlidersHorizontal, Sparkles, Trash2, Users, Wifi, Zap
-} from 'lucide-react';
+import { Brush, AlertTriangle, ArrowLeft, ArrowRight, BookOpen, Bot, CheckCircle2, ChevronDown, HardDrive, Headphones, LockKeyhole, LogOut, MessageCircle, RefreshCw, RotateCcw, Save, Settings2, ShieldCheck, SlidersHorizontal, Trash2 } from 'lucide-react';
 import type { ModeratorPersona, PolicyConfig, SystemStatus, WorkspaceStats } from '../api/types';
 import { SUPPORTED_GEMINI_MODELS } from '../api/types';
 import { api } from '../api/client';
@@ -24,7 +19,7 @@ interface PersonaSettingsPageProps {
   initialPersona?: ModeratorPersona;
   error?: boolean;
   onRetry?: () => void;
-  onSave: (persona: Partial<ModeratorPersona>, policy?: Partial<PolicyConfig>) => Promise<void>;
+  onSave: (persona: Partial<ModeratorPersona>, policy?: Partial<PolicyConfig>) => Promise<ModeratorPersona>;
 }
 
 const sectionFromPath = (): SettingsSection => {
@@ -35,7 +30,8 @@ const sectionFromPath = (): SettingsSection => {
 };
 
 function formatBytes(bytes?: number): string {
-  if (!bytes || bytes <= 0) return '0 KB';
+  if (bytes === undefined) return '...';
+  if (bytes <= 0) return '0 KB';
   if (bytes < 1024 * 1024) {
     return `${(bytes / 1024).toFixed(1)} KB`;
   }
@@ -68,12 +64,14 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, registerLeave
   const [active, setActive] = useState<SettingsSection>(sectionFromPath);
   const [savedPersona, setSavedPersona] = useState<ModeratorPersona>(() => ({ ...initialPersona, rules: [...initialPersona.rules] }));
   const [persona, setPersona] = useState<ModeratorPersona>(() => ({ ...initialPersona, rules: [...initialPersona.rules] }));
+  const [ruleKeys,setRuleKeys] = useState(()=>initialPersona.rules.map(()=>crypto.randomUUID()));
   const [saving, setSaving] = useState(false);
+  const saveLock = useRef(false);
   const [error, setError] = useState('');
   const [savedNotice, setSavedNotice] = useState(false);
   const [showPresets, setShowPresets] = useState(false);
   const [stats, setStats] = useState<WorkspaceStats | null>(null);
-  const [statsLoading, setStatsLoading] = useState(false);
+  const [statsLoading, setStatsLoading] = useState(active === 'data');
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
   const [feedbackNotice, setFeedbackNotice] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [confirmation, setConfirmation] = useState<{ title: string; description: string; confirmLabel: string; run: () => void } | null>(null);
@@ -82,6 +80,7 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, registerLeave
   const [factoryConfirmText, setFactoryConfirmText] = useState('');
   const dirty = JSON.stringify(persona) !== JSON.stringify(savedPersona);
   const connected = connectionState === 'connected';
+  const valid = [persona.name,persona.language,persona.tone,persona.systemPrompt].every(value=>value.trim().length>0) && persona.rules.every(rule=>rule.trim().length>0);
 
   useEffect(() => {
     const dialog = factoryDialogRef.current;
@@ -101,7 +100,7 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, registerLeave
       const data = await api.getWorkspaceStats();
       setStats(data);
     } catch {
-      // stats error fallback
+      setFeedbackNotice({type:'error',message:tr('تعذر تحميل إحصائيات التخزين','Could not load storage statistics')});
     } finally {
       setStatsLoading(false);
     }
@@ -118,11 +117,11 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, registerLeave
         if (mounted) setStatsLoading(false);
       }
     };
-    void loadInitialStats().catch(() => undefined);
+    void loadInitialStats().catch(() => { if(mounted) setFeedbackNotice({type:"error",message:tr("تعذر تحميل إحصائيات التخزين","Could not load storage statistics")}); });
     return () => {
       mounted = false;
     };
-  }, [active]);
+  }, [active,tr]);
 
   const handleCleanWorkspace = async () => {
     setActionInProgress('clean');
@@ -208,7 +207,7 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, registerLeave
   };
 
   useEffect(() => {
-    const onPopState = () => setActive(sectionFromPath());
+    const onPopState = () => { const section=sectionFromPath(); setActive(section); };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
@@ -223,11 +222,13 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, registerLeave
     if (section === active) return;
     window.history.pushState({ waSettings: true }, '', `/settings/${section}`);
     setActive(section);
+    if(section==='data')setStatsLoading(true);
     setError('');
     setFeedbackNotice(null);
   };
 
   const leave = useCallback((target: () => void) => {
+    if (saveLock.current) return;
     if (!dirty) { target(); return; }
     setConfirmation({
       title: tr('تغييرات غير محفوظة', 'Unsaved changes'),
@@ -242,27 +243,36 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, registerLeave
     return () => registerLeaveGuard?.(null);
   }, [registerLeaveGuard, leave]);
 
-  const reset = () => { setPersona({ ...savedPersona, rules: [...savedPersona.rules] }); setError(''); setSavedNotice(false); };
+  useEffect(() => {
+    if (!dirty && !saving) return undefined;
+    const preventLoss = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
+    window.addEventListener('beforeunload', preventLoss);
+    return () => window.removeEventListener('beforeunload', preventLoss);
+  },[dirty,saving]);
+
+  const reset = () => { setRuleKeys(savedPersona.rules.map(()=>crypto.randomUUID())); setPersona({ ...savedPersona, rules: [...savedPersona.rules] }); setError(''); setSavedNotice(false); };
 
   const save = async () => {
-    if (saving || !dirty) return;
+    if (saveLock.current || !dirty || !valid) return;
+    saveLock.current = true;
     setSaving(true);
     setError('');
     try {
-      await onSave(persona);
-      setSavedPersona({ ...persona, rules: [...persona.rules] });
+      const confirmed = await onSave(persona);
+      setSavedPersona({ ...confirmed, rules: [...confirmed.rules] });
+      setPersona(current=>JSON.stringify(current)===JSON.stringify(persona)?confirmed:current);
       setSavedNotice(true);
     } catch {
       setError(tr('تعذّر حفظ الإعدادات، حاول مرة تانية', 'Could not save changes. Please try again'));
     } finally {
+      saveLock.current = false;
       setSaving(false);
     }
   };
 
   const applyPreset = (tone: string, prompt: string) => {
-    setPersona((previous) => ({ ...previous, tone, systemPrompt: prompt }));
-    setSavedNotice(false);
-    setShowPresets(false);
+    const apply = () => { setPersona(previous=>({...previous,tone,systemPrompt:prompt})); setSavedNotice(false); setShowPresets(false); };
+    setConfirmation({title:tr('استبدال التعليمات الحالية؟','Replace current instructions?'),description:tr('سيتم استبدال النبرة والتعليمات فقط. يمكنك التراجع قبل الحفظ.','Only tone and instructions will be replaced. You can discard before saving.'),confirmLabel:tr('استخدام القالب','Use preset'),run:apply});
   };
 
   const assistantPage = active === 'assistant';
@@ -284,9 +294,7 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, registerLeave
       <link rel="stylesheet" href={settingsCss} precedence="page" />
       <nav className="wa-ps-rail" aria-label={tr('التنقل الرئيسي', 'Primary navigation')}>
         <button type="button" className="wa-ps-rail-button" onClick={() => leave(onClose)} title={tr('المحادثات', 'Chats')} aria-label={tr('المحادثات', 'Chats')}><MessageCircle size={21} /><span>{tr('محادثات', 'Chats')}</span></button>
-        <span className="wa-ps-rail-button is-disabled" aria-disabled="true" title={tr('قريبًا', 'Coming soon')}><Activity size={21} /><span>{tr('نشاط', 'Activity')}</span></span>
         <button type="button" className="wa-ps-rail-button" onClick={() => onOpenKnowledge && leave(onOpenKnowledge)} disabled={!onOpenKnowledge} title={tr('المعرفة', 'Knowledge')} aria-label={tr('المعرفة', 'Knowledge')}><BookOpen size={21} /><span>{tr('معرفة', 'Knowledge')}</span></button>
-        <span className="wa-ps-rail-button is-disabled" aria-disabled="true" title={tr('قريبًا', 'Coming soon')}><Puzzle size={21} /><span>{tr('إضافات', 'Extensions')}</span></span>
         <div className="wa-ps-rail-spacer" />
         <span className="wa-ps-rail-button is-active" aria-current="page"><Settings2 size={21} /><span>{tr('إعدادات', 'Settings')}</span></span>
       </nav>
@@ -297,22 +305,11 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, registerLeave
           <p>{tr('إعدادات مساحة العمل والمساعد والتطبيق', 'Workspace, agent and app configuration')}</p>
         </div>
         <div className="wa-ps-side-scroll">
-          <p className="wa-ps-nav-label">{tr('مساحة العمل', 'WORKSPACE')}</p>
-          <span className="wa-ps-nav-link is-future"><SlidersHorizontal size={17} />{tr('عام', 'General')}<span className="wa-ps-soon">{tr('قريبًا', 'Soon')}</span></span>
-          <span className="wa-ps-nav-link is-future"><Users size={17} />{tr('الفريق والصلاحيات', 'Team & access')}</span>
-          <span className="wa-ps-nav-link is-future"><Wifi size={17} />{tr('القنوات', 'Channels')}</span>
-          <p className="wa-ps-nav-label">{tr('المساعد', 'AGENT')}</p>
           <button type="button" className={`wa-ps-nav-link ${assistantPage ? 'is-selected' : ''}`} onClick={() => navigate('assistant')} aria-current={assistantPage ? 'page' : undefined}><Bot size={18} />{tr('المساعد الذكي', 'AI assistant')}</button>
-          <button type="button" className={`wa-ps-nav-link ${!assistantPage ? 'is-selected' : ''}`} onClick={() => navigate('models')} aria-current={!assistantPage ? 'page' : undefined}><Bot size={18} />{tr('النماذج ومزودو الخدمة', 'Models & providers')}</button>
-          <span className="wa-ps-nav-link is-future"><Mic2 size={17} />{tr('صوت العلامة', 'Brand voice')}</span>
-          <span className="wa-ps-nav-link is-future"><Zap size={17} />{tr('الأتمتة', 'Automations')}</span>
+          <button type="button" className={`wa-ps-nav-link ${active === 'models' ? 'is-selected' : ''}`} onClick={() => navigate('models')} aria-current={active === 'models' ? 'page' : undefined}><Bot size={18} />{tr('النماذج ومزودو الخدمة', 'Models & providers')}</button>
           <button type="button" className="wa-ps-nav-link" onClick={() => onOpenKnowledge && leave(onOpenKnowledge)} disabled={!onOpenKnowledge}><BookOpen size={18} />{tr('المعرفة', 'Knowledge')}<ArrowLeft className="wa-ps-external-arrow" size={14} /></button>
-          <p className="wa-ps-nav-label">{tr('التطبيق', 'PLATFORM')}</p>
-          <span className="wa-ps-nav-link is-future"><Puzzle size={17} />{tr('الإضافات', 'Extensions')}</span>
           <button type="button" className={`wa-ps-nav-link ${active === 'data' ? 'is-selected' : ''}`} onClick={() => navigate('data')} aria-current={active === 'data' ? 'page' : undefined}><ShieldCheck size={18} />{tr('البيانات والخصوصية', 'Data & privacy')}</button>
-          <span className="wa-ps-nav-link is-future"><Database size={17} />{tr('الاستضافة', 'Deployment')}</span>
         </div>
-        <div className="wa-ps-side-foot"><CircleHelp size={16} />{tr('بعض الأقسام ستتاح قريبًا', 'More settings are coming soon')}</div>
       </aside>
 
       <section className="wa-ps-main" aria-labelledby="wa-ps-title">
@@ -326,13 +323,15 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, registerLeave
           <div className="wa-ps-header-actions">
             <output className={`wa-ps-save-status ${dirty ? 'is-unsaved' : ''}`}>{dirty ? tr('تغييرات غير محفوظة', 'Unsaved changes') : savedNotice ? tr('تم حفظ التغييرات', 'Changes saved') : tr('كل التغييرات محفوظة', 'All changes saved')}</output>
             <button type="button" className="wa-ps-button wa-ps-button-quiet" onClick={reset} disabled={!dirty || saving}><RotateCcw size={16} />{tr('تراجع', 'Discard')}</button>
-            <button type="button" className="wa-ps-button wa-ps-button-primary" onClick={() => void save()} disabled={!dirty || saving}><Save size={16} />{saving ? tr('جارٍ الحفظ', 'Saving') : tr('حفظ التغييرات', 'Save changes')}</button>
+            <button type="button" className="wa-ps-button wa-ps-button-primary" onClick={() => void save()} disabled={!dirty || saving || !valid}><Save size={16} />{saving ? tr('جارٍ الحفظ', 'Saving') : tr('حفظ التغييرات', 'Save changes')}</button>
           </div>
         </header>
 
+        {error && <p className="wa-ps-error" role="alert">{error}</p>}
+        {!valid && <output className="wa-ps-error">{tr('أكمل الاسم واللغة والنبرة والتعليمات والقواعد قبل الحفظ','Complete name, language, tone, instructions and rules before saving')}</output>}
         <div className="wa-ps-scroll-area" key={active}>
           <div className="wa-ps-columns">
-            <div className="wa-ps-primary-column">
+            <fieldset className="wa-ps-primary-column" disabled={saving} aria-busy={saving}>
               {feedbackNotice && (
                 <div className={`wa-ps-feedback-banner is-${feedbackNotice.type}`} role="alert">
                   {feedbackNotice.type === 'success' ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
@@ -343,24 +342,33 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, registerLeave
                 <>
                   <section className="wa-ps-card">
                     <div className="wa-ps-card-head"><div><h2>{tr('الهوية والشخصية', 'Identity & persona')}</h2><p>{tr('الاسم واللغة والأسلوب الذي يتحدث به المساعد', 'Define the agent’s identity, language and tone')}</p></div><button type="button" className="wa-ps-text-action" onClick={() => setShowPresets((show) => !show)} aria-expanded={showPresets}><SlidersHorizontal size={16} />{tr('قوالب جاهزة', 'Quick presets')}<ChevronDown size={14} /></button></div>
-                    <div className="flex items-center gap-3.5 mb-4 p-3 bg-slate-900/40 rounded-xl border border-slate-800/80">
+                    <div className="wa-ps-identity-preview">
                       <AgentAvatar seed={persona.name || 'Assistant'} size={48} shape="capsule" color="geekblue" />
                       <div>
-                        <strong className="block text-sm text-slate-200">{persona.name || tr('مساعد واتساب', 'WhatsApp Assistant')}</strong>
-                        <span className="text-xs text-slate-400">{persona.tone || tr('نبرة متوازنة وطبيعية', 'Balanced, natural tone')}</span>
+                        <strong className="wa-ps-identity-name">{persona.name || tr('مساعد واتساب', 'WhatsApp Assistant')}</strong>
+                        <span className="wa-ps-identity-tone">{persona.tone || tr('نبرة متوازنة وطبيعية', 'Balanced, natural tone')}</span>
                       </div>
                     </div>
                     {showPresets && <div className="wa-ps-presets"><button type="button" onClick={() => applyPreset('طبيعي وبشوش باللهجة المصرية', ['أنت مسؤول عن مساعدة صاحب الحساب في الرد على رسائل واتساب', 'استخدم عامية مصرية طبيعية، وراعِ سياق كل محادثة', 'لا تختلق معلومات أو مواعيد أو وعودًا غير موجودة في سياق المحادثة'].join('\n'))}><strong>{tr('مصري ودود', 'Friendly Egyptian')}</strong><span>{tr('أسلوب قريب وطبيعي', 'Warm, natural tone')}</span></button><button type="button" onClick={() => applyPreset('مهني وواضح باللغة العربية الفصحى المعاصرة', ['أنت مساعد خدمة عملاء على واتساب', 'قدّم إجابات واضحة ومختصرة بلغة عربية فصحى معاصرة', 'التزم بالمعلومات المتاحة واطلب توضيحًا عند الحاجة'].join('\n'))}><strong>{tr('خدمة العملاء', 'Customer support')}</strong><span>{tr('لغة مهنية واضحة', 'Clear, professional tone')}</span></button></div>}
                     <div className="wa-ps-field-grid">
-                      <label className="wa-ps-field"><span>{tr('اسم المساعد', 'Assistant name')}</span><input dir="auto" value={persona.name} onChange={(event) => setField('name', event.target.value)} /></label>
-                      <label className="wa-ps-field"><span>{tr('اللغة الأساسية', 'Primary language')}</span><input dir="auto" value={persona.language} onChange={(event) => setField('language', event.target.value)} placeholder={tr('العربية المصرية', 'Arabic (Egypt)')} /></label>
+                      <label className="wa-ps-field"><span>{tr('اسم المساعد', 'Assistant name')}</span><input dir="auto" maxLength={120} required value={persona.name} onChange={(event) => setField('name', event.target.value)} /></label>
+                      <label className="wa-ps-field"><span>{tr('اللغة الأساسية', 'Primary language')}</span><input dir="auto" maxLength={120} required value={persona.language} onChange={(event) => setField('language', event.target.value)} placeholder={tr('العربية المصرية', 'Arabic (Egypt)')} /></label>
                     </div>
-                    <label className="wa-ps-field"><span>{tr('نبرة الحديث', 'Tone of voice')}</span><input dir="auto" value={persona.tone} onChange={(event) => setField('tone', event.target.value)} /></label>
+                    <label className="wa-ps-field"><span>{tr('نبرة الحديث', 'Tone of voice')}</span><input dir="auto" maxLength={2000} required value={persona.tone} onChange={(event) => setField('tone', event.target.value)} /></label>
                   </section>
                   <section className="wa-ps-card wa-ps-instructions">
                     <div className="wa-ps-card-head"><div><h2>{tr('التعليمات الأساسية', 'Core instructions')}</h2><p>{tr('يرجع المساعد للتعليمات دي أثناء التعامل مع المحادثات', 'The agent uses these directions when handling conversations')}</p></div></div>
-                    <label className="wa-ps-field"><span className="wa-ps-technical-label">{tr('تعليمات المساعد', 'Assistant instructions')}</span><textarea dir="auto" rows={9} value={persona.systemPrompt} onChange={(event) => setField('systemPrompt', event.target.value)} /></label>
+                    <label className="wa-ps-field"><span className="wa-ps-technical-label">{tr('تعليمات المساعد', 'Assistant instructions')}</span><textarea dir="auto" rows={11} maxLength={30000} required value={persona.systemPrompt} onChange={(event) => setField('systemPrompt', event.target.value)} /></label>
                     <div className="wa-ps-field-meta"><span>{tr('تقدر تكتب بالعربية أو الإنجليزية', 'Write in Arabic or English')}</span><span>{persona.systemPrompt.length.toLocaleString(language === 'ar' ? 'ar-EG' : 'en-US')} {tr('حرف', 'characters')}</span></div>
+                  </section>
+                  <section className="wa-ps-card wa-ps-rules">
+                    <div className="wa-ps-card-head"><div><h2>{tr('قواعد التعامل','Conversation rules')}</h2><p>{tr('تعليمات محددة يلتزم بها المساعد في كل محادثة','Specific instructions the assistant should follow in every conversation')}</p></div></div>
+                    {ruleKeys.map((key,index)=><div key={key} className="wa-ps-rule-row">
+                      <label className="wa-ps-field"><span>{tr('قاعدة','Rule')} {index+1}</span><textarea rows={2} maxLength={2000} dir="auto" value={persona.rules[index]??''} onChange={e=>setField('rules',persona.rules.map((value,i)=>i===index?e.target.value:value))}/></label>
+                      <button type="button" className="wa-ps-button wa-ps-button-quiet" aria-label={tr('حذف قاعدة','Remove rule')+' '+(index+1)} onClick={()=>{setRuleKeys(keys=>keys.filter((_,i)=>i!==index));setField('rules',persona.rules.filter((_,i)=>i!==index));}}><Trash2 size={16}/></button>
+                    </div>)}
+                    {persona.rules.length===0&&<p>{tr('لم تضف قواعد مخصصة','No custom rules yet')}</p>}
+                    <button type="button" className="wa-ps-button wa-ps-button-outline" disabled={persona.rules.length>=100} onClick={()=>{setRuleKeys(keys=>[...keys,crypto.randomUUID()]);setField('rules',[...persona.rules,'']);}}>{tr('إضافة قاعدة','Add rule')}</button>
                   </section>
                 </>
               ) : active === 'models' ? (
@@ -370,18 +378,7 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, registerLeave
                     <label className="wa-ps-field">
                       <span>{tr('نموذج Gemini', 'Gemini model')}</span>
                       <select dir="ltr" value={persona.model} onChange={(event) => setField('model', event.target.value)}>
-                        <optgroup label={tr('موديلات Gemini 4 الحديثة', 'Gemini 4 Models (Next-Gen)')}>
-                          <option value="gemini-4-carbon">gemini-4-carbon (Deep Reasoning / Flagship)</option>
-                          <option value="gemini-4-argon">gemini-4-argon (Frontier Workhorse)</option>
-                          <option value="gemini-4-hydrogen">gemini-4-hydrogen (Fast Execution / Agentic)</option>
-                          <option value="gemini-4-neon">gemini-4-neon (Low-Latency Multimodal)</option>
-                          <option value="gemini-4-flash">gemini-4-flash</option>
-                          <option value="gemini-4-pro">gemini-4-pro</option>
-                        </optgroup>
-                        <optgroup label={tr('موديلات الجيل السابق', 'Previous Generation')}>
-                          <option value="gemini-3.8-flash">gemini-3.8-flash</option>
-                          <option value="gemini-3.1-pro">gemini-3.1-pro</option>
-                        </optgroup>
+                        {SUPPORTED_GEMINI_MODELS.map(model=><option key={model.id} value={model.id}>{model.name}</option>)}
                         {!SUPPORTED_GEMINI_MODELS.some((m) => m.id === persona.model) && (
                           <option value={persona.model}>{persona.model}</option>
                         )}
@@ -395,7 +392,7 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, registerLeave
                   </section>
                   <section className="wa-ps-card">
                     <div className="wa-ps-card-head"><div><h2>{tr('التحكم في الاستجابة', 'Response controls')}</h2><p>{tr('اضبط شروط الرد والتوقيت في المحادثات', 'Fine-tune when and how the agent responds')}</p></div></div>
-                    <label className="wa-ps-range"><span>{tr('الحد الأدنى للثقة', 'Minimum confidence')}</span><strong dir="ltr">{Math.round(persona.minConfidence * 100)}%</strong><input type="range" min="0.5" max="0.95" step="0.05" value={persona.minConfidence} onChange={(event) => setField('minConfidence', Number(event.target.value))} /><small>{tr('الحد المطلوب قبل إرسال رد تلقائي', 'Confidence required before sending an automatic reply')}</small></label>
+                    <label className="wa-ps-range"><span>{tr('الحد الأدنى للثقة', 'Minimum confidence')}</span><strong dir="ltr">{Math.round(persona.minConfidence * 100)}%</strong><input type="range" min="0" max="1" step="0.01" value={persona.minConfidence} onChange={(event) => setField('minConfidence', Number(event.target.value))} /><small>{tr('يُطبق الحد الأعلى بين هذه القيمة وسياسة الصلاحيات', 'The stricter of this value and the permission policy is applied')}</small></label>
                     <label className="wa-ps-switch-row" htmlFor="wa-ps-typing-delay" aria-labelledby="wa-ps-typing-delay-label"><span><strong id="wa-ps-typing-delay-label">{tr('محاكاة الكتابة الطبيعية', 'Natural typing delay')}</strong><small>{tr('انتظار قصير قبل إرسال الردود التلقائية', 'Pause briefly before sending automatic replies')}</small></span><input id="wa-ps-typing-delay" type="checkbox" role="switch" aria-checked={persona.simulateTypingDelay} checked={persona.simulateTypingDelay} onChange={(event) => setField('simulateTypingDelay', event.target.checked)} /></label>
                   </section>
                 </>
@@ -454,7 +451,7 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, registerLeave
                     <div className="wa-ps-card-head">
                       <div>
                         <h2 className="flex items-center gap-2">
-                          <Sparkles size={18} />
+                          <Brush size={18} />
                           {tr('تنظيف الكاش والملفات المؤقتة', 'Cache & temporary files cleaner')}
                         </h2>
                         <p>{tr('حذف المجلدات المؤقتة، إفراغ سجلات WAL، واستعادة المساحة التالفة عبر VACUUM', 'Remove temporary test folders, truncate SQLite WAL logs, and reclaim unused disk space with VACUUM')}</p>
@@ -466,7 +463,7 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, registerLeave
                       onClick={() => void handleCleanWorkspace()}
                       disabled={actionInProgress !== null}
                     >
-                      <Sparkles size={16} />
+                      <Brush size={16} />
                       {actionInProgress === 'clean' ? tr('جارٍ التنظيف...', 'Cleaning...') : tr('تنظيف مساحة العمل والكاش الآن', 'Clean workspace & cache now')}
                     </button>
                   </section>
@@ -584,11 +581,11 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, registerLeave
                   </section>
                 </>
               )}
-            </div>
+            </fieldset>
             <aside className="wa-ps-context-column" aria-label={tr('معلومات مساعدة', 'Contextual information')}>
               {active === 'assistant' ? (
                 <>
-                  <section className="wa-ps-card"><div className="wa-ps-card-head"><div><h2>{tr('حالة المساعد', 'Agent status')}</h2><p>{tr('معلومات من إعداداتك الحالية', 'Your current configuration')}</p></div></div><div className="wa-ps-status-line"><span className={`wa-ps-status-dot ${connected ? 'is-online' : ''}`} />{connected ? tr('واتساب متصل', 'WhatsApp connected') : tr('واتساب غير متصل', 'WhatsApp not connected')}</div><div className="wa-ps-detail-row"><span>{tr('النموذج', 'AI model')}</span><strong dir="ltr">{persona.model}</strong></div><div className="wa-ps-detail-row"><span>{tr('اللغة', 'Language')}</span><strong dir="auto">{persona.language}</strong></div></section>
+                  <section className="wa-ps-card"><div className="wa-ps-card-head"><div><h2>{tr('حالة المساعد', 'Agent status')}</h2><p>{tr('الإعدادات المحفوظة التي يستخدمها المساعد', 'Saved settings used by the assistant')}</p></div></div><div className="wa-ps-status-line"><span className={`wa-ps-status-dot ${connected ? 'is-online' : ''}`} />{connected ? tr('واتساب متصل', 'WhatsApp connected') : tr('واتساب غير متصل', 'WhatsApp not connected')}</div><div className="wa-ps-detail-row"><span>{tr('النموذج', 'AI model')}</span><strong dir="ltr">{savedPersona.model}</strong></div><div className="wa-ps-detail-row"><span>{tr('اللغة', 'Language')}</span><strong dir="auto">{savedPersona.language}</strong></div></section>
                 </>
               ) : active === 'models' ? (
                 <>
@@ -601,7 +598,7 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, registerLeave
                     <div className="wa-ps-card-head">
                       <div>
                         <h2>{tr('الخصوصية والسيادة', 'Privacy & data sovereignty')}</h2>
-                        <p>{tr('بياناتك مخزنة محليًا بالكامل', 'Your data resides locally on your host')}</p>
+                        <p>{tr('إحصائيات التخزين المحلي فقط', 'Local storage statistics only')}</p>
                       </div>
                       <ShieldCheck size={22} className="wa-ps-muted-icon" />
                     </div>
@@ -633,10 +630,9 @@ function PersonaEditor({ initialPersona, onClose, onOpenKnowledge, registerLeave
                   </section>
                 </>
               )}
-              <p className="wa-ps-context-note"><LockKeyhole size={15} />{tr('إعدادات المساعد محفوظة على استضافتك', 'Agent settings are stored on your own host')}</p>
+              <p className="wa-ps-context-note"><LockKeyhole size={15} />{tr('إعدادات المساعد محفوظة على استضافتك', 'Assistant settings are saved on your host')}</p>
             </aside>
           </div>
-          {error && <p className="wa-ps-error" role="alert">{error}</p>}
           <div className="wa-ps-bottom-space" />
         </div>
         {confirmation && <ConfirmAction title={confirmation.title} description={confirmation.description} confirmLabel={confirmation.confirmLabel} onClose={() => setConfirmation(null)} onConfirm={() => { const action = confirmation.run; setConfirmation(null); action(); }} />}
