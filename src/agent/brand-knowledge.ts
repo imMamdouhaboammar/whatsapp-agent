@@ -104,8 +104,8 @@ export class BrandKnowledgeStore {
     if (!bytes || bytes > 1024*1024) throw new Error('Source size is invalid');
     const sourceId = sha(JSON.stringify([input.brandId,input.type,input.locator]));
     const hash = sha(input.content);
-    const current = this.db.query<{version_id:string;hash:string;retired:number}, [string]>('SELECT v.version_id, v.hash, s.retired FROM brand_source_versions v JOIN brand_sources s ON s.source_id=v.source_id WHERE v.source_id=? AND v.current=1').get(sourceId);
-    if (current && current.hash === hash && !current.retired) return {sourceId,versionId:current.version_id,changed:false};
+    const current = this.db.query<{version_id:string;hash:string;retired:number;authority:string;locale:string|null}, [string]>('SELECT v.version_id, v.hash, s.retired, s.authority, s.locale FROM brand_source_versions v JOIN brand_sources s ON s.source_id=v.source_id WHERE v.source_id=? AND v.current=1').get(sourceId);
+    if (current && current.hash === hash && !current.retired && current.authority === input.authority && current.locale === (input.locale ?? null)) return {sourceId,versionId:current.version_id,changed:false};
     const lines = input.type==='csv' ? input.content.split(/\r?\n/).filter(Boolean).slice(0,5000) : input.content.match(/[\s\S]{1,1000}/g) ?? [];
     const chunks: Array<{ text: string; location: string; embedding: string | null }> = [];
     const batchSize = 10;
@@ -190,7 +190,7 @@ export class BrandKnowledgeStore {
     return rows.map(row=>({sourceId:row.source_id,type:row.type,locator:row.locator,authority:checkedAuthority(row.authority),versionId:row.version_id,lastChecked:row.last_checked}));
   }
   retireSource(brandId:string,sourceId:string) {
-    this.db.query('UPDATE brand_sources SET retired=1 WHERE brand_id=? AND source_id=?').run(brandId,sourceId);
+    return this.db.query('UPDATE brand_sources SET retired=1 WHERE brand_id=? AND source_id=? AND retired=0').run(brandId,sourceId).changes > 0;
   }
   close(){this.db.close();}
 }

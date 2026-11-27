@@ -33,6 +33,46 @@ async function handleResponse<T>(res: Response, fallbackError: string, matches: 
   return value;
 }
 
+export interface BrandScope { brandId: string; token: string }
+export interface BrandSourceInput { type: 'faq' | 'text' | 'csv'; authority: 'official' | 'working' | 'external'; locator: string; content: string }
+
+async function brandRequest<T>(scope: BrandScope, path: string, matches: ResponseContract<T>, method = 'GET', body?: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method, cache: 'no-store',
+    headers: { 'Content-Type': 'application/json', 'X-Agent-Owner-Token': scope.token },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  return handleResponse(response, 'Brand Brain request failed', matches);
+}
+
+const brandPath = (scope: BrandScope, suffix: string) => `${BASE_URL}/brands/${encodeURIComponent(scope.brandId)}${suffix}`;
+
+export const brandBrainApi = {
+  async load(scope: BrandScope) {
+    const [sources, tools, conflicts] = await Promise.all([
+      brandRequest(scope, brandPath(scope, '/sources'), responseContracts.brandSources),
+      brandRequest(scope, brandPath(scope, '/tools'), responseContracts.brandTools),
+      brandRequest(scope, brandPath(scope, '/conflicts'), responseContracts.brandConflicts),
+    ]);
+    return { ...sources, ...tools, ...conflicts };
+  },
+  save(scope: BrandScope, input: BrandSourceInput) {
+    return brandRequest(scope, brandPath(scope, '/sources'), responseContracts.brandSaved, 'POST', input);
+  },
+  retire(scope: BrandScope, sourceId: string) {
+    return brandRequest(scope, brandPath(scope, '/sources/' + encodeURIComponent(sourceId)), responseContracts.brandRetired, 'DELETE');
+  },
+  connect(scope: BrandScope, sheetId: string, gid?: string) {
+    return brandRequest(scope, brandPath(scope, '/connectors/google-sheets'), responseContracts.brandConnected, 'POST', { sheetId, gid });
+  },
+  retrieve(scope: BrandScope, question: string) {
+    return brandRequest(scope, brandPath(scope, '/retrieve'), responseContracts.brandRetrieval, 'POST', { question, limit: 5 });
+  },
+  simulate(scope: BrandScope, text: string) {
+    return brandRequest(scope, BASE_URL + '/agent/resolve', responseContracts.brandResolution, 'POST', { brandId: scope.brandId, contactId: 'ui-simulator', text });
+  },
+};
+
 export type FunnelMode = 'ALL_SETTLED' | 'FIRST_SUCCESS' | 'QUORUM';
 
 export interface FunnelTargetMeta {

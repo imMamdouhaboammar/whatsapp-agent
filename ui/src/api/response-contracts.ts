@@ -186,7 +186,20 @@ const eligibleBroadcastContact = fields({
   chatId: string, name: string, phoneNumber: optionalString, stage: string, messageCount: number, lastMessageAtMs: optionalNumber, nameSource: optional(oneOf("inferred_from_chat","contact","unknown")), nameConfidence: optionalNumber, lastSnippet: optionalString,
 });
 
+const brandAuthority = oneOf('official', 'working', 'external');
+const brandSourceType = oneOf('faq', 'text', 'csv');
+const brandSource = fields({sourceId:string,type:brandSourceType,locator:string,authority:brandAuthority,versionId:string,lastChecked:number});
+const brandEvidence = fields({sourceId:string,versionId:string,text:string,location:string,authority:brandAuthority,lastChecked:number,score:number});
+
 export const responseContracts = {
+  brandSources: fields({sources:array(brandSource)}),
+  brandTools: fields({tools:array(fields({name:string,kind:oneOf('read','write'),scope:string}))}),
+  brandConflicts: fields({conflicts:array(fields({field:oneOf('returns_days'),values:array(number),sourceIds:strings,versionIds:strings}))}),
+  brandSaved: fields({sourceId:string,versionId:string,changed:boolean}),
+  brandRetired: fields({sourceId:string,retired:boolean}),
+  brandConnected: fields({connected:boolean,brandId:string,tool:string}),
+  brandRetrieval: fields({evidence:array(brandEvidence),answerability:oneOf('supported','insufficient'),semanticEnabled:boolean,lexicalIndex:oneOf('fts5')}),
+  brandResolution: fields({status:oneOf('answered','clarification','waiting_provider'),reply:string,workflowId:string,evidence:array(fields({kind:oneOf('brand','provider','web'),source:string,versionId:optionalString,observedAt:optionalNumber}))}),
   dashboardStatus: fields({ required: boolean, authenticated: boolean }),
   systemStatus,
   dossier: fields({ dossier }),
