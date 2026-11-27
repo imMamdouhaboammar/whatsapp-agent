@@ -78,3 +78,18 @@ test('capability mutations stay disabled without an owner token',async()=>{
   expect(r.status).toBe(503);
  } finally {agent.capabilities.close();agent.memoryStore.close();}
 });
+
+test('owner can retire only an active source belonging to the requested brand', async () => {
+ const agent = await createFableWhatsAppAgent({dataDir:':memory:',autoConnect:false,capabilityToken:['fixture','owner'].join('-')});
+ const headers = {'x-agent-owner-token':['fixture','owner'].join('-')};
+ try {
+  const source = await agent.capabilities.knowledge.ingest({brandId:'alpha',type:'faq',locator:'old',authority:'working',content:'returns in 7 days'});
+  const path = '/api/brands/alpha/sources/'+source.sourceId;
+  expect((await agent.app.request(path,{method:'DELETE'})).status).toBe(401);
+  expect((await agent.app.request('/api/brands/beta/sources/'+source.sourceId,{method:'DELETE',headers})).status).toBe(404);
+  expect((await agent.app.request(path,{method:'DELETE',headers})).status).toBe(200);
+  expect(agent.capabilities.knowledge.listSources('alpha')).toEqual([]);
+  expect((await agent.capabilities.knowledge.retrieve({brandId:'alpha',question:'returns'})).evidence).toEqual([]);
+  expect((await agent.app.request(path,{method:'DELETE',headers})).status).toBe(404);
+ } finally { await agent.shutdown(); agent.unregisterLifecycle(); }
+});

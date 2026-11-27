@@ -123,6 +123,12 @@ export function registerCapabilityRoutes(app:Hono, capabilities:CapabilityEngine
    return c.json(result,201);
   }catch(err){return c.json({error:err instanceof Error?err.message:'Invalid source'},400);}
  });
+ app.delete('/api/brands/:brandId/sources/:sourceId',(c)=>{
+  const {brandId,sourceId}=c.req.param();
+  if(!validBrand(brandId)||! /^[a-f0-9]{64}$/.test(sourceId))return c.json({error:'Invalid source identity'},400);
+  if(!capabilities.knowledge.retireSource(brandId,sourceId))return c.json({error:'Active source not found'},404);
+  return c.json({retired:true,sourceId});
+ });
  app.get('/api/brands/:brandId/conflicts',(c)=>{
   const brandId=c.req.param('brandId');
   if(!validBrand(brandId))return c.json({error:'Invalid brand'},400);

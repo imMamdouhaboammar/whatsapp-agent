@@ -65,3 +65,17 @@ test('A02 FTS5 indexed exact identifiers are brand and version scoped',async()=>
   expect((await store.retrieve({brandId:'other',question:'SKU-RARE-009'})).evidence).toHaveLength(0);
  }finally{store.close();}
 });
+
+test('changing source authority without changing content creates a new active version', async () => {
+  const store = new BrandKnowledgeStore({ dbPath: ':memory:' });
+  try {
+    const input = { brandId: 'a', type: 'faq' as const, locator: 'shipping', content: 'shipping in two days' };
+    const first = await store.ingest({ ...input, authority: 'working' });
+    const updated = await store.ingest({ ...input, authority: 'official' });
+    expect(updated.changed).toBe(true);
+    expect(updated.versionId).not.toBe(first.versionId);
+    expect(store.listSources('a')[0]).toMatchObject({ authority: 'official', versionId: updated.versionId });
+    expect((await store.retrieve({ brandId: 'a', question: 'shipping' })).evidence[0]).toMatchObject({ authority: 'official', versionId: updated.versionId });
+    expect((await store.ingest({ ...input, authority: 'official' })).changed).toBe(false);
+  } finally { store.close(); }
+});
