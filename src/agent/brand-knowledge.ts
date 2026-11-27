@@ -123,6 +123,10 @@ export class BrandKnowledgeStore {
     }
     const versionId = randomUUID();
     const write = this.db.transaction(() => {
+      const activeCurrent = this.db.query<{version_id:string;hash:string;retired:number;authority:string;locale:string|null}, [string]>('SELECT v.version_id, v.hash, s.retired, s.authority, s.locale FROM brand_source_versions v JOIN brand_sources s ON s.source_id=v.source_id WHERE v.source_id=? AND v.current=1').get(sourceId);
+      if (activeCurrent && activeCurrent.hash === hash && !activeCurrent.retired && activeCurrent.authority === input.authority && activeCurrent.locale === (input.locale ?? null)) {
+        return { sourceId, versionId: activeCurrent.version_id, changed: false };
+      }
       this.db.query('INSERT INTO brand_sources(source_id,brand_id,type,locator,authority,locale,retired) VALUES(?,?,?,?,?,?,0) ON CONFLICT(source_id) DO UPDATE SET authority=excluded.authority,locale=excluded.locale,retired=0').run(sourceId,input.brandId,input.type,input.locator,input.authority,input.locale ?? null);
       this.db.query('UPDATE brand_source_versions SET current=0 WHERE source_id=?').run(sourceId);
       this.db.query('INSERT INTO brand_source_versions(version_id,source_id,hash,current,last_checked) VALUES(?,?,?,1,?)').run(versionId,sourceId,hash,Date.now());
@@ -132,9 +136,9 @@ export class BrandKnowledgeStore {
         stmt.run(sourceId,versionId,chunk.text,chunk.location,chunk.embedding);
         index.run(normalized(chunk.text));
       }
+      return { sourceId, versionId, changed: true };
     });
-    write();
-    return {sourceId,versionId,changed:true};
+    return write();
   }
 
   async retrieve(input: {brandId:string; question:string; limit?:number}) : Promise<{evidence:Evidence[]; answerability:'supported'|'insufficient'; semanticEnabled:boolean;lexicalIndex:'fts5'}> {

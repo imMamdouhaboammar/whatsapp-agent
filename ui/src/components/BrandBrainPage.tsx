@@ -73,7 +73,7 @@ function BrandWorkspace({ scope, initial, onSwitch }: { scope: BrandScope; initi
   const save = (e: FormEvent) => {
     e.preventDefault();
     if (!editor || stale) return;
-    const input = {...editor,locator:editor.locator.trim()};
+    const input = {...editor,locator: replacing ? editor.locator : editor.locator.trim()};
     void run(async () => {
       if (new TextEncoder().encode(input.content).byteLength > 1024 * 1024) throw new Error(tr('المحتوى يتجاوز 1 ميجابايت.', 'Content exceeds 1 MB.'));
       const result = await brandBrainApi.save(scope,input);
