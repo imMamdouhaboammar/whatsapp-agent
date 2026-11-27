@@ -22,6 +22,11 @@ export class HumanRateLimiter {
     this.maxMessagesPerMinute = options.maxMessagesPerMinute ?? 20;
   }
 
+  setTypingDelayRange(minDelayMs: number, maxDelayMs: number): void {
+    this.minDelayMs = minDelayMs;
+    this.maxDelayMs = maxDelayMs;
+  }
+
   /**
    * Calculates realistic human reading + typing delay in milliseconds
    */

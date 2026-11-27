@@ -176,12 +176,19 @@ export function DashboardCockpit() {
   );
 
   useEffect(() => {
-    const onPopState = () => setPage(
-      window.location.pathname.startsWith('/settings/') ? 'settings' :
+    const onPopState = () => {
+      const targetPath = window.location.pathname;
+      const nextPage = targetPath.startsWith('/settings/') ? 'settings' :
       window.location.pathname === '/brand-brain' ? 'brain' :
       window.location.pathname === '/funnel' ? 'funnel' :
-      window.location.pathname === '/broadcast' ? 'broadcast' : 'chats'
-    );
+      window.location.pathname === '/broadcast' ? 'broadcast' : 'chats';
+      if (nextPage !== 'settings' && leaveGuardRef.current) {
+        const targetState = window.history.state;
+        let approved = false;
+        leaveGuardRef.current(() => { approved = true; window.history.replaceState(targetState,'',targetPath); setPage(nextPage); });
+        if (!approved) window.history.pushState({waSettings:true}, '', '/settings/assistant');
+      } else setPage(nextPage);
+    };
     window.addEventListener('popstate', onPopState);
     const query = window.matchMedia('(max-width: 1160px)');
     const onViewportChange = (event: MediaQueryListEvent) => {
@@ -593,9 +600,11 @@ export function DashboardCockpit() {
   };
 
   const handleSavePersona = async (updatedPersona: Partial<ModeratorPersona>, updatedPolicy?: Partial<PolicyConfig>) => {
-    await api.updatePersona(updatedPersona, updatedPolicy);
-    if (persona) setPersona({ ...persona, ...updatedPersona });
-    if (policyRef.current && updatedPolicy) policyRef.current = { ...policyRef.current, ...updatedPolicy };
+    const result = await api.updatePersona(updatedPersona, updatedPolicy);
+    if (!result.success) throw new Error("Assistant settings were not saved");
+    setPersona(result.persona);
+    policyRef.current = result.policy;
+    return result.persona;
   };
 
   const selectedChat = chats.find((c) => c.id === selectedChatId);

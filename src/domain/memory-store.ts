@@ -1,4 +1,5 @@
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { AssistantSettingsStore } from './assistant-settings-store';
 import { SqliteStore } from './db';
 import type {
   AgentDraft,
@@ -19,6 +20,7 @@ export interface MemoryStoreOptions {
 export class MemoryStore {
   private dataDir: string;
   private sqlite: SqliteStore;
+  private assistantSettings: AssistantSettingsStore;
 
   constructor(options: MemoryStoreOptions = {}) {
     this.dataDir = options.dataDir ?? './data';
@@ -29,6 +31,7 @@ export class MemoryStore {
         : join(this.dataDir, 'fable_whatsapp.db')
     );
 
+    this.assistantSettings = new AssistantSettingsStore(dbPath === ':memory:' ? undefined : join(dirname(dbPath),'assistant-config'));
     this.sqlite = new SqliteStore({
       dbPath,
       legacyDataDir: this.dataDir !== ':memory:' ? this.dataDir : undefined
@@ -103,6 +106,9 @@ export class MemoryStore {
   listChats(): ChatSummary[] {
     return this.sqlite.listChats();
   }
+
+  loadAssistantSettings(scope: string): unknown { return this.assistantSettings.load(scope); }
+  saveAssistantSettings(scope: string, settings: unknown): void { this.assistantSettings.save(scope,settings); }
 
   getDataDir(): string {
     return this.dataDir;

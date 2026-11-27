@@ -127,3 +127,21 @@ test('conversation style rejects unsupported values without mutating saved prefe
     expect(deps.memoryStore.getChatStyle('contact')).toBe('playful');
   }
 });
+
+test('persona update validates the whole request before applying any configuration', async () => {
+  const deps = createTestDeps();
+  const app = createApiServer(deps);
+  const before = deps.moderatorAgent.getPersona();
+  const res = await app.request('/api/persona', {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({persona:{name:'Changed',minConfidence:2},policy:{minConfidence:0.5}})});
+  expect(res.status).toBe(400);
+  expect(deps.moderatorAgent.getPersona()).toEqual(before);
+});
+
+test('persona settings survive recreation of the moderator', async () => {
+  const deps = createTestDeps();
+  const app = createApiServer(deps);
+  const res = await app.request('/api/persona',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({persona:{name:'Support assistant',language:'en',minConfidence:0.95,rules:['Confirm stock before promising']}})});
+  expect(res.status).toBe(200);
+  const recreated = new ModeratorAgent(new GeminiClient({apiKey:'test-key'}),deps.memoryStore);
+  expect(recreated.getPersona()).toMatchObject({name:'Support assistant',language:'en',minConfidence:0.95,rules:['Confirm stock before promising']});
+});

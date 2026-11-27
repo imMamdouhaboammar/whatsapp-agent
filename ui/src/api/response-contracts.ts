@@ -197,6 +197,7 @@ export const responseContracts = {
   success: fields({ success: boolean }),
   drafts: fields({ drafts: array(agentDraft) }),
   persona: fields({ persona, policy }),
+  personaUpdate: fields({ success: boolean, persona, policy }),
   simulation: fields({
     success: boolean, simulatedMessage: chatMessage, decision: optional(agentDecision),
     draftCreated: optional(agentDraft), shouldSendImmediately: boolean,
