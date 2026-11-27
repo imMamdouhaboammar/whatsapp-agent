@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { VoiceSynthesizer } from '../ai/voice-synthesizer';
-import type { BroadcastStore } from '../domain/broadcast-store';
+import { isPacing, type BroadcastStore } from '../domain/broadcast-store';
+import { scrubCredentials } from '../domain/learning-memory';
 import type {
   BroadcastApprovalMode,
   BroadcastAudienceFilter,
@@ -19,7 +20,7 @@ import type { MetaCloudApi, MetaCloudTemplateComponent } from '../transport/meta
 import type { WhatsAppSocketClient } from '../transport/whatsapp-socket';
 import type { BroadcastComposer } from './broadcast-composer';
 
-const OPT_OUT_PATTERN = /\b(stop|unsubscribe|opt[\s-]?out)\b|(?:إلغاء\s*الاشتراك|توقف|لا\s*ترسل|ما\s*ترسلش|وقف\s*الرسايل)/i;
+const OPT_OUT_PATTERN = /\b(stop|unsubscribe|opt[\s-]?out)\b|(?:إلغاء\s*الاشتراك|توقف|لا\s*ترسل|ما\s*ترسلش|وقف\s*الرسايل|مش\s*مهتم|مش\s*عايز\s*رسايل)/i;
 const SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000;
 const MAX_MEDIA_FETCH_BYTES = 16 * 1024 * 1024;
 
@@ -34,6 +35,8 @@ export interface CreateBroadcastInput {
   followUp?: Partial<BroadcastFollowUpConfig>;
   pacing?: Partial<BroadcastPacingConfig>;
   createdBy?: 'owner' | 'agent';
+  permissionConfirmed?: boolean;
+  signal?: AbortSignal;
 }
 
 export interface BroadcastOrchestratorDeps {
@@ -60,7 +63,7 @@ function isWithinQuietHours(pacing: BroadcastPacingConfig, now: number): boolean
     if (from < to) return hour >= from && hour < to;
     return hour >= from || hour < to;
   } catch {
-    return false;
+    return true;
   }
 }
 
@@ -77,6 +80,7 @@ export class BroadcastOrchestrator {
   async previewAudience(filter: BroadcastAudienceFilter = {}, audiencePrompt?: string): Promise<{
     resolvedFilter: BroadcastAudienceFilter;
     contacts: EligibleContact[];
+    excludedNoInbound: number;
   }> {
     const parsedPrompt = audiencePrompt?.trim()
       ? await this.deps.composer.parseAudiencePrompt(audiencePrompt)
@@ -84,17 +88,23 @@ export class BroadcastOrchestrator {
     const resolvedFilter: BroadcastAudienceFilter = {
       ...parsedPrompt,
       ...filter,
-      excludeOptedOut: filter.excludeOptedOut ?? true,
+      excludeOptedOut: true,
     };
     const contacts = this.deps.store.findEligibleAudience(resolvedFilter, this.now());
-    return { resolvedFilter, contacts };
+    return { resolvedFilter, contacts, excludedNoInbound: this.deps.store.countNoInbound() };
   }
 
   async createCampaign(input: CreateBroadcastInput): Promise<{
     campaign: BroadcastCampaignSummary;
     recipients: BroadcastRecipient[];
   }> {
+    if (input.signal?.aborted) throw new Error("Generation cancelled");
     const { resolvedFilter, contacts } = await this.previewAudience(input.audienceFilter, input.audiencePrompt);
+    if (!contacts.length || (input.richContent.compositionMode && input.audienceFilter?.chatIds && new Set(input.audienceFilter.chatIds).size !== contacts.length)) throw new Error('No eligible audience or selection changed');
+    if (input.richContent.compositionMode && (input.approvalMode === 'autonomous' || !input.permissionConfirmed || !input.audienceFilter?.chatIds?.length)) throw new Error('Explicit permission, selection and review required');
+    if (input.richContent.compositionMode && (input.transport === 'meta-cloud' || (input.transport !== 'baileys' && this.deps.defaultTransport === 'meta-cloud'))) throw new Error('Studio requires verified Meta template consent integration before enabling Meta transport');
+    if (input.richContent.compositionMode && input.richContent.kind === 'template') throw new Error('Studio does not support unverified templates');
+    if (input.richContent.compositionMode && input.followUp?.enabled) throw new Error('Studio follow-ups require a new reviewed campaign');
     const approvalMode: BroadcastApprovalMode = input.approvalMode ?? 'preview_approve';
     const transport: BroadcastTransport = input.transport ?? 'auto';
     const followUp: BroadcastFollowUpConfig = {
@@ -109,9 +119,44 @@ export class BroadcastOrchestrator {
     const pacing: BroadcastPacingConfig = {
       minDelayMs,
       maxDelayMs,
+      ...(input.pacing?.maxWindowMinutes !== undefined ? {maxWindowMinutes: input.pacing.maxWindowMinutes} : {}),
       ...(input.pacing?.quietHours ? { quietHours: input.pacing.quietHours } : {}),
     };
 
+    if (!isPacing(pacing)) throw new Error('Invalid pacing configuration');
+    if (pacing.quietHours && !new Intl.DateTimeFormat('en',{timeZone:pacing.quietHours.timeZone}).resolvedOptions().timeZone) throw new Error('Invalid time zone');
+    const brandContext = input.richContent.brief?.useBrandKnowledge ? await this.deps.composer.getBrandContext(input.goal) : [];
+    const initialRecipientStatus = approvalMode === 'autonomous' ? 'approved' : 'draft';
+    const composedRecipients: Array<{
+      chatId: string;
+      contactName: string;
+      phoneNumber?: string;
+      personalizedText: string;
+      richContent: BroadcastRichContent;
+      status: 'draft' | 'approved';
+    }> = [];
+
+    for (const contact of contacts) {
+      if (input.signal?.aborted) throw new Error("Generation cancelled");
+      const history = this.deps.store.getConversationContext(contact.chatId);
+      const personalizedText = await this.deps.composer.personalizeForContact(
+        contact,
+        input.richContent.messageGoal || input.goal,
+        { kind: input.richContent.kind, history, summaries: this.deps.store.getConversationSummaries(contact.chatId), brandContext, brief: input.richContent.brief, requireAI: input.richContent.compositionMode === 'conversation', templateOnly: input.richContent.compositionMode === 'template', signal: input.signal }
+      );
+      composedRecipients.push({
+        chatId: contact.chatId,
+        contactName: contact.name,
+        phoneNumber: contact.phoneNumber,
+        personalizedText,
+        richContent: { ...input.richContent, messageGoal: personalizedText, personalization: {nameSource: contact.nameSource ?? "unknown", historyCount: history.length, brandSources: brandContext.length, nameConfidence: contact.nameConfidence, lastSnippet: contact.lastSnippet} },
+        status: initialRecipientStatus,
+      });
+    }
+
+    if (input.signal?.aborted) throw new Error("Generation cancelled");
+    const stillEligible = this.deps.store.findEligibleAudience({...resolvedFilter, chatIds: contacts.map(contact => contact.chatId), limit: 500}, this.now());
+    if (stillEligible.length !== contacts.length) throw new Error('Audience changed during generation');
     const campaign = this.deps.store.createCampaign({
       name: input.name.trim() || 'Smart Broadcast',
       goal: input.goal.trim() || input.richContent.messageGoal,
@@ -124,32 +169,6 @@ export class BroadcastOrchestrator {
       pacing,
       createdBy: input.createdBy ?? 'owner',
     });
-
-    const initialRecipientStatus = approvalMode === 'autonomous' ? 'approved' : 'draft';
-    const composedRecipients: Array<{
-      chatId: string;
-      contactName: string;
-      phoneNumber?: string;
-      personalizedText: string;
-      richContent: BroadcastRichContent;
-      status: 'draft' | 'approved';
-    }> = [];
-
-    for (const contact of contacts) {
-      const personalizedText = await this.deps.composer.personalizeForContact(
-        contact,
-        input.richContent.messageGoal || input.goal,
-        { kind: input.richContent.kind }
-      );
-      composedRecipients.push({
-        chatId: contact.chatId,
-        contactName: contact.name,
-        phoneNumber: contact.phoneNumber,
-        personalizedText,
-        richContent: { ...input.richContent, messageGoal: personalizedText },
-        status: initialRecipientStatus,
-      });
-    }
 
     const recipients = this.deps.store.addRecipients(campaign.id, composedRecipients);
     const summary: BroadcastCampaignSummary = {
@@ -165,14 +184,40 @@ export class BroadcastOrchestrator {
     return { campaign: summary, recipients };
   }
 
+  async regenerateDraft(campaignId: string, recipientId: string, nameOverride?: string, signal?: AbortSignal): Promise<BroadcastRecipient> {
+    const campaign = this.deps.store.getCampaign(campaignId);
+    const recipient = this.deps.store.getRecipient(recipientId);
+    if (!campaign || campaign.status !== 'draft' || !recipient || recipient.campaignId !== campaignId ||
+      !['draft','approved','skipped'].includes(recipient.status)) throw new Error('Draft not editable');
+    const contact = this.deps.store.findEligibleAudience({chatIds:[recipient.chatId]},this.now())[0];
+    if (!contact) throw new Error('Contact no longer eligible');
+    const name = nameOverride?.trim();
+    if (name !== undefined && (!/^[\p{L}\p{M}][\p{L}\p{M}\s.'’-]{0,79}$/u.test(name) || scrubCredentials(name) !== name)) throw new Error('Invalid contact name');
+    const history = this.deps.store.getConversationContext(recipient.chatId);
+    const brandContext = campaign.richContent.brief?.useBrandKnowledge ? await this.deps.composer.getBrandContext(campaign.goal) : [];
+    const text = await this.deps.composer.personalizeForContact({...contact,name:name ?? contact.name},campaign.richContent.messageGoal,{
+      kind:campaign.richContent.kind, history, summaries:this.deps.store.getConversationSummaries(recipient.chatId), brandContext,
+      brief:campaign.richContent.brief, requireAI:true, signal,
+    });
+    if (signal?.aborted || !this.deps.store.findEligibleAudience({chatIds:[recipient.chatId]},this.now()).length) throw new Error('Draft generation cancelled or contact no longer eligible');
+    const updated = this.deps.store.replaceDraft(recipient,text,name ?? contact.name,{...recipient.richContent,messageGoal:text,personalization:{
+      nameSource:name ? 'operator' : contact.nameSource ?? 'unknown',historyCount:history.length,brandSources:brandContext.length,lastSnippet:contact.lastSnippet,
+    }});
+    if (!updated) throw new Error('Draft changed during generation');
+    this.deps.publish?.('broadcast_recipient_updated',updated);
+    this.publishCampaign(campaignId);
+    return updated;
+  }
+
   approveCampaign(campaignId: string): BroadcastCampaignSummary | null {
     const campaign = this.deps.store.getCampaign(campaignId);
     if (!campaign) return null;
     if (campaign.status === 'cancelled' || campaign.status === 'completed') {
       return { ...campaign, stats: this.deps.store.getCampaignStats(campaignId) };
     }
+    if (campaign.richContent.compositionMode && this.deps.store.getCampaignStats(campaignId).draft > 0) return null;
     this.deps.store.approveAllDraftRecipients(campaignId);
-    const updated = this.deps.store.updateCampaignStatus(campaignId, 'approved') ?? campaign;
+    const updated = this.deps.store.updateCampaignStatus(campaignId, 'approved', {startedAt: this.now()}) ?? campaign;
     const summary: BroadcastCampaignSummary = {
       ...updated,
       stats: this.deps.store.getCampaignStats(campaignId),
@@ -183,6 +228,8 @@ export class BroadcastOrchestrator {
   }
 
   pauseCampaign(campaignId: string): BroadcastCampaignSummary | null {
+    const current = this.deps.store.getCampaign(campaignId);
+    if (!current || !['running','approved'].includes(current.status)) return null;
     const updated = this.deps.store.updateCampaignStatus(campaignId, 'paused');
     if (!updated) return null;
     const summary: BroadcastCampaignSummary = {
@@ -194,6 +241,8 @@ export class BroadcastOrchestrator {
   }
 
   cancelCampaign(campaignId: string): BroadcastCampaignSummary | null {
+    const current = this.deps.store.getCampaign(campaignId);
+    if (!current || ['completed','cancelled'].includes(current.status)) return null;
     const updated = this.deps.store.updateCampaignStatus(campaignId, 'cancelled', { completedAt: this.now() });
     if (!updated) return null;
     const summary: BroadcastCampaignSummary = {
@@ -226,14 +275,14 @@ export class BroadcastOrchestrator {
 
   async dispatchCampaign(campaignId: string): Promise<void> {
     const initial = this.deps.store.getCampaign(campaignId);
-    if (!initial || initial.status === 'cancelled' || initial.status === 'paused' || initial.status === 'completed') {
+    if (!initial || !['approved','running'].includes(initial.status)) {
       return;
     }
 
     this.deps.store.updateCampaignStatus(campaignId, 'running', { startedAt: this.now() });
     this.publishCampaign(campaignId);
 
-    const recipients = this.deps.store.listRecipients(campaignId).filter((r) => r.status === 'approved' || r.status === 'queued');
+    const recipients = this.deps.store.listRecipients(campaignId).filter((r) => r.status === 'approved');
 
     for (let i = 0; i < recipients.length; i++) {
       const latestCampaign = this.deps.store.getCampaign(campaignId);
@@ -249,17 +298,31 @@ export class BroadcastOrchestrator {
         continue;
       }
 
+      if (latestCampaign.pacing.maxWindowMinutes !== undefined && latestCampaign.startedAt !== undefined && this.now() >= latestCampaign.startedAt + latestCampaign.pacing.maxWindowMinutes * 60000) {
+        this.deps.store.updateCampaignStatus(campaignId, 'cancelled', {completedAt:this.now()});
+        this.publishCampaign(campaignId);
+        return;
+      }
+      if (!this.deps.store.findEligibleAudience({chatIds: [recipient.chatId], skipActiveHours: latestCampaign.audienceFilter.skipActiveHours}, this.now()).length) {
+        this.deps.store.updateRecipientDelivery(recipient.id, {status: 'skipped', error: 'Contact no longer eligible'});
+        continue;
+      }
+      if (this.resolveTransport(latestCampaign.transport) === 'baileys' && this.deps.whatsappClient?.getState().state !== 'connected') {
+        this.deps.store.updateCampaignStatus(campaignId, 'paused');
+        this.publishCampaign(campaignId);
+        return;
+      }
       if (isWithinQuietHours(latestCampaign.pacing, this.now())) {
         this.deps.store.updateCampaignStatus(campaignId, 'paused');
         this.publishCampaign(campaignId);
         return;
       }
 
-      this.deps.store.updateRecipientDelivery(recipient.id, { status: 'queued' });
+      if (!this.deps.store.claimRecipient(recipient.id)) continue;
       try {
         const sent = await this.sendToRecipient(latestCampaign, recipient, recipient.personalizedText, recipient.richContent);
         const updated = this.deps.store.updateRecipientDelivery(recipient.id, {
-          status: 'sent',
+          status: this.deps.store.isOptedOut(recipient.chatId) ? 'opted_out' : 'sent',
           transportUsed: sent.transportUsed,
           providerMessageId: sent.messageId,
           sentAt: this.now(),
@@ -280,7 +343,7 @@ export class BroadcastOrchestrator {
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         const failed = this.deps.store.updateRecipientDelivery(recipient.id, {
-          status: 'failed',
+          status: this.deps.store.isOptedOut(recipient.chatId) ? 'opted_out' : 'failed',
           error: errorMsg,
         });
         if (failed) this.deps.publish?.('broadcast_recipient_updated', failed);
@@ -297,7 +360,8 @@ export class BroadcastOrchestrator {
 
     const finalCampaign = this.deps.store.getCampaign(campaignId);
     if (finalCampaign && finalCampaign.status === 'running') {
-      this.deps.store.updateCampaignStatus(campaignId, 'completed', { completedAt: this.now() });
+      const uncertain = this.deps.store.getCampaignStats(campaignId).queued > 0;
+      this.deps.store.updateCampaignStatus(campaignId, uncertain ? 'paused' : 'completed', uncertain ? undefined : { completedAt: this.now() });
       this.publishCampaign(campaignId);
     }
   }
@@ -327,6 +391,16 @@ export class BroadcastOrchestrator {
     throw new Error('Rich media requires mediaBase64 or mediaUrl');
   }
 
+  private assertStudioSendAllowed(campaign: BroadcastCampaign, recipient: BroadcastRecipient): void {
+    if (!campaign.richContent.compositionMode) return;
+    const current = this.deps.store.getCampaign(campaign.id);
+    if (!current || current.status !== 'running' || this.deps.store.isOptedOut(recipient.chatId) ||
+        !this.deps.store.findEligibleAudience({chatIds:[recipient.chatId],skipActiveHours:campaign.audienceFilter.skipActiveHours},this.now()).length ||
+        isWithinQuietHours(current.pacing,this.now()) ||
+        (current.startedAt !== undefined && current.pacing.maxWindowMinutes !== undefined && this.now() >= current.startedAt + current.pacing.maxWindowMinutes * 60000) ||
+        this.deps.whatsappClient?.getState().state !== 'connected') throw new Error('Send preconditions changed');
+  }
+
   private async sendToRecipient(
     campaign: BroadcastCampaign,
     recipient: BroadcastRecipient,
@@ -353,16 +427,20 @@ export class BroadcastOrchestrator {
                 mimetype: richContent.mimeType || 'application/pdf',
                 caption: text,
               };
+        this.assertStudioSendAllowed(campaign, recipient);
         const res = await wa.sendRichMedia(recipient.chatId, mediaPayload);
         return { messageId: res.messageId, transportUsed };
       }
 
+      if (richContent.kind === 'voice_note' && !this.deps.voiceSynthesizer) throw new Error('Voice synthesis unavailable');
       if (richContent.kind === 'voice_note' && this.deps.voiceSynthesizer) {
         const audio = await this.deps.voiceSynthesizer.synthesizeVoice(text, this.deps.voiceName?.() ?? 'Kore');
+        this.assertStudioSendAllowed(campaign, recipient);
         const res = await wa.sendVoiceNote(recipient.chatId, audio);
         return { messageId: res.messageId, transportUsed };
       }
 
+      this.assertStudioSendAllowed(campaign, recipient);
       const res = await wa.sendMessage(recipient.chatId, text);
       return { messageId: res.messageId, transportUsed };
     }
@@ -505,7 +583,15 @@ export class BroadcastOrchestrator {
     }
   }
 
+  private followUpsRunning = false;
+
   async tickFollowUps(): Promise<number> {
+    if (this.followUpsRunning) return 0;
+    this.followUpsRunning = true;
+    try { return await this.processFollowUps(); } finally { this.followUpsRunning = false; }
+  }
+
+  private async processFollowUps(): Promise<number> {
     const now = this.now();
     const due = this.deps.store.findDueFollowUps(now);
     let processed = 0;
@@ -534,9 +620,15 @@ export class BroadcastOrchestrator {
       const followUpText = await this.deps.composer.personalizeForContact(
         contact,
         `${campaign.followUp.messagePrompt}\nOriginal message: ${recipient.personalizedText}`,
-        { isFollowUp: true }
+        { isFollowUp: true, history: this.deps.store.getConversationContext(recipient.chatId), templateOnly: campaign.richContent.compositionMode === 'template' }
       );
 
+      const latest = this.deps.store.getRecipient(recipient.id);
+      const latestCampaign = this.deps.store.getCampaign(campaign.id);
+      if (!latest || latest.repliedAt || this.deps.store.isOptedOut(recipient.chatId) || !latestCampaign || !['running','completed'].includes(latestCampaign.status) || isWithinQuietHours(campaign.pacing, this.now()) || !this.deps.store.findEligibleAudience({chatIds:[recipient.chatId]}, this.now()).length) continue;
+      if (this.resolveTransport(campaign.transport) === 'baileys' && this.deps.whatsappClient?.getState().state !== 'connected') continue;
+      // Clear the due time before crossing the transport boundary; an interrupted send is not replayed.
+      this.deps.store.updateRecipientDelivery(recipient.id, {status: latest.status, nextFollowUpAt: null});
       try {
         const sent = await this.sendToRecipient(
           campaign,

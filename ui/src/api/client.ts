@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatSummary, ModeratorPersona, PolicyConfig, SystemStatus, AgentDraft, AgentDecision, ContactDossier, WorkspaceStats, WorkspaceCleanResult, ContextBudgetStatus, ConversationFold, BroadcastCampaignSummary, BroadcastRecipient, EligibleBroadcastContact, BroadcastTransport, BroadcastApprovalMode, BroadcastRichContent } from './types';
+import type { ChatMessage, ChatSummary, ModeratorPersona, PolicyConfig, SystemStatus, AgentDraft, AgentDecision, ContactDossier, WorkspaceStats, WorkspaceCleanResult, ContextBudgetStatus, ConversationFold, BroadcastCampaignSummary, BroadcastRecipient, EligibleBroadcastContact, BroadcastTransport, BroadcastApprovalMode, BroadcastRichContent, BroadcastAudienceFilter } from './types';
 import { record, responseContracts, type ResponseContract } from './response-contracts';
 
 const BASE_URL = '/api';
@@ -417,11 +417,11 @@ export const api = {
     return handleResponse(res, 'Failed to load broadcasts', responseContracts.broadcasts);
   },
 
-  async previewBroadcastAudience(audiencePrompt?: string): Promise<{ contacts: EligibleBroadcastContact[] }> {
+  async previewBroadcastAudience(audiencePrompt?: string, filter?: BroadcastAudienceFilter): Promise<{ contacts: EligibleBroadcastContact[]; excludedNoInbound?: number }> {
     const res = await fetch(`${BASE_URL}/broadcasts/audience`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ audiencePrompt })
+      body: JSON.stringify({ audiencePrompt, filter })
     });
     return handleResponse(res, 'Failed to preview audience', responseContracts.broadcastAudience);
   },
@@ -432,6 +432,9 @@ export const api = {
     transport: BroadcastTransport;
     approvalMode: BroadcastApprovalMode;
     audiencePrompt?: string;
+    audienceFilter?: BroadcastAudienceFilter;
+    permissionConfirmed?: boolean;
+    pacing?: {minDelayMs: number; maxDelayMs: number; maxWindowMinutes?: number; quietHours?: {from:number;to:number;timeZone:string}};
     richContent: BroadcastRichContent;
     followUp?: { enabled: boolean; delayMinutes: number; triggerOn: 'read_no_reply' | 'delivered_no_reply'; messagePrompt: string };
   }): Promise<{ campaign: BroadcastCampaignSummary; recipients: BroadcastRecipient[] }> {
@@ -459,6 +462,13 @@ export const api = {
       body: JSON.stringify(patch)
     });
     return handleResponse(res, 'Failed to update recipient', responseContracts.broadcastRecipient);
+  },
+
+  async regenerateBroadcastRecipient(campaignId: string, recipientId: string, name?: string): Promise<{recipient:BroadcastRecipient}> {
+    const res = await fetch(`${BASE_URL}/broadcasts/${encodeURIComponent(campaignId)}/recipients/${encodeURIComponent(recipientId)}/regenerate`,{
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name}),
+    });
+    return handleResponse(res,'Failed to regenerate draft',responseContracts.broadcastRecipient);
   },
 
   async approveBroadcast(id: string): Promise<{ campaign: BroadcastCampaignSummary }> {

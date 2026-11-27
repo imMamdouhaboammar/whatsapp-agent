@@ -291,6 +291,9 @@ export type BroadcastRecipientStatus =
 export interface BroadcastRichContent {
   kind: BroadcastRichKind;
   messageGoal: string;
+  compositionMode?: 'conversation' | 'template';
+  brief?: {cta: string; tone: string; constraints: string; useBrandKnowledge: boolean};
+  personalization?: {nameSource: string; historyCount: number; brandSources: number; nameConfidence?: number; lastSnippet?: string};
   mediaUrl?: string;
   mediaBase64?: string;
   mimeType?: string;
@@ -346,6 +349,11 @@ export interface BroadcastRecipient {
   phoneNumber?: string;
   transportUsed?: 'baileys' | 'meta-cloud';
   personalizedText: string;
+  richContent?: BroadcastRichContent;
+  sentAt?: number;
+  deliveredAt?: number;
+  readAt?: number;
+  repliedAt?: number;
   status: BroadcastRecipientStatus;
   followUpCount: number;
   error?: string;
@@ -358,4 +366,9 @@ export interface EligibleBroadcastContact {
   stage: string;
   messageCount: number;
   lastMessageAtMs?: number;
+  nameSource?: 'inferred_from_chat' | 'contact' | 'unknown';
+  nameConfidence?: number;
+  lastSnippet?: string;
 }
+
+export interface BroadcastAudienceFilter {chatIds?: string[]; query?: string; stages?: string[]; activeWithinDays?: number; inactiveAtLeastDays?: number; chatMode?: 'autopilot' | 'copilot' | 'human'; skipActiveHours?: number; limit?: number}

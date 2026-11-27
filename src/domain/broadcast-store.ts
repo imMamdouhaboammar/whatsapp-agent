@@ -1,8 +1,10 @@
 import type { Database } from 'bun:sqlite';
 import { randomUUID } from 'node:crypto';
+import { scrubCredentials } from './credential-scrubber';
 import type {
   BroadcastAudienceFilter,
   BroadcastCampaign,
+  BroadcastHistoryEntry,
   BroadcastCampaignStats,
   BroadcastCampaignStatus,
   BroadcastCampaignSummary,
@@ -21,19 +23,23 @@ function decodeJson<T>(raw: string, guard: (value: unknown) => value is T, field
   return value;
 }
 
-function isAudienceFilter(value: unknown): value is BroadcastAudienceFilter {
+export function isAudienceFilter(value: unknown): value is BroadcastAudienceFilter {
   return isRecord(value)
+    && (value.chatMode === undefined || ["autopilot","copilot","human"].some(mode => mode === value.chatMode))
     && (value.query === undefined || typeof value.query === 'string')
     && (value.stages === undefined || isStringArray(value.stages))
     && (value.chatIds === undefined || isStringArray(value.chatIds))
     && (value.excludeOptedOut === undefined || typeof value.excludeOptedOut === 'boolean')
-    && ['minMessages', 'activeWithinDays', 'inactiveAtLeastDays', 'limit'].every(key =>
+    && ['minMessages', 'activeWithinDays', 'inactiveAtLeastDays', 'skipActiveHours', 'limit'].every(key =>
       value[key] === undefined || (typeof value[key] === 'number' && Number.isFinite(value[key])));
 }
 
-function isRichContent(value: unknown): value is BroadcastRichContent {
+export function isRichContent(value: unknown): value is BroadcastRichContent {
   return isRecord(value) && typeof value.messageGoal === 'string'
     && ['text', 'image', 'video', 'document', 'voice_note', 'template'].some(kind => kind === value.kind)
+    && (value.compositionMode === undefined || value.compositionMode === 'conversation' || value.compositionMode === 'template')
+    && (value.brief === undefined || (isRecord(value.brief) && typeof value.brief.cta === 'string' && typeof value.brief.tone === 'string' && typeof value.brief.constraints === 'string' && typeof value.brief.useBrandKnowledge === 'boolean'))
+    && (value.personalization === undefined || (isRecord(value.personalization) && typeof value.personalization.nameSource === 'string' && typeof value.personalization.historyCount === 'number' && typeof value.personalization.brandSources === 'number' && (value.personalization.nameConfidence === undefined || typeof value.personalization.nameConfidence === 'number') && (value.personalization.lastSnippet === undefined || typeof value.personalization.lastSnippet === 'string')))
     && ['mediaUrl', 'mediaBase64', 'mimeType', 'fileName', 'templateName',
       'templateLanguage', 'templateHeaderMediaUrl'].every(key => value[key] === undefined || typeof value[key] === 'string')
     && (value.templateHeaderMediaType === undefined || ['image', 'video', 'document'].some(kind => kind === value.templateHeaderMediaType))
@@ -52,13 +58,14 @@ function isFollowUp(value: unknown): value is BroadcastFollowUpConfig {
     && typeof value.messagePrompt === 'string';
 }
 
-function isPacing(value: unknown): value is BroadcastPacingConfig {
+export function isPacing(value: unknown): value is BroadcastPacingConfig {
   return isRecord(value)
-    && typeof value.minDelayMs === 'number' && Number.isFinite(value.minDelayMs)
-    && typeof value.maxDelayMs === 'number' && Number.isFinite(value.maxDelayMs)
+    && typeof value.minDelayMs === 'number' && Number.isFinite(value.minDelayMs) && value.minDelayMs >= 0 && value.minDelayMs <= 3600000
+    && (value.maxWindowMinutes === undefined || (typeof value.maxWindowMinutes === 'number' && Number.isInteger(value.maxWindowMinutes) && value.maxWindowMinutes >= 1 && value.maxWindowMinutes <= 1440))
+    && typeof value.maxDelayMs === 'number' && Number.isFinite(value.maxDelayMs) && value.maxDelayMs >= value.minDelayMs && value.maxDelayMs <= 3600000
     && (value.quietHours === undefined || (isRecord(value.quietHours)
-      && typeof value.quietHours.from === 'number' && Number.isFinite(value.quietHours.from)
-      && typeof value.quietHours.to === 'number' && Number.isFinite(value.quietHours.to)
+      && typeof value.quietHours.from === 'number' && Number.isInteger(value.quietHours.from) && value.quietHours.from >= 0 && value.quietHours.from <= 23
+      && typeof value.quietHours.to === 'number' && Number.isInteger(value.quietHours.to) && value.quietHours.to >= 0 && value.quietHours.to <= 23
       && typeof value.quietHours.timeZone === 'string'));
 }
 
@@ -67,6 +74,7 @@ interface AudienceRow {
   name: string;
   phone_number: string | null;
   last_timestamp: number | null;
+  agent_mode: string;
   stage: string;
   facts_json: string;
   preferred_tone: string | null;
@@ -83,6 +91,7 @@ function readAudienceRow(value: unknown): AudienceRow {
     name: readSqliteText(row, 'name'),
     phone_number: readNullableSqliteText(row, 'phone_number'),
     last_timestamp: readNullableSqliteNumber(row, 'last_timestamp'),
+    agent_mode: readSqliteText(row, 'agent_mode'),
     stage: readSqliteText(row, 'stage'),
     facts_json: readSqliteText(row, 'facts_json'),
     preferred_tone: readNullableSqliteText(row, 'preferred_tone'),
@@ -184,8 +193,20 @@ function readRecipientRow(value: unknown): RecipientRow {
   };
 }
 
+function resolveBroadcastName(label: string, history: BroadcastHistoryEntry[]): { name: string; nameSource: NonNullable<EligibleContact['nameSource']> } {
+  const names = new Set(history.filter(entry => entry.role === 'customer').flatMap(entry => {
+    const match = /(?:^|[.!?\n]\s*)(?:my name is|اسمي|إسمي|معاك)\s+([\p{L}\p{M}]{2,40})(?=[\s.!?،,]|$)/iu.exec(entry.text);
+    return match?.[1] ? [match[1]] : [];
+  }));
+  const candidate = names.values().next().value;
+  if (names.size === 1 && candidate) return { name: candidate, nameSource: 'inferred_from_chat' };
+  const clean = scrubCredentials(label).trim();
+  if (names.size === 0 && /^[\p{L}\p{M}][\p{L}\p{M}\s.'’-]{0,79}$/u.test(clean) && !/^(?:unknown|contact|customer|عميل|غير معروف)$/i.test(clean)) return { name: clean, nameSource: 'contact' };
+  return { name: 'Unknown', nameSource: 'unknown' };
+}
+
 export class BroadcastStore {
-  constructor(private readonly db: Database) {
+  constructor(private readonly db: Database, private readonly brandId = 'default') {
     this.init();
   }
 
@@ -300,17 +321,31 @@ export class BroadcastStore {
    * Finds contacts who have an established previous connection with the business
    * (non-group chats with at least one prior message or recorded interaction).
    */
-  findEligibleAudience(filter: BroadcastAudienceFilter = {}, now = Date.now()): EligibleContact[] {
-    const excludeOptedOut = filter.excludeOptedOut !== false;
-    const minMessages = Math.max(1, filter.minMessages ?? 1);
-    const limit = Math.min(Math.max(1, filter.limit ?? 100), 500);
+  getConversationContext(chatId: string): BroadcastHistoryEntry[] {
+    return this.db.query<unknown, [string]>(`
+      SELECT CASE WHEN type = 'audio' THEN transcription ELSE text END AS text, is_from_me FROM messages
+      WHERE chat_id = ? AND (type = 'text' OR (type = 'audio' AND transcription IS NOT NULL))
+      ORDER BY timestamp DESC, id DESC LIMIT 24
+    `).all(chatId).toReversed().map(value => {
+      const row = readSqliteRow(value);
+      return {role: readSqliteNumber(row, 'is_from_me') ? 'business' : 'customer', text: scrubCredentials(readNullableSqliteText(row, 'text') ?? '').slice(0, 600)};
+    });
+  }
 
-    const rows = this.db.query<unknown, [number]>(`
+  findEligibleAudience(filter: BroadcastAudienceFilter = {}, now = Date.now()): EligibleContact[] {
+    const excludeOptedOut = true;
+    const minMessages = Math.max(1, filter.minMessages ?? 1);
+    const limit = Math.min(Math.max(1, filter.limit ?? (filter.chatIds ? 500 : 100)), 500);
+
+    if (filter.chatIds?.length === 0) return [];
+    const selected = filter.chatIds ? JSON.stringify(filter.chatIds) : null;
+    const rows = this.db.query<unknown, [number, string | null, string | null]>(`
       SELECT
         c.id AS chat_id,
         c.name AS name,
         c.phone_number AS phone_number,
         c.last_timestamp AS last_timestamp,
+        c.agent_mode AS agent_mode,
         COALESCE(d.stage, 'lead') AS stage,
         COALESCE(d.facts_json, '[]') AS facts_json,
         d.preferred_tone AS preferred_tone,
@@ -323,9 +358,12 @@ export class BroadcastStore {
       LEFT JOIN broadcast_opt_outs o ON o.chat_id = c.id
       WHERE c.is_group = 0
         AND (? = 0 OR o.chat_id IS NULL)
+        AND c.id NOT LIKE '%@g.us' AND c.id NOT LIKE '%@broadcast'
+        AND EXISTS (SELECT 1 FROM messages m WHERE m.chat_id = c.id AND m.is_from_me = 0)
+        AND (? IS NULL OR c.id IN (SELECT value FROM json_each(?)))
       ORDER BY COALESCE(c.last_timestamp, 0) DESC
       LIMIT 500
-    `).all(excludeOptedOut ? 1 : 0);
+    `).all(excludeOptedOut ? 1 : 0, selected, selected);
 
     const stagesFilter = filter.stages?.length ? new Set(filter.stages.map((s) => s.toLowerCase())) : null;
     const chatIdsFilter = filter.chatIds?.length ? new Set(filter.chatIds) : null;
@@ -336,12 +374,14 @@ export class BroadcastStore {
     const results: EligibleContact[] = [];
     for (const value of rows) {
       const row = readAudienceRow(value);
-      const hasConnection = row.msg_count >= minMessages || (minMessages <= 1 && row.last_timestamp !== null);
+      const hasConnection = row.msg_count >= minMessages && row.last_inbound_ts !== null;
       if (!hasConnection) continue;
       if (chatIdsFilter && !chatIdsFilter.has(row.chat_id)) continue;
       if (stagesFilter && !stagesFilter.has(row.stage.toLowerCase())) continue;
+      if (filter.chatMode && row.agent_mode !== filter.chatMode) continue;
 
       const lastActivity = row.max_msg_ts ?? row.last_timestamp ?? undefined;
+      if (filter.skipActiveHours !== undefined && lastActivity !== undefined && lastActivity > now - filter.skipActiveHours * 3600000) continue;
       if (filter.activeWithinDays !== undefined && lastActivity !== undefined) {
         const cutoff = now - filter.activeWithinDays * 86_400_000;
         if (lastActivity < cutoff) continue;
@@ -352,8 +392,8 @@ export class BroadcastStore {
       }
 
       const memRows = this.db
-        .query<unknown, [string]>('SELECT content FROM contact_memories WHERE jid = ? ORDER BY created_at DESC LIMIT 10')
-        .all(row.chat_id);
+        .query<unknown, [string, string]>('SELECT content FROM contact_memories WHERE jid = ? AND brand_id = ? ORDER BY created_at DESC LIMIT 10')
+        .all(row.chat_id, this.brandId);
       const memories = memRows.map(memoryRow => readSqliteText(readSqliteRow(memoryRow), 'content'));
       let facts: string[] = [];
       try {
@@ -363,14 +403,17 @@ export class BroadcastStore {
         if (!(error instanceof SyntaxError)) throw error;
       }
 
+      const history = this.getConversationContext(row.chat_id);
+      const identity = resolveBroadcastName(row.name, history);
       if (queryTerms.length > 0) {
         const searchable = [
-          row.name,
+          identity.name,
           row.phone_number ?? '',
           row.stage,
           row.notes ?? '',
           ...facts,
           ...memories,
+          ...history.map(entry => entry.text),
         ].join(' ').toLowerCase();
         const matches = queryTerms.some((term) => searchable.includes(term));
         if (!matches) continue;
@@ -378,7 +421,9 @@ export class BroadcastStore {
 
       results.push({
         chatId: row.chat_id,
-        name: row.name,
+        ...identity,
+        nameConfidence: identity.nameSource === "inferred_from_chat" ? 0.85 : identity.nameSource === "contact" ? 0.65 : 0,
+        lastSnippet: history.findLast(entry => entry.role === "customer")?.text.slice(0, 160),
         ...(row.phone_number ? { phoneNumber: row.phone_number } : {}),
         stage: row.stage,
         facts,
@@ -469,7 +514,7 @@ export class BroadcastStore {
       UPDATE broadcast_campaigns
       SET status = ?,
           updated_at = ?,
-          started_at = COALESCE(?, started_at),
+          started_at = COALESCE(started_at, ?),
           completed_at = COALESCE(?, completed_at)
       WHERE id = ?
     `).run(status, now, timestamps?.startedAt ?? null, timestamps?.completedAt ?? null, campaignId);
@@ -532,7 +577,11 @@ export class BroadcastStore {
   updateRecipientDraft(recipientId: string, patch: { personalizedText?: string; status?: 'draft' | 'approved' | 'skipped' }): BroadcastRecipient | null {
     const now = Date.now();
     const current = this.getRecipient(recipientId);
-    if (!current) return null;
+    if (!current || !['draft', 'skipped', 'approved'].includes(current.status)) return null;
+    const campaign = this.getCampaign(current.campaignId);
+    if (!campaign || !['draft', 'paused'].includes(campaign.status)) return null;
+    if (patch.personalizedText !== undefined && (!patch.personalizedText.trim() || patch.personalizedText.length > 4000 || /\{\{/.test(patch.personalizedText) || scrubCredentials(patch.personalizedText) !== patch.personalizedText)) return null;
+    if (patch.status !== undefined && !['draft', 'approved', 'skipped'].includes(patch.status)) return null;
     this.db.query(`
       UPDATE broadcast_recipients
       SET personalized_text = ?, status = ?, updated_at = ?
@@ -546,12 +595,47 @@ export class BroadcastStore {
     return this.getRecipient(recipientId);
   }
 
+  replaceDraft(recipient: BroadcastRecipient, text: string, name: string, content: BroadcastRichContent): BroadcastRecipient | null {
+    if (!text.trim() || text.length > 4000 || /\{\{/.test(text) || scrubCredentials(text) !== text) return null;
+    const updated = this.db.query(`
+      UPDATE broadcast_recipients SET personalized_text=?,contact_name=?,rich_content_json=?,status='draft',updated_at=?
+      WHERE id=? AND updated_at=? AND personalized_text=? AND contact_name=? AND status=?
+        AND status IN ('draft','approved','skipped')
+        AND EXISTS (SELECT 1 FROM broadcast_campaigns c WHERE c.id=broadcast_recipients.campaign_id AND c.status='draft')
+    `).run(text,name,JSON.stringify(content),Date.now(),recipient.id,recipient.updatedAt,recipient.personalizedText,recipient.contactName,recipient.status);
+    return updated.changes === 1 ? this.getRecipient(recipient.id) : null;
+  }
+
   approveAllDraftRecipients(campaignId: string): void {
     this.db.query(`
       UPDATE broadcast_recipients
       SET status = 'approved', updated_at = ?
       WHERE campaign_id = ? AND status = 'draft'
     `).run(Date.now(), campaignId);
+  }
+
+  claimRecipient(recipientId: string): boolean {
+    return this.db.query(`
+      UPDATE broadcast_recipients SET status='queued', updated_at=?
+      WHERE id=? AND status='approved'
+        AND EXISTS (SELECT 1 FROM broadcast_campaigns c WHERE c.id=broadcast_recipients.campaign_id AND c.status IN ('approved','running'))
+        AND NOT EXISTS (SELECT 1 FROM broadcast_opt_outs o WHERE o.chat_id=broadcast_recipients.chat_id)
+    `).run(Date.now(), recipientId).changes === 1;
+  }
+
+  countNoInbound(): number {
+    const row = this.db.query(`
+      SELECT COUNT(*) AS count FROM chats c
+      WHERE c.is_group=0 AND c.id NOT LIKE '%@broadcast' AND c.id NOT LIKE '%@g.us'
+        AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.chat_id=c.id AND m.is_from_me=0)
+    `).get();
+    return readSqliteNumber(readSqliteRow(row), 'count');
+  }
+
+  getConversationSummaries(chatId: string): string[] {
+    return this.db.query<unknown, [string]>(`
+      SELECT summary FROM conversation_folds WHERE chat_id=? ORDER BY created_at DESC LIMIT 3
+    `).all(chatId).map(row => scrubCredentials(readSqliteText(readSqliteRow(row), 'summary')).slice(0, 1000));
   }
 
   updateRecipientDelivery(
